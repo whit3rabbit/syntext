@@ -1,0 +1,104 @@
+[package]
+name = "ripline"
+version = "0.1.0"
+edition = "2021"
+description = "Hybrid code search index for agent workflows"
+license = "MIT"
+
+[[bin]]
+name = "ripline"
+path = "src/main.rs"
+
+[dependencies]
+# Regex and verification
+regex = "1"
+regex-syntax = "0.8"
+memchr = "2"
+
+# Memory-mapped I/O
+memmap2 = "0.9"
+
+# Bitmap posting lists
+roaring = "0.11"
+
+# Parallel index building
+rayon = "1"
+
+# Zero-copy segment format
+zerocopy = { version = "0.8", features = ["derive"] }
+
+# Lock-free snapshot swapping
+arc-swap = "1"
+
+# Gitignore and file-type filtering
+ignore = "0.4"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Serialization (manifest)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# UUIDs for segment IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Checksum
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+
+# Symbol index (optional)
+tree-sitter = { version = "0.26", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+
+[features]
+default = []
+symbols = ["tree-sitter", "rusqlite"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+proptest = "1"
+
+[[test]]
+name = "correctness"
+path = "tests/integration/correctness.rs"
+
+[[test]]
+name = "index_build"
+path = "tests/integration/index_build.rs"
+
+[[test]]
+name = "tokenizer"
+path = "tests/unit/tokenizer.rs"
+
+[[test]]
+name = "posting"
+path = "tests/unit/posting.rs"
+
+[[test]]
+name = "query"
+path = "tests/unit/query.rs"
+
+[[test]]
+name = "overlay"
+path = "tests/unit/overlay.rs"
+
+[[test]]
+name = "boundary_fuzz"
+path = "tests/unit/boundary_fuzz.rs"
+
+[[test]]
+name = "incremental"
+path = "tests/integration/incremental.rs"
+
+[[bench]]
+name = "query_latency"
+harness = false
+
+[[bench]]
+name = "selectivity"
+harness = false
+
+[[bench]]
+name = "index_build"
+harness = false

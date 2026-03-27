@@ -1,0 +1,9 @@
+# Ignored by the fixture corpus .gitignore
+# Used to test that ripline respects .gitignore rules
+build/
+*.log
+*.tmp
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/

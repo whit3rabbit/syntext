@@ -1,0 +1,5 @@
+This file has spaces in its name.
+
+parse_query should find this file when searching corpus-wide.
+TODO: ensure the CLI handles paths with spaces correctly (quote args)
+contact: spaces@example.com

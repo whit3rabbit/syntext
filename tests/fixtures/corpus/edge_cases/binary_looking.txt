@@ -1,0 +1,7 @@
+This file contains high-byte UTF-8 sequences.
+parse_query works on valid UTF-8 only.
+Chars: ÀÁÂÃÄÅÆÇ (Latin Extended-A)
+More: ĀāĂăĄą (multi-byte sequences)
+TODO: verify ripgrep and ripline agree on these files
+No null bytes here, so this is valid UTF-8 text.
+IP reference: 10.0.0.1

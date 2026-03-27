@@ -1,0 +1,9 @@
+fn parse_query(s: &str) -> Query {
+    // TODO: validate input
+    Query { raw: s.to_string() }
+}
+
+fn process_batch(qs: Vec<Query>) -> Vec<Result> {
+    // CRLF line endings test file
+    qs.into_iter().map(execute_one).collect()
+}

@@ -1,1 +1,34 @@
 .claude/
+.specify/
+CLAUDE.local.md
+
+# Rust
+target/
+*.rs.bk
+*.rlib
+*.prof*
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+
+# Environment
+.env*
+*.log
+
+# Ripline index
+.ripline/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Repomix
+repomix.xml

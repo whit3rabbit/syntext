@@ -1,0 +1,8 @@
+This file is nested at tests/fixtures/corpus/edge_cases/nested/deep/path/file.txt.
+
+It tests that the indexer correctly handles deep directory hierarchies.
+
+parse_query("deeply nested content")
+TODO: verify path component indexing works for 5+ directory levels
+URL: https://example.com/nested/deep/path
+IP: 192.168.100.1

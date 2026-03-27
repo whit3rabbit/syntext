@@ -1,0 +1,18 @@
+Sample data for email extraction tests.
+
+Valid emails:
+  user@domain.com
+  admin@example.com
+  support@example.org
+  noreply@github.com
+  first.last@subdomain.example.co.uk
+
+Invalid (should not match):
+  @nodomain
+  noatsign.com
+  double@@at.com
+
+parse_query extracts these from text fields.
+TODO: add international domain name support (münchen.de)
+IP addresses for network tests: 192.168.1.1, 10.0.0.1, 172.16.254.1
+URL references: https://example.com/data https://api.example.com/v2/emails
