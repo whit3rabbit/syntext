@@ -107,7 +107,25 @@ python3 scripts/bench_compare.py \
 - Do not use substring-heavy literals like `ReactElement`, `useEffect`, or `TyCtxt` as headline benchmark terms unless exact count agreement has already been verified, since real code might embed substrings (e.g. `ReactElement` inside `ReactElementPropsTypeDestructor`).
 - If `ripline`, `rg`, and `grep` counts differ, treat the timing comparison as suspect until the mismatch is explained.
 
-## Real World Results & Limitations 
+## Calibrated Scan Threshold (2026-03-27)
+
+Feature: replaced hard-coded 10% cardinality threshold in `should_use_index()` with a value computed at build time from actual I/O and posting-decode latency. Threshold is stored in `manifest.json` and loaded into `IndexSnapshot` on open.
+
+**Build-time cost:** `calibrate_threshold()` reads up to 100 files and runs 20 Roaring bitmap AND iterations. On the synthetic test corpus this is immeasurable relative to total build time.
+
+**Query routing impact:** Queries near the old 10% crossover may route differently. Broad literals (>50% cardinality) and very selective literals (<1% cardinality) are unaffected. The calibrated value for a warm NVMe + small files corpus is clamped to [0.01, 0.50]; typical values on NVMe are near 0.50 because in-memory bitmap AND cost is negligible compared to file read cost.
+
+**Synthetic corpus query latency (post-feature, `--sample-size 10`):**
+
+| Benchmark | Time (mean) | Range |
+|---|---|---|
+| `query_latency/literal_common` | 5.94 ms | 5.74–6.27 ms |
+| `query_latency/indexed_regex_rare` | 153.9 µs | 152.2–156.3 µs |
+| `query_latency/full_scan_regex` | 6.19 ms | 5.92–6.60 ms |
+
+No regression vs. prior baseline (broad literal and full-scan regex are I/O dominated; selective indexed regex is index-dominated and unaffected by threshold change).
+
+## Real World Results & Limitations
 
 These points summarize current known testing observations against real code environments.
 
