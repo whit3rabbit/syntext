@@ -37,6 +37,79 @@ use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
 /// Target batch size (content bytes) before flushing a segment.
 const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Measure the crossover fraction where index lookup becomes cheaper than a
+/// full scan for this repository.
+///
+/// Returns a value in [0.01, 0.50]. Falls back to 0.10 if measurement fails
+/// (e.g., no files indexed, timing resolution too coarse).
+fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
+    const DEFAULT: f64 = 0.10;
+    const SCAN_SAMPLE: usize = 100;
+    // Entries per bitmap in the posting-cost microbenchmark.
+    const BITMAP_ENTRIES: u32 = 10_000;
+    // Repetitions to amortize timer overhead.
+    const BITMAP_REPS: u32 = 20;
+
+    let total = indexed_paths.len();
+    if total == 0 {
+        return DEFAULT;
+    }
+
+    // --- Scan cost: time reading a strided sample of indexed files ---
+    let sample_count = SCAN_SAMPLE.min(total);
+    // Use a stride so we sample evenly across the corpus (sorted by path).
+    let stride = (total / sample_count).max(1);
+    let sample_paths: Vec<&str> = (0..sample_count)
+        .map(|i| indexed_paths[(i * stride).min(total - 1)].as_str())
+        .collect();
+
+    let t0 = std::time::Instant::now();
+    let docs_read: usize = sample_paths
+        .iter()
+        .filter(|p| std::fs::read(config.repo_root.join(p)).is_ok())
+        .count();
+    let scan_elapsed_ns = t0.elapsed().as_nanos() as u64;
+
+    if docs_read == 0 || scan_elapsed_ns == 0 {
+        return DEFAULT;
+    }
+    let scan_ns_per_doc = scan_elapsed_ns / docs_read as u64;
+
+    // --- Posting cost: synthetic Roaring bitmap AND microbenchmark ---
+    // Two bitmaps with BITMAP_ENTRIES entries each, interleaved so the AND
+    // result is half-dense (worst-case for the AND algorithm).
+    let a: RoaringBitmap = (0..BITMAP_ENTRIES).collect();
+    let b: RoaringBitmap = (0..BITMAP_ENTRIES * 2).step_by(2).map(|x| x as u32).collect();
+
+    let t1 = std::time::Instant::now();
+    for _ in 0..BITMAP_REPS {
+        let _ = &a & &b;
+    }
+    let posting_elapsed_ns = t1.elapsed().as_nanos() as u64;
+    // Cost per entry processed by the AND (both bitmaps contribute BITMAP_ENTRIES entries).
+    let total_entries_processed = BITMAP_ENTRIES as u64 * BITMAP_REPS as u64 * 2;
+    if posting_elapsed_ns == 0 {
+        return DEFAULT;
+    }
+    let posting_ns_per_entry = posting_elapsed_ns / total_entries_processed;
+
+    if posting_ns_per_entry == 0 {
+        // Posting decode is immeasurably fast relative to scan — use index
+        // aggressively, but stay within safe upper bound.
+        return 0.50;
+    }
+
+    // Crossover fraction: use the index when candidates/total_docs < threshold.
+    //
+    // Cost(index path)  ≈ cardinality * (posting_ns_per_entry + scan_ns_per_doc)
+    // Cost(full scan)   ≈ total_docs  * scan_ns_per_doc
+    //
+    // Equating the two:
+    //   threshold = scan_ns_per_doc / (scan_ns_per_doc + posting_ns_per_entry)
+    let threshold = scan_ns_per_doc as f64 / (scan_ns_per_doc + posting_ns_per_entry) as f64;
+    threshold.clamp(0.01, 0.50)
+}
+
 /// Shared base segments (Arc-shared across snapshot swaps).
 pub struct BaseSegments {
     /// The memory mapped segments.
@@ -265,8 +338,11 @@ impl Index {
 
         let total_indexed = next_doc_id;
 
+        // Calibrate index-vs-scan crossover threshold from actual disk timing.
+        let scan_threshold = calibrate_threshold(&indexed_paths, &config);
         // Write manifest.
-        let manifest = Manifest::new(seg_refs, total_indexed);
+        let mut manifest = Manifest::new(seg_refs, total_indexed);
+        manifest.scan_threshold_fraction = Some(scan_threshold);
         manifest.save(&config.index_dir)?;
         manifest.gc_orphan_segments(&config.index_dir)?;
 
@@ -516,5 +592,51 @@ impl Index {
     pub fn notify_change_immediate(&self, path: &Path) -> Result<(), IndexError> {
         self.notify_change(path)?;
         self.commit_batch()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn build_produces_calibrated_threshold_in_valid_range() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        // A corpus large enough that calibration has real files to sample.
+        for i in 0..50 {
+            std::fs::write(
+                repo.path().join(format!("file_{i:03}.rs")),
+                format!("fn func_{i}() {{ let x = {i}; }}\n").repeat(20),
+            )
+            .unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config.clone()).unwrap();
+
+        // The manifest must contain a calibrated threshold.
+        let manifest = crate::index::manifest::Manifest::load(&config.index_dir).unwrap();
+        let threshold = manifest
+            .scan_threshold_fraction
+            .expect("build() must populate scan_threshold_fraction");
+
+        assert!(
+            (0.01..=0.50).contains(&threshold),
+            "calibrated threshold {threshold} must be in [0.01, 0.50]"
+        );
+
+        // The loaded snapshot must use the calibrated value.
+        let snap = index.snapshot();
+        assert_eq!(
+            snap.scan_threshold, threshold,
+            "snapshot.scan_threshold must match manifest value"
+        );
     }
 }
