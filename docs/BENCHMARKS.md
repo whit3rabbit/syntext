@@ -121,3 +121,24 @@ These points summarize current known testing observations against real code envi
 - Exact match preset counts are clean for queries like `useState`, `getDisplayNameForReactElement`, `rustc_middle`, and `mir::Body` on real codebases. Substring and suffix matches (such as `TyCtxt` or `useEffect`) will often undercount in `ripline` on big codebases and therefore serve as poor benchmark choices.
 - **Hot vs cold search**: `--ripline-search-mode both` is useful when measuring real agent loops. On the current Zed preset, `LanguageServerId` measured about `9ms` in fork mode and about `2ms` in persistent mode, with identical counts. Broad queries like `workspace` change much less, because verification still dominates.
 - **Incremental parity**: Benchmark numbers are easier to trust when incremental updates match full builds. Incremental commits now reject lexical path traversal outside `repo_root` and skip binary files the same way full builds do, so “hot index” runs do not quietly benchmark a different visible corpus than fresh builds.
+
+## Delta Gram-Index
+
+Measured with `cargo bench --bench index_build -- --sample-size 10` on the
+synthetic corpus (macOS, Apple Silicon). Before numbers are from the slow path,
+which rebuilt the entire gram_index from all dirty files on every `commit_batch()`.
+
+| Benchmark | Before (slow path, O(all dirty)) | After (delta path, O(changed)) |
+|---|---|---|
+| `full_build_300_files` | ~16.7 ms | 16.706 ms (no regression) |
+| `commit_batch_single_edit` | ~135 µs | 114.89 µs |
+
+The delta path (`build_incremental_delta`) clones the existing gram_index,
+surgically removes stale doc_ids for changed/deleted files using cached grams,
+then appends fresh doc_ids only for the changed set. For a single-file edit
+against an overlay with many unchanged files this is O(changed_grams) instead
+of O(all_dirty_grams). The `commit_batch_single_edit` improvement (~15%)
+reflects reduced tokenization work; the gain grows with overlay size.
+
+The `full_build_300_files` benchmark exercises the initial segment build path,
+which is unaffected by the overlay change.
