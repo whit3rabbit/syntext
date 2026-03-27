@@ -2,10 +2,10 @@
 //!
 //! T043: single file add, modify, delete, batch atomicity, snapshot isolation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use ripline_rs::index::overlay::OverlayView;
+use ripline_rs::index::overlay::{compute_delete_set, OverlayView};
 
 /// Helper: build dirty file list with Arc<[u8]> content.
 fn dirty(files: &[(&str, &[u8])]) -> Vec<(String, Arc<[u8]>)> {
@@ -135,7 +135,10 @@ fn snapshot_isolation_via_arc() {
 
 #[test]
 fn incremental_reuses_unchanged_content() {
-    let old = OverlayView::build(10, dirty(&[("a.rs", b"aaa content"), ("b.rs", b"bbb content")]));
+    let old = OverlayView::build(
+        10,
+        dirty(&[("a.rs", b"aaa content"), ("b.rs", b"bbb content")]),
+    );
     let old_a_ptr = Arc::as_ptr(&old.docs.iter().find(|d| d.path == "a.rs").unwrap().content);
 
     // Only b.rs changed; a.rs should be reused via Arc::clone.
@@ -185,4 +188,46 @@ fn incremental_from_empty_old_overlay() {
     assert_eq!(inc.docs.len(), 1);
     assert_eq!(inc.docs[0].path, "new.rs");
     assert_eq!(inc.docs[0].doc_id, 5);
+}
+
+#[test]
+fn compute_delete_set_marks_all_base_docs_for_invalidated_paths() {
+    let mut base_path_doc_ids = HashMap::new();
+    base_path_doc_ids.insert("src/main.rs".to_string(), vec![1, 7]);
+    base_path_doc_ids.insert("src/lib.rs".to_string(), vec![3]);
+
+    let delete_set = compute_delete_set(
+        &base_path_doc_ids,
+        &["src/main.rs".to_string()],
+        &["src/missing.rs".to_string()],
+    );
+
+    assert!(delete_set.contains(1));
+    assert!(delete_set.contains(7));
+    assert!(!delete_set.contains(3));
+}
+
+#[test]
+fn incremental_reuses_cached_grams() {
+    let old = OverlayView::build(10, dirty(&[("a.rs", b"fn alpha_function() {}")]));
+
+    // Capture gram set from old overlay.
+    let old_a_grams: Vec<u64> = {
+        let doc = old.docs.iter().find(|d| d.path == "a.rs").unwrap();
+        doc.grams.clone()
+    };
+    assert!(!old_a_grams.is_empty(), "should have grams");
+
+    // Incremental: only b.rs is new; a.rs should reuse cached grams.
+    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
+    let removed: HashSet<String> = HashSet::new();
+    let new_files = dirty(&[("b.rs", b"fn beta() {}")]);
+
+    let inc = OverlayView::build_incremental(10, &old, new_files, &newly_changed, &removed);
+
+    let inc_a = inc.docs.iter().find(|d| d.path == "a.rs").unwrap();
+    assert_eq!(
+        inc_a.grams, old_a_grams,
+        "reused doc should have same cached grams"
+    );
 }

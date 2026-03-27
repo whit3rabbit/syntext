@@ -43,6 +43,9 @@ pub struct OverlayDoc {
     /// Current file content (kept for verification during search).
     /// Arc-shared to avoid cloning between snapshot generations.
     pub content: Arc<[u8]>,
+    /// Cached gram hashes for this document. Avoids re-tokenization
+    /// when the doc is carried forward to the next overlay generation.
+    pub grams: Vec<u64>,
 }
 
 /// Single merged in-memory gram index for all dirty files.
@@ -86,7 +89,7 @@ impl OverlayView {
             next_id += 1;
 
             let grams = build_all(&content);
-            for gram_hash in grams {
+            for &gram_hash in &grams {
                 gram_index.entry(gram_hash).or_default().push(doc_id);
             }
 
@@ -94,6 +97,7 @@ impl OverlayView {
                 doc_id,
                 path,
                 content,
+                grams,
             });
         }
 
@@ -103,7 +107,11 @@ impl OverlayView {
             ids.dedup();
         }
 
-        let doc_id_map = docs.iter().enumerate().map(|(i, d)| (d.doc_id, i)).collect();
+        let doc_id_map = docs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.doc_id, i))
+            .collect();
 
         OverlayView {
             gram_index,
@@ -142,14 +150,15 @@ impl OverlayView {
             let doc_id = next_id;
             next_id += 1;
 
-            let grams = build_all(&old_doc.content);
-            for gram_hash in grams {
+            // Reuse cached grams instead of re-tokenizing.
+            for &gram_hash in &old_doc.grams {
                 gram_index.entry(gram_hash).or_default().push(doc_id);
             }
             docs.push(OverlayDoc {
                 doc_id,
                 path: old_doc.path.clone(),
-                content: Arc::clone(&old_doc.content), // refcount bump, no copy
+                content: Arc::clone(&old_doc.content),
+                grams: old_doc.grams.clone(),
             });
         }
 
@@ -159,13 +168,14 @@ impl OverlayView {
             next_id += 1;
 
             let grams = build_all(&content);
-            for gram_hash in grams {
+            for &gram_hash in &grams {
                 gram_index.entry(gram_hash).or_default().push(doc_id);
             }
             docs.push(OverlayDoc {
                 doc_id,
                 path,
                 content,
+                grams,
             });
         }
 
@@ -174,7 +184,11 @@ impl OverlayView {
             ids.dedup();
         }
 
-        let doc_id_map = docs.iter().enumerate().map(|(i, d)| (d.doc_id, i)).collect();
+        let doc_id_map = docs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.doc_id, i))
+            .collect();
 
         OverlayView {
             gram_index,
@@ -208,7 +222,6 @@ struct PendingState {
     /// Edits buffered since the last `commit_batch()`.
     uncommitted: Vec<FileEdit>,
 }
-
 
 impl Default for PendingEdits {
     fn default() -> Self {
@@ -318,29 +331,18 @@ pub struct TakeResult {
 /// Compute the delete_set: base doc_ids that are invalidated by overlay
 /// changes (modified or deleted files).
 ///
-/// Walks all base segments to find docs whose paths match dirty/deleted files.
+/// Uses a prebuilt path -> doc_ids map from the immutable base snapshot.
 pub fn compute_delete_set(
-    base_segments: &[crate::index::segment::MmapSegment],
-    segment_base_ids: &[u32],
+    base_path_doc_ids: &HashMap<String, Vec<u32>>,
     modified_paths: &[String],
     deleted_paths: &[String],
 ) -> RoaringBitmap {
     let mut delete_set = RoaringBitmap::new();
 
-    // Collect all paths that invalidate base docs.
-    let invalidated: std::collections::HashSet<&str> = modified_paths
-        .iter()
-        .chain(deleted_paths.iter())
-        .map(String::as_str)
-        .collect();
-
-    for (seg_idx, seg) in base_segments.iter().enumerate() {
-        let base_id = segment_base_ids.get(seg_idx).copied().unwrap_or(0);
-        for local_id in 0..seg.doc_count {
-            if let Some(doc) = seg.get_doc(local_id) {
-                if invalidated.contains(doc.path.as_str()) {
-                    delete_set.insert(base_id + local_id);
-                }
+    for path in modified_paths.iter().chain(deleted_paths.iter()) {
+        if let Some(doc_ids) = base_path_doc_ids.get(path) {
+            for &doc_id in doc_ids {
+                delete_set.insert(doc_id);
             }
         }
     }
