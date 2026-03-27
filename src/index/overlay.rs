@@ -52,6 +52,7 @@ pub struct OverlayDoc {
 ///
 /// Rebuilt from scratch on each `commit_batch()`. Query execution always
 /// does two lookups: base segments + this single overlay.
+#[derive(Clone)]
 pub struct OverlayView {
     /// Map from gram hash to sorted overlay doc_ids that contain it.
     pub gram_index: HashMap<u64, Vec<u32>>,

@@ -168,7 +168,8 @@ fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> bool {
         .min()
         .unwrap_or(0);
 
-    u64::from(smallest) * 10 <= total_docs
+    // Use the calibrated threshold. Avoid integer overflow by comparing as f64.
+    (smallest as f64) <= (total_docs as f64) * snap.scan_threshold
 }
 
 /// Execute a gram query against base segments plus overlay and return sorted
@@ -395,14 +396,15 @@ mod tests {
     }
 
     #[test]
-    fn should_use_index_below_threshold() {
+    fn should_use_index_very_selective_term() {
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
-        // Create 20 files. Only 2 contain the target gram.
-        for i in 0..20 {
-            let content = if i < 2 {
-                format!("fn unique_target_gram_{i}() {{}}\n")
+        // 1 file has the target term; 99 do not. Cardinality = 1%.
+        // Must use index regardless of calibrated threshold (max clamp is 0.50).
+        for i in 0..100 {
+            let content = if i == 0 {
+                "fn ultra_rare_xtqvz_sentinel() {}\n".to_string()
             } else {
                 format!("fn generic_function_{i}() {{}}\n")
             };
@@ -416,22 +418,21 @@ mod tests {
         };
         let index = Index::build(config).unwrap();
         let snap = index.snapshot();
-
-        // A term in only 2/20 files (10%) should use the index.
-        let grams = literal_grams("unique_target_gram").unwrap();
+        let grams = literal_grams("ultra_rare_xtqvz_sentinel").unwrap();
         assert!(
             should_use_index(&grams, &snap),
-            "selective term should use index"
+            "1% cardinality must use index (threshold clamped to max 0.50)"
         );
     }
 
     #[test]
-    fn should_use_index_above_threshold() {
+    fn should_use_index_ubiquitous_term() {
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
-        // All 10 files contain the same term.
-        for i in 0..10 {
+        // All 20 files contain the term. Cardinality = 100%.
+        // Must fall back to scan regardless of calibrated threshold (max clamp is 0.50).
+        for i in 0..20 {
             std::fs::write(
                 repo.path().join(format!("file_{i:03}.rs")),
                 "fn common_everywhere() {}\n",
@@ -446,12 +447,58 @@ mod tests {
         };
         let index = Index::build(config).unwrap();
         let snap = index.snapshot();
-
-        // Grams from "common_everywhere" appear in all 10 files (100%) -> skip index.
         let grams = literal_grams("common_everywhere").unwrap();
         assert!(
             !should_use_index(&grams, &snap),
-            "ubiquitous term should fall back to full scan"
+            "100% cardinality must fall back to scan (threshold clamped to max 0.50)"
+        );
+    }
+
+    #[test]
+    fn should_use_index_respects_snapshot_threshold() {
+        // Test that should_use_index uses snap.scan_threshold, not a hard-coded constant.
+        // We directly verify the arithmetic: a term in 30% of files should use the index
+        // when snap.scan_threshold == 0.40, but not when snap.scan_threshold == 0.20.
+        //
+        // Build a corpus where the term appears in 6/20 files = 30%.
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..20 {
+            let content = if i < 6 {
+                "fn target_alpha_marker_fn() {}\n".to_string()
+            } else {
+                format!("fn other_{i}() {{}}\n")
+            };
+            std::fs::write(repo.path().join(format!("file_{i:03}.rs")), content).unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        // Override threshold in snapshot for the two sub-cases.
+        let snap_high = {
+            let s = index.snapshot();
+            // Synthesize a snapshot with threshold 0.40 (above 30%).
+            Arc::new(s.with_scan_threshold(0.40))
+        };
+        let snap_low = {
+            let s = index.snapshot();
+            Arc::new(s.with_scan_threshold(0.20))
+        };
+
+        let grams = literal_grams("target_alpha_marker_fn").unwrap();
+        assert!(
+            should_use_index(&grams, &snap_high),
+            "30% cardinality should use index when threshold is 0.40"
+        );
+        assert!(
+            !should_use_index(&grams, &snap_low),
+            "30% cardinality should NOT use index when threshold is 0.20"
         );
     }
 

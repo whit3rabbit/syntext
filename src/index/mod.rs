@@ -66,6 +66,9 @@ pub struct IndexSnapshot {
     all_doc_ids_cache: OnceLock<RoaringBitmap>,
     /// Cached merged posting bitmaps for repeated gram lookups in this snapshot.
     posting_bitmap_cache: OnceLock<Mutex<HashMap<u64, Arc<RoaringBitmap>>>>,
+    /// Calibrated index-vs-scan crossover fraction. Populated from
+    /// `Manifest::scan_threshold_fraction` on open; defaults to 0.10.
+    pub scan_threshold: f64,
 }
 
 impl IndexSnapshot {
@@ -124,6 +127,31 @@ impl IndexSnapshot {
             .entry(gram_hash)
             .or_insert_with(|| Arc::clone(&bitmap))
             .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_for_test(&self) -> IndexSnapshot {
+        IndexSnapshot {
+            base: Arc::clone(&self.base),
+            overlay: self.overlay.clone(),
+            delete_set: self.delete_set.clone(),
+            path_index: self.path_index.clone(),
+            doc_to_file_id: self.doc_to_file_id.clone(),
+            scan_threshold: self.scan_threshold,
+            all_doc_ids_cache: OnceLock::new(),
+            posting_bitmap_cache: OnceLock::new(),
+        }
+    }
+
+    /// Clone this snapshot with a different `scan_threshold`. Used by tests to
+    /// verify that `should_use_index` reads from the snapshot rather than a
+    /// hard-coded constant.
+    #[cfg(test)]
+    pub(crate) fn with_scan_threshold(&self, threshold: f64) -> IndexSnapshot {
+        IndexSnapshot {
+            scan_threshold: threshold,
+            ..self.clone_for_test()
+        }
     }
 
     #[cfg(test)]
@@ -275,6 +303,11 @@ impl Index {
 
         let manifest = Manifest::load(&config.index_dir)?;
 
+        let scan_threshold = manifest
+            .scan_threshold_fraction
+            .unwrap_or(0.10)
+            .clamp(0.01, 0.50);
+
         let mut base_segments: Vec<MmapSegment> = Vec::new();
         let mut segment_base_ids: Vec<u32> = Vec::new();
         let mut base_doc_paths: Vec<String> = Vec::new();
@@ -326,6 +359,7 @@ impl Index {
             delete_set: RoaringBitmap::new(),
             path_index,
             doc_to_file_id,
+            scan_threshold,
             all_doc_ids_cache: OnceLock::new(),
             posting_bitmap_cache: OnceLock::new(),
         });
@@ -469,6 +503,7 @@ impl Index {
             delete_set,
             path_index,
             doc_to_file_id,
+            scan_threshold: old_snap.scan_threshold,
             all_doc_ids_cache: OnceLock::new(),
             posting_bitmap_cache: OnceLock::new(),
         });
