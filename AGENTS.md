@@ -26,14 +26,9 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 | arc-swap | lock-free snapshot swapping for concurrent reads |
 | ignore | .gitignore respect, file-type filtering |
 | clap | CLI (with derive) |
-| serde, serde_json | manifest serialization |
-| uuid | segment IDs (v4) |
-| xxhash-rust | checksums (xxh64) |
 | tree-sitter | optional symbol extraction (Tier 1 languages) |
-| rusqlite | optional symbol index storage (bundled, behind `symbols` feature) |
 | criterion | benchmarks (dev-only) |
 | proptest | property-based coverage invariant tests (dev-only) |
-| tempfile | temporary dirs in tests (dev-only) |
 
 ## Implementation Order
 
@@ -51,13 +46,6 @@ cargo clippy                  # lint, must pass with no warnings
 cargo bench                   # criterion benchmarks
 RIPLINE_LOG_SELECTIVITY=1 cargo test --test correctness -- --nocapture
                               # show per-query selectivity stats
-cargo test --test tokenizer   # unit: tokenizer only
-cargo test --test posting     # unit: posting lists only
-cargo test --test query       # unit: query router only
-cargo test --test overlay     # unit: overlay/snapshot only
-cargo test --test boundary_fuzz  # unit: boundary fuzzing
-cargo test --test index_build # integration: index construction
-cargo test --test incremental # integration: incremental updates
 ```
 
 ## Weight Table Generation
@@ -132,7 +120,6 @@ All PRs must pass before merge:
 ```
 src/
   lib.rs                      # public API (Index, Config, SearchOptions)
-  main.rs                     # binary entry point
   tokenizer/
     mod.rs                    # sparse n-gram extraction (build_all, build_covering)
     weights.rs                # pre-trained [u16; 65536] byte-pair frequency table
@@ -142,10 +129,9 @@ src/
     overlay.rs                # OverlayView + ArcSwap<IndexSnapshot>
     manifest.rs               # manifest.json + atomic write-then-rename
     merge.rs                  # background segment merge
-    walk.rs                   # directory walking / file discovery
   posting/
     mod.rs                    # posting list types + adaptive intersection/union
-    roaring_util.rs           # Roaring bitmap integration for dense terms
+    roaring.rs                # Roaring bitmap integration for dense terms
   query/
     mod.rs                    # query router (literal / indexed regex / full scan)
     regex_decompose.rs        # HIR walker -> GramQuery tree
@@ -169,7 +155,6 @@ specs/001-hybrid-code-search-index/
   data-model.md               # entity definitions
   contracts/                  # library API, CLI, segment format contracts
   quickstart.md               # usage guide
-  tasks.md                    # implementation task breakdown
 ```
 
 ## Spec Location

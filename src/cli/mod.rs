@@ -313,7 +313,7 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     };
 
     // Detect changed files via git diff against HEAD.
-    let output = match std::process::Command::new("git")
+    let diff_output = match std::process::Command::new("git")
         .arg("-C")
         .arg(&config.repo_root)
         .args(["diff", "--name-only", "HEAD"])
@@ -326,8 +326,27 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let changed: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    let diff_stdout = String::from_utf8_lossy(&diff_output.stdout);
+    let mut changed: Vec<String> = diff_stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+
+    // Pick up new untracked files that git-diff doesn't report.
+    if let Ok(ut_output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&config.repo_root)
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output()
+    {
+        let ut_stdout = String::from_utf8_lossy(&ut_output.stdout);
+        for line in ut_stdout.lines().filter(|l| !l.is_empty()) {
+            if !changed.iter().any(|c| c == line) {
+                changed.push(line.to_string());
+            }
+        }
+    }
 
     if changed.is_empty() {
         if !quiet {

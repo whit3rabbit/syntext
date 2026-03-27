@@ -4,7 +4,6 @@ pub mod path;
 pub mod posting;
 pub mod query;
 pub mod search;
-pub mod symbol;
 pub mod tokenizer;
 
 use std::path::PathBuf;

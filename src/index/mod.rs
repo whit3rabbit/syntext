@@ -7,16 +7,18 @@
 //! index ready for search.
 
 pub mod manifest;
-pub mod merge;
 pub mod overlay;
 pub mod segment;
+mod stats;
+pub mod walk;
+
+pub use walk::is_binary;
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
-use ignore::WalkBuilder;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use xxhash_rust::xxh64::xxh64;
@@ -24,6 +26,7 @@ use xxhash_rust::xxh64::xxh64;
 use crate::index::manifest::{Manifest, SegmentRef};
 use crate::index::overlay::{compute_delete_set, OverlayView, PendingEdits};
 use crate::index::segment::{MmapSegment, SegmentWriter};
+use crate::index::walk::{enumerate_files, split_batches};
 use crate::path::PathIndex;
 use crate::tokenizer::build_all;
 use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
@@ -46,11 +49,36 @@ pub struct IndexSnapshot {
     pub delete_set: RoaringBitmap,
     /// Roaring-bitmap component index for path-scoped queries.
     pub path_index: PathIndex,
+    /// Maps global doc_id -> PathIndex file_id for O(1) path filter lookup.
+    /// Value is u32::MAX for docs with no PathIndex entry.
+    pub doc_to_file_id: Vec<u32>,
+    /// Cached bitmap of all valid doc IDs. Lazy-initialized on first access.
+    all_doc_ids_cache: OnceLock<RoaringBitmap>,
 }
 
 impl IndexSnapshot {
     pub fn base_segments(&self) -> &[MmapSegment] { &self.base.segments }
     pub fn segment_base_ids(&self) -> &[u32] { &self.base.base_ids }
+
+    /// All valid global doc IDs (base minus deleted, plus overlay). Cached.
+    pub fn all_doc_ids(&self) -> &RoaringBitmap {
+        self.all_doc_ids_cache.get_or_init(|| {
+            let mut bm = RoaringBitmap::new();
+            for (seg_idx, seg) in self.base.segments.iter().enumerate() {
+                let base = self.base.base_ids.get(seg_idx).copied().unwrap_or(0);
+                for local in 0..seg.doc_count {
+                    let global = base + local;
+                    if !self.delete_set.contains(global) {
+                        bm.insert(global);
+                    }
+                }
+            }
+            for doc in &self.overlay.docs {
+                bm.insert(doc.doc_id);
+            }
+            bm
+        })
+    }
 }
 
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
@@ -182,11 +210,22 @@ impl Index {
             base_ids: segment_base_ids,
         });
 
+        let doc_to_file_id = path_index.build_doc_to_file_id(
+            next_global_id as usize,
+            |gid| {
+                let seg_idx = base.base_ids.partition_point(|&b| b <= gid).saturating_sub(1);
+                let local = gid.checked_sub(base.base_ids[seg_idx])?;
+                base.segments[seg_idx].get_doc(local).map(|d| d.path)
+            },
+        );
+
         let snapshot = Arc::new(IndexSnapshot {
             base,
             overlay: OverlayView::empty(),
             delete_set: RoaringBitmap::new(),
             path_index,
+            doc_to_file_id,
+            all_doc_ids_cache: OnceLock::new(),
         });
 
         Ok(Index {
@@ -199,44 +238,7 @@ impl Index {
     /// Return index statistics from the current snapshot.
     pub fn stats(&self) -> IndexStats {
         let snap = self.snapshot.load();
-        let snap = snap.as_ref();
-        let total_docs: usize = snap.base.segments.iter().map(|s| s.doc_count as usize).sum();
-        let total_grams: usize = snap.base.segments.iter().map(|s| s.gram_count as usize).sum();
-        let manifest_size = self
-            .config
-            .index_dir
-            .join("manifest.json")
-            .metadata()
-            .map(|m| m.len())
-            .unwrap_or(0);
-        // Sum segment file sizes from the manifest entries on disk.
-        let seg_size: u64 = if let Ok(manifest) = Manifest::load(&self.config.index_dir) {
-            manifest
-                .segments
-                .iter()
-                .map(|sr| {
-                    self.config
-                        .index_dir
-                        .join(&sr.filename)
-                        .metadata()
-                        .map(|m| m.len())
-                        .unwrap_or(0)
-                })
-                .sum()
-        } else {
-            0
-        };
-        let index_size_bytes: u64 = manifest_size + seg_size;
-
-        IndexStats {
-            total_documents: total_docs,
-            total_segments: snap.base.segments.len(),
-            total_grams,
-            index_size_bytes,
-            base_commit: None,
-            overlay_generations: 0,
-            pending_edits: 0,
-        }
+        stats::compute_stats(snap.as_ref(), &self.config)
     }
 
     /// Search for a pattern (literal or regex) across the indexed repository.
@@ -347,11 +349,27 @@ impl Index {
         all_paths.dedup();
         let path_index = PathIndex::build(&all_paths);
 
+        let total_ids = overlay.docs.iter().map(|d| d.doc_id + 1).max()
+            .unwrap_or(base_doc_count) as usize;
+        let doc_to_file_id = path_index.build_doc_to_file_id(total_ids, |gid| {
+            // Check overlay first (overlay doc_ids >= base_doc_count).
+            if let Some(doc) = overlay.get_doc(gid) {
+                return Some(doc.path.clone());
+            }
+            if delete_set.contains(gid) { return None; }
+            let seg_idx = old_snap.base.base_ids
+                .partition_point(|&b| b <= gid).saturating_sub(1);
+            let local = gid.checked_sub(old_snap.base.base_ids[seg_idx])?;
+            old_snap.base.segments[seg_idx].get_doc(local).map(|d| d.path)
+        });
+
         let new_snap = Arc::new(IndexSnapshot {
             base: Arc::clone(&old_snap.base),
             overlay,
             delete_set,
             path_index,
+            doc_to_file_id,
+            all_doc_ids_cache: OnceLock::new(),
         });
 
         self.snapshot.store(new_snap);
@@ -365,70 +383,3 @@ impl Index {
     }
 }
 
-type FileRecord = (PathBuf, String, u64);
-
-/// Walk the repository collecting indexable files. Respects `.gitignore`.
-fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
-    let mut files: Vec<FileRecord> = Vec::new();
-
-    let walker = WalkBuilder::new(&config.repo_root)
-        .hidden(false) // include hidden files (gitignore handles exclusions)
-        .git_ignore(true)
-        .follow_links(false)
-        .build();
-
-    for result in walker {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue, // skip unreadable entries
-        };
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let size = match path.metadata() {
-            Ok(m) => m.len(),
-            Err(_) => continue,
-        };
-        if size > config.max_file_size {
-            continue;
-        }
-        let rel = match path.strip_prefix(&config.repo_root) {
-            Ok(r) => r.to_string_lossy().into_owned(),
-            Err(_) => continue,
-        };
-        // Normalize path separators to forward slashes for consistency.
-        let rel = rel.replace('\\', "/");
-        files.push((path.to_path_buf(), rel, size));
-    }
-
-    files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-    Ok(files)
-}
-
-/// Partition files into batches of approximately `batch_limit` bytes.
-fn split_batches(files: &[FileRecord], batch_limit: u64) -> Vec<Vec<FileRecord>> {
-    let mut batches: Vec<Vec<FileRecord>> = Vec::new();
-    let mut current: Vec<FileRecord> = Vec::new();
-    let mut current_size: u64 = 0;
-
-    for record in files {
-        let size = record.2;
-        if !current.is_empty() && current_size + size > batch_limit {
-            batches.push(std::mem::take(&mut current));
-            current_size = 0;
-        }
-        current_size += size;
-        current.push(record.clone());
-    }
-    if !current.is_empty() {
-        batches.push(current);
-    }
-    batches
-}
-
-/// Returns `true` if content has a null byte in the first 8KB (binary heuristic).
-pub fn is_binary(content: &[u8]) -> bool {
-    let check = content.len().min(8192);
-    content[..check].contains(&0u8)
-}

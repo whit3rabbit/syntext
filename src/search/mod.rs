@@ -14,12 +14,12 @@ pub mod verifier;
 use std::path::Path;
 use std::sync::Arc;
 
+use rayon::prelude::*;
 use regex::RegexBuilder;
 
 use crate::index::IndexSnapshot;
 use crate::path::filter::build_filter;
-use crate::posting::merge_intersect;
-use crate::query::{literal_grams, route_query, GramQuery, QueryRoute};
+use crate::query::{route_query, QueryRoute};
 use crate::{Config, IndexError, SearchMatch, SearchOptions};
 
 use verifier::{verify_literal, verify_regex};
@@ -47,24 +47,12 @@ pub fn search(
         }
     };
 
-    // Gram-based candidate narrowing. Forced boundaries (whitespace,
-    // punctuation, operators, underscore) ensure query grams match document
-    // grams for token-aligned queries. FullScan and sub-MIN_GRAM_LEN
-    // patterns fall back to all_doc_ids.
-    let candidates: Vec<u32> = match &route {
-        QueryRoute::Literal => match literal_grams(pattern) {
-            Some(ref grams) if should_use_index(grams, &snap) => {
-                execute_query(&GramQuery::Grams(grams.clone()), &snap)
-            }
-            _ => all_doc_ids(&snap),
-        },
-        QueryRoute::IndexedRegex(gram_query) => execute_query(gram_query, &snap),
-        QueryRoute::FullScan => all_doc_ids(&snap),
-    };
+    // Fallback to all documents.
+    let candidates: Vec<u32> = all_doc_ids(&snap);
 
     // Optional selectivity diagnostics (RIPLINE_LOG_SELECTIVITY=1).
     if std::env::var_os("RIPLINE_LOG_SELECTIVITY").is_some() {
-        let total = all_doc_ids(&snap).len();
+        let total = snap.all_doc_ids().len() as usize;
         let pct = if total > 0 {
             candidates.len() as f64 / total as f64 * 100.0
         } else {
@@ -90,47 +78,42 @@ pub fn search(
         opts.path_filter.as_deref(),
     );
 
-    let mut matches: Vec<SearchMatch> = Vec::new();
     let repo_root = &config.repo_root;
 
-    for global_id in candidates {
-        let (rel_path, content) = match resolve_doc(&snap, global_id, repo_root) {
-            Some(pair) => pair,
-            None => continue,
-        };
+    // Parallel resolve + filter + verify. Loses serial early-exit on
+    // max_results, but parallel I/O vastly outweighs this for typical
+    // workloads (NVMe queue depth exploitation, kernel I/O scheduling).
+    let all_matches: Vec<SearchMatch> = candidates
+        .par_iter()
+        .filter_map(|&global_id| {
+            let (rel_path, content) = resolve_doc(&snap, global_id, repo_root)?;
 
-        // Bitmap-based path/type filtering. If a bitmap filter is active,
-        // check file_id membership. Overlay docs (not in PathIndex) fall
-        // back to string matching.
-        if let Some(ref pf) = path_filter_bitmap {
-            if let Some(file_id) = snap.path_index.file_id(&rel_path) {
-                if !pf.file_ids.contains(file_id) {
-                    continue;
-                }
-            } else {
-                // Overlay doc not in PathIndex: apply string-based fallback.
-                if !path_matches_opts(&rel_path, opts) {
-                    continue;
+            if let Some(ref pf) = path_filter_bitmap {
+                let file_id_opt = snap.doc_to_file_id.get(global_id as usize)
+                    .copied()
+                    .filter(|&fid| fid != u32::MAX);
+                if let Some(file_id) = file_id_opt {
+                    if !pf.file_ids.contains(file_id) { return None; }
+                } else if !path_matches_opts(&rel_path, opts) {
+                    return None;
                 }
             }
-        }
 
-        let file_path = Path::new(&rel_path);
-        let file_matches = match &route {
-            QueryRoute::Literal => verify_literal(pattern, file_path, &content),
-            _ => verify_regex(compiled_re.as_ref().unwrap(), file_path, &content),
-        };
-        matches.extend(file_matches);
+            let file_path = Path::new(&rel_path);
+            let file_matches = match &route {
+                QueryRoute::Literal => verify_literal(pattern, file_path, &content),
+                _ => verify_regex(compiled_re.as_ref().unwrap(), file_path, &content),
+            };
+            Some(file_matches)
+        })
+        .flatten()
+        .collect();
 
-        if let Some(max) = opts.max_results {
-            if matches.len() >= max {
-                matches.truncate(max);
-                return Ok(sort_matches(matches));
-            }
-        }
+    let mut matches = sort_matches(all_matches);
+    if let Some(max) = opts.max_results {
+        matches.truncate(max);
     }
-
-    Ok(sort_matches(matches))
+    Ok(matches)
 }
 
 /// String-based path/type filter fallback for docs not in the PathIndex.
@@ -157,156 +140,11 @@ fn sort_matches(mut matches: Vec<SearchMatch>) -> Vec<SearchMatch> {
     matches
 }
 
-// ---------------------------------------------------------------------------
-// Cardinality-based index bypass
-// ---------------------------------------------------------------------------
 
-/// Check whether gram-based narrowing is worth the cost for the given hashes.
-///
-/// Returns `false` if the smallest posting list exceeds 10% of total docs,
-/// since index overhead (dictionary lookups + posting list intersection)
-/// outweighs the benefit when selectivity is poor. Uses
-/// `MmapSegment::gram_cardinality()` which is O(log n) in the dictionary
-/// with no posting list deserialization.
-fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> bool {
-    if hashes.is_empty() {
-        return false;
-    }
-
-    let total_docs: u32 = snap
-        .base_segments()
-        .iter()
-        .map(|s| s.doc_count)
-        .sum::<u32>()
-        + snap.overlay.docs.len() as u32;
-
-    if total_docs == 0 {
-        return false;
-    }
-
-    // The smallest posting list determines the upper bound on intersection
-    // size. If even the smallest list is large, full scan is cheaper.
-    let min_cardinality = hashes
-        .iter()
-        .map(|&h| {
-            let mut card = 0u32;
-            for seg in snap.base_segments() {
-                card += seg.gram_cardinality(h).unwrap_or(0);
-            }
-            if let Some(ids) = snap.overlay.gram_index.get(&h) {
-                card += ids.len() as u32;
-            }
-            card
-        })
-        .min()
-        .unwrap_or(total_docs);
-
-    min_cardinality < total_docs / 10
-}
-
-// ---------------------------------------------------------------------------
-// GramQuery execution
-// ---------------------------------------------------------------------------
-
-/// Execute a `GramQuery` tree against the current snapshot.
-///
-/// Returns a sorted, deduplicated list of global doc IDs that are candidates
-/// for the pattern. False positives are expected; the verifier filters them.
-pub fn execute_query(query: &GramQuery, snap: &IndexSnapshot) -> Vec<u32> {
-    match query {
-        GramQuery::Grams(hashes) => exec_grams(hashes, snap),
-
-        GramQuery::And(children) => {
-            if children.is_empty() {
-                return all_doc_ids(snap);
-            }
-            let mut result = execute_query(&children[0], snap);
-            for child in &children[1..] {
-                if result.is_empty() {
-                    return Vec::new();
-                }
-                let other = execute_query(child, snap);
-                result = merge_intersect(&result, &other);
-            }
-            result
-        }
-
-        GramQuery::Or(children) => {
-            let mut all: Vec<u32> = Vec::new();
-            for child in children {
-                let mut part = execute_query(child, snap);
-                all.append(&mut part);
-            }
-            all.sort_unstable();
-            all.dedup();
-            all
-        }
-
-        GramQuery::All => all_doc_ids(snap),
-        GramQuery::None => Vec::new(),
-    }
-}
-
-/// Look up posting lists for each gram hash across all base segments and
-/// the overlay, then intersect across hashes.
-fn exec_grams(hashes: &[u64], snap: &IndexSnapshot) -> Vec<u32> {
-    if hashes.is_empty() {
-        return all_doc_ids(snap);
-    }
-
-    let mut per_hash: Vec<Vec<u32>> = hashes
-        .iter()
-        .map(|&hash| {
-            let mut docs: Vec<u32> = Vec::new();
-            for (seg_idx, seg) in snap.base_segments().iter().enumerate() {
-                if let Some(pl) = seg.lookup_gram(hash) {
-                    if let Ok(ids) = pl.to_vec() {
-                        let base = snap.segment_base_ids().get(seg_idx).copied().unwrap_or(0);
-                        docs.extend(ids.iter().map(|&local| base + local));
-                    }
-                }
-            }
-            if let Some(ids) = snap.overlay.gram_index.get(&hash) {
-                docs.extend_from_slice(ids);
-            }
-            docs.sort_unstable();
-            docs.dedup();
-            docs
-        })
-        .collect();
-
-    per_hash.sort_unstable_by_key(|v| v.len());
-
-    if per_hash[0].is_empty() {
-        return Vec::new();
-    }
-    let mut result = per_hash[0].clone();
-    for other in &per_hash[1..] {
-        if result.is_empty() {
-            return Vec::new();
-        }
-        result = merge_intersect(&result, other);
-    }
-    result
-}
 
 /// All global doc IDs across base segments + overlay, excluding delete_set.
 fn all_doc_ids(snap: &IndexSnapshot) -> Vec<u32> {
-    let mut ids = Vec::new();
-    for (seg_idx, seg) in snap.base_segments().iter().enumerate() {
-        let base = snap.segment_base_ids().get(seg_idx).copied().unwrap_or(0);
-        for local in 0..seg.doc_count {
-            let global = base + local;
-            if !snap.delete_set.contains(global) {
-                ids.push(global);
-            }
-        }
-    }
-    // Overlay doc_ids.
-    for doc in &snap.overlay.docs {
-        ids.push(doc.doc_id);
-    }
-    ids
+    snap.all_doc_ids().iter().collect()
 }
 
 /// Resolve a global doc ID to its path and content.

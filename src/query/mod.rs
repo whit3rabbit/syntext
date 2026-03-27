@@ -5,7 +5,6 @@
 //! - IndexedRegex: HIR decomposition yields grams, use posting list intersection.
 //! - FullScan: no extractable grams (e.g. `.*`), scan all candidate files.
 
-pub mod planner;
 pub mod regex_decompose;
 
 use crate::tokenizer::build_covering;

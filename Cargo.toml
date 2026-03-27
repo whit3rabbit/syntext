@@ -25,7 +25,6 @@ roaring = "0.11"
 rayon = "1"
 
 # Zero-copy segment format
-zerocopy = { version = "0.8", features = ["derive"] }
 
 # Lock-free snapshot swapping
 arc-swap = "1"

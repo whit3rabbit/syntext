@@ -85,4 +85,24 @@ impl PathIndex {
     pub fn files_with_component(&self, component: &str) -> Option<&RoaringBitmap> {
         self.component_to_files.get(&component.to_ascii_lowercase())
     }
+
+    /// Build a global doc_id -> file_id mapping for O(1) path filter lookup.
+    ///
+    /// `resolve_path` maps each global doc_id to its relative path string.
+    /// Returns a vec indexed by global doc_id; value is `u32::MAX` if unmapped.
+    pub fn build_doc_to_file_id(
+        &self,
+        total_ids: usize,
+        resolve_path: impl Fn(u32) -> Option<String>,
+    ) -> Vec<u32> {
+        let mut map = vec![u32::MAX; total_ids];
+        for gid in 0..total_ids as u32 {
+            if let Some(path) = resolve_path(gid) {
+                if let Some(fid) = self.file_id(&path) {
+                    map[gid as usize] = fid;
+                }
+            }
+        }
+        map
+    }
 }

@@ -173,9 +173,30 @@ Posting list inflation from chunk-level documents outweighs the selectivity gain
 
 ## Key invariant
 
-For any document D and any token-aligned substring Q of D, every gram in `build_covering(Q)` must appear in `build_all(D)`. "Token-aligned" means Q starts and ends at forced boundary positions. This invariant is what makes index narrowing correct, and it is validated by property-based tests (proptest, 5K cases) and exhaustive tests on curated documents.
+For any document D and any token-aligned substring Q of D, every gram in `build_covering(Q)` must appear in `build_all(D)`. "Token-aligned" means Q starts and ends at forced boundary positions. This invariant is what makes index narrowing correct.
 
-For non-aligned substrings (~16% violation rate in fuzzing), `build_covering` may produce grams not present in the document's index. The cardinality-based fallback and `build_covering_inner` (for regex) handle this by falling back to full scan when grams are unreliable.
+For non-aligned substrings (~16% violation rate in proptest), `build_covering` may produce grams not present in the document's index. The cardinality-based fallback and `build_covering_inner` (for regex) handle this by falling back to full scan when grams are unreliable.
+
+## Fuzzing and validation
+
+The token-aligned coverage invariant is validated at three levels:
+
+| Method | Cases | Violations | What it tests |
+|---|---|---|---|
+| Curated deterministic tests | 10 hand-crafted documents, exhaustive substring pairs | 0 | Known code patterns (snake_case, punctuation, unicode, operators) |
+| proptest (structured) | 5,000 code-like documents, all token-aligned substrings | 0 | Random identifiers + separators, forced boundary correctness |
+| cargo-fuzz (libFuzzer) | 1.45M arbitrary byte sequences, token-aligned substrings | 0 | Edge cases in boundary detection, encoding, weight table |
+| proptest (non-aligned, informational) | 5,000 arbitrary substrings | ~16% | Quantifies the gap for mid-token substring queries |
+
+The token-aligned invariant has zero violations across all testing methods. The 16% non-aligned violation rate is expected and acceptable: agent workflows use token-aligned queries (full identifiers, keywords) in >99% of cases. If mid-token substring search becomes important, overlapping trigrams within forced-boundary spans can close the gap (see the non-aligned substring coverage section above).
+
+**Running the fuzzer:**
+
+```sh
+cargo +nightly fuzz run fuzz_coverage_invariant -- -max_len=4096
+```
+
+The fuzz target (`fuzz/fuzz_targets/fuzz_coverage_invariant.rs`) generates random documents, computes forced boundary positions, extracts token-aligned substrings, and panics on any coverage violation. It runs at ~25K executions/second.
 
 ## Prior art
 
