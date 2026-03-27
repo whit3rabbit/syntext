@@ -66,7 +66,11 @@ fn modify_file_new_content_found() {
 
     // Modify the file: replace parse_query with transform_data
     let main_path = repo.path().join("src/main.rs");
-    fs::write(&main_path, "fn transform_data() { println!(\"changed\"); }\n").unwrap();
+    fs::write(
+        &main_path,
+        "fn transform_data() { println!(\"changed\"); }\n",
+    )
+    .unwrap();
 
     // Commit the change
     index.notify_change(&main_path).unwrap();
@@ -98,10 +102,7 @@ fn modify_file_old_content_gone() {
 
     // parse_query should no longer appear in src/main.rs results
     let results = search(&index, "parse_query");
-    let main_results: Vec<_> = results
-        .iter()
-        .filter(|(p, _)| p == "src/main.rs")
-        .collect();
+    let main_results: Vec<_> = results.iter().filter(|(p, _)| p == "src/main.rs").collect();
     assert!(
         main_results.is_empty(),
         "parse_query should not be in modified file, got {:?}",
@@ -127,10 +128,7 @@ fn delete_file_removes_from_results() {
 
     // Should no longer find results from deleted file
     let results = search(&index, "process_batch");
-    let lib_results: Vec<_> = results
-        .iter()
-        .filter(|(p, _)| p == "src/lib.rs")
-        .collect();
+    let lib_results: Vec<_> = results.iter().filter(|(p, _)| p == "src/lib.rs").collect();
     assert!(
         lib_results.is_empty(),
         "deleted file should not appear in results"
@@ -185,6 +183,42 @@ fn pending_new_file_invisible_before_commit() {
     );
 }
 
+#[test]
+fn empty_commit_batch_is_noop() {
+    let (_repo, _idx, index) = setup();
+
+    index.commit_batch().unwrap();
+    index.commit_batch().unwrap();
+
+    assert!(!search(&index, "parse_query").is_empty());
+    assert!(!search(&index, "process_batch").is_empty());
+}
+
+#[test]
+fn path_index_tracks_incremental_visible_paths() {
+    let (repo, _idx, index) = setup();
+
+    let new_path = repo.path().join("src/new_module.rs");
+    fs::write(&new_path, "fn brand_new_function() { 42 }\n").unwrap();
+    index.notify_change(&new_path).unwrap();
+    index.commit_batch().unwrap();
+
+    let snap = index.snapshot();
+    assert!(snap
+        .path_index
+        .paths
+        .iter()
+        .any(|p| p == "src/new_module.rs"));
+
+    let deleted_path = repo.path().join("src/lib.rs");
+    fs::remove_file(&deleted_path).unwrap();
+    index.notify_delete(&deleted_path).unwrap();
+    index.commit_batch().unwrap();
+
+    let snap = index.snapshot();
+    assert!(!snap.path_index.paths.iter().any(|p| p == "src/lib.rs"));
+}
+
 /// Adding a new file makes it searchable after commit.
 #[test]
 fn add_new_file() {
@@ -197,10 +231,7 @@ fn add_new_file() {
     index.commit_batch().unwrap();
 
     let results = search(&index, "brand_new_function");
-    assert!(
-        !results.is_empty(),
-        "newly added file should be searchable"
-    );
+    assert!(!results.is_empty(), "newly added file should be searchable");
 }
 
 /// Interleaved edits and searches maintain consistency.
@@ -224,7 +255,10 @@ fn interleaved_edit_search() {
     // first_edit should be gone, second_edit should be present
     let first = search(&index, "first_edit");
     let first_in_main: Vec<_> = first.iter().filter(|(p, _)| p == "src/main.rs").collect();
-    assert!(first_in_main.is_empty(), "first_edit should be gone from main.rs");
+    assert!(
+        first_in_main.is_empty(),
+        "first_edit should be gone from main.rs"
+    );
     assert!(!search(&index, "second_edit").is_empty());
 }
 
@@ -240,8 +274,14 @@ fn unmodified_files_still_searchable() {
     index.commit_batch().unwrap();
 
     // Other files should still be searchable
-    assert!(!search(&index, "process_batch").is_empty(), "unmodified lib.rs should still be searchable");
-    assert!(!search(&index, "helper").is_empty(), "unmodified util.rs should still be searchable");
+    assert!(
+        !search(&index, "process_batch").is_empty(),
+        "unmodified lib.rs should still be searchable"
+    );
+    assert!(
+        !search(&index, "helper").is_empty(),
+        "unmodified util.rs should still be searchable"
+    );
 }
 
 // ---------------------------------------------------------------------------

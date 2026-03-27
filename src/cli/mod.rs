@@ -487,6 +487,9 @@ mod tests {
         // cmd_update should not crash on a repo with no commits.
         // git diff HEAD fails, but we fall through to untracked file detection.
         let code = cmd_update(config, false, true);
-        assert_ne!(code, 2, "cmd_update should not error on repo with no commits");
+        assert_ne!(
+            code, 2,
+            "cmd_update should not error on repo with no commits"
+        );
     }
 }

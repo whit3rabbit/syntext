@@ -80,8 +80,14 @@ fn build_all_case_insensitive() {
     let lower = all_hashes(b"parse_query");
     let upper = all_hashes(b"PARSE_QUERY");
     let mixed = all_hashes(b"Parse_Query");
-    assert_eq!(lower, upper, "uppercase must produce same grams as lowercase");
-    assert_eq!(lower, mixed, "mixed case must produce same grams as lowercase");
+    assert_eq!(
+        lower, upper,
+        "uppercase must produce same grams as lowercase"
+    );
+    assert_eq!(
+        lower, mixed,
+        "mixed case must produce same grams as lowercase"
+    );
 }
 
 /// `build_covering` on uppercase must return same hashes as on lowercase.
@@ -120,7 +126,11 @@ fn single_token_one_gram() {
     // Only boundaries are at 0 and 3.
     let covering = build_covering(b"xyz");
     if let Some(hashes) = covering {
-        assert_eq!(hashes.len(), 1, "single token must produce exactly 1 covering gram");
+        assert_eq!(
+            hashes.len(),
+            1,
+            "single token must produce exactly 1 covering gram"
+        );
     }
     // If covering is None, that means the span is empty (can't happen for len=3),
     // OR the threshold is so high that even 0→3 span is below it (acceptable).
@@ -140,7 +150,10 @@ fn single_token_one_gram() {
 fn covering_subset_of_all_parse_query() {
     let all = all_hashes(b"parse_query");
     for h in covering_hashes(b"parse_query") {
-        assert!(all.contains(&h), "covering gram not in all-grams for 'parse_query'");
+        assert!(
+            all.contains(&h),
+            "covering gram not in all-grams for 'parse_query'"
+        );
     }
 }
 
@@ -148,7 +161,10 @@ fn covering_subset_of_all_parse_query() {
 fn covering_subset_of_all_process_batch() {
     let all = all_hashes(b"process_batch");
     for h in covering_hashes(b"process_batch") {
-        assert!(all.contains(&h), "covering gram not in all-grams for 'process_batch'");
+        assert!(
+            all.contains(&h),
+            "covering gram not in all-grams for 'process_batch'"
+        );
     }
 }
 
@@ -325,8 +341,8 @@ fn covering_subset_in_document_context() {
 
         // Test specific token-aligned queries within each document
         let queries: &[&[u8]] = &[
-            b"parse", b"query", b"process", b"batch", b"HashMap",
-            b"result", b"self", b"name", b"args", b"items",
+            b"parse", b"query", b"process", b"batch", b"HashMap", b"result", b"self", b"name",
+            b"args", b"items",
         ];
         for q in queries {
             if let Some(covering) = build_covering(q) {

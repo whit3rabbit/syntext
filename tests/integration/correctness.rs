@@ -40,6 +40,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Oracle helpers
@@ -116,6 +117,11 @@ fn corpus_path() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR not set; run via cargo test");
     PathBuf::from(manifest).join("tests/fixtures/corpus")
+}
+
+fn correctness_build_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +229,7 @@ fn assert_exact_match(
 /// Exact literal: `parse_query` appears in 3+ files.
 #[test]
 fn literal_parse_query() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -242,6 +249,7 @@ fn literal_parse_query() {
 /// Exact literal: `process_batch` appears in 2+ files.
 #[test]
 fn literal_process_batch() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -261,6 +269,7 @@ fn literal_process_batch() {
 /// Literal with punctuation: `parse_query(` -- the `(` is part of the literal.
 #[test]
 fn literal_with_punctuation() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -282,6 +291,7 @@ fn literal_with_punctuation() {
 /// Regex alternation: `parse_query|process_batch`.
 #[test]
 fn regex_alternation() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -305,6 +315,7 @@ fn regex_alternation() {
 /// Regex character class: `parse_quer[yi]` (matches parse_query and parse_queri).
 #[test]
 fn regex_character_class() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -323,6 +334,7 @@ fn regex_character_class() {
 /// Indexed regex repetition: `(fn_parse_filter_query)+`.
 #[test]
 fn indexed_regex_repetition() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -346,6 +358,7 @@ fn indexed_regex_repetition() {
 /// Case-insensitive literal: `-i ParseQuery` matches parseQuery, PARSE_QUERY, etc.
 #[test]
 fn case_insensitive_literal() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -374,6 +387,7 @@ fn case_insensitive_literal() {
 /// No-match pattern: must return empty result set.
 #[test]
 fn no_match_pattern() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -397,6 +411,7 @@ fn no_match_pattern() {
 /// Unicode content: `café` (non-ASCII in a Python identifier).
 #[test]
 fn unicode_identifier() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -426,6 +441,7 @@ fn unicode_identifier() {
 /// This test explicitly verifies that behavior does not regress.
 #[test]
 fn optional_prefix_pattern() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -452,6 +468,7 @@ fn optional_prefix_pattern() {
 /// ripline must find every file that rg finds -- no false negatives.
 #[test]
 fn dot_star_fallback_to_scan() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -473,6 +490,7 @@ fn dot_star_fallback_to_scan() {
 /// Must only return Python files, not Rust, Go, etc.
 #[test]
 fn path_filter_py_only() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -516,6 +534,7 @@ fn path_filter_py_only() {
 /// The corpus `.gitignore` ignores `build/`. The indexer must respect it.
 #[test]
 fn gitignore_excludes_build_dir() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;
@@ -548,6 +567,7 @@ fn gitignore_excludes_build_dir() {
 /// Read up to max_file_size bytes and verify against truncated content.
 #[test]
 fn search_finds_match_in_file_that_grew_beyond_max_size() {
+    let _guard = correctness_build_lock().lock().unwrap();
     let repo = tempfile::TempDir::new().unwrap();
     let index_dir = tempfile::TempDir::new().unwrap();
 
@@ -565,7 +585,11 @@ fn search_finds_match_in_file_that_grew_beyond_max_size() {
     // Baseline: found before growth.
     let opts = SearchOptions::default();
     let results = index.search("unique_sentinel_xyzzy", &opts).unwrap();
-    assert_eq!(results.len(), 1, "baseline: must find match in original file");
+    assert_eq!(
+        results.len(),
+        1,
+        "baseline: must find match in original file"
+    );
 
     // Bloat the file: original content at the start, then padding.
     // The sentinel is in the first 1024 bytes, so truncated read finds it.
@@ -589,6 +613,7 @@ fn search_finds_match_in_file_that_grew_beyond_max_size() {
 /// oracle harness is unreliable and we need to investigate.
 #[test]
 fn oracle_is_deterministic() {
+    let _guard = correctness_build_lock().lock().unwrap();
     if !rg_available() {
         eprintln!("SKIP: rg not on PATH");
         return;

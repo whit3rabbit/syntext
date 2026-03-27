@@ -126,6 +126,7 @@ All PRs must pass before merge:
 - **No FM-index for v1**. Construction time 10x slower, locate is expensive, zero incrementality. Valid v2 path.
 - **No content-defined chunking for v1**. Most files are small, posting list inflation outweighs gains. Block-level positional data is the preferred v2 alternative.
 - **Lowercase normalization** at index time. ~15-20% more candidates for case-sensitive queries, eliminated by verifier. Dual dictionary is a v2 option.
+- **Stable file IDs are a long-term choice** for incremental path-index maintenance, even though the first implementation regressed `commit_batch`; compare against `docs/PERFORMANCE_BASELINE.md` before changing course.
 - **File-level documents**, not chunks. Segment format uses u32 IDs that can represent chunk_ids later.
 - **Full reindex at 30% overlay threshold** is the only mechanism that cleans stale doc_ids from base segments. Overlay compaction is not needed (single merged view).
 

@@ -6,8 +6,18 @@ use crate::{Config, IndexStats};
 
 /// Compute index statistics from the current snapshot and config.
 pub fn compute_stats(snap: &IndexSnapshot, config: &Config) -> IndexStats {
-    let total_docs: usize = snap.base.segments.iter().map(|s| s.doc_count as usize).sum();
-    let total_grams: usize = snap.base.segments.iter().map(|s| s.gram_count as usize).sum();
+    let total_docs: usize = snap
+        .base
+        .segments
+        .iter()
+        .map(|s| s.doc_count as usize)
+        .sum();
+    let total_grams: usize = snap
+        .base
+        .segments
+        .iter()
+        .map(|s| s.gram_count as usize)
+        .sum();
     let manifest_size = config
         .index_dir
         .join("manifest.json")

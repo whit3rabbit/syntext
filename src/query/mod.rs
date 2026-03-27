@@ -107,9 +107,12 @@ pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, 
 ///
 /// Metacharacters: `. * + ? [ ] { } ( ) | ^ $ \`
 pub fn is_literal(pattern: &str) -> bool {
-    !pattern
-        .chars()
-        .any(|c| matches!(c, '.' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '^' | '$' | '\\'))
+    !pattern.chars().any(|c| {
+        matches!(
+            c,
+            '.' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '^' | '$' | '\\'
+        )
+    })
 }
 
 /// Extract covering gram hashes from a literal pattern.

@@ -167,6 +167,24 @@ FM-index gives O(m) substring lookup for any query, but construction is 10x slow
 
 Most source files are small enough that file-level granularity is sufficient. The segment format uses u32 doc IDs that can represent chunk IDs later if block-level positional indexing is needed.
 
+### Stable file IDs for the path index
+
+The path index originally used `file_id = sorted path position`. That is simple and fast to build, but it makes incremental maintenance awkward: inserting or deleting one path can renumber many file IDs, which forces broad rebuilds of path-scoped structures (`extension_to_files`, `component_to_files`, `doc_to_file_id`).
+
+We intentionally chose to move toward **stable file IDs** even though the first measured implementation did **not** improve `commit_batch()` yet. The benchmark history in [`docs/PERFORMANCE_BASELINE.md`](/Users/whit3rabbit/Documents/GitHub/ripline/docs/PERFORMANCE_BASELINE.md) now shows the full arc:
+
+- Query latency stayed roughly flat.
+- Full build stayed in the same range, with a small bookkeeping cost.
+- `commit_batch_single_edit` regressed at first, then improved materially once incremental extension/component bitmap maintenance was added.
+
+This is still the correct long-term direction because stable file IDs are the prerequisite for truly incremental path-index maintenance. Without them, unchanged paths cannot keep identity across edits, so extension/component bitmaps and doc-to-file mappings keep paying global rebuild costs.
+
+Decision:
+
+- Keep the stable-file-ID design.
+- Judge future path-index work against the recorded benchmark history, not intuition.
+- Require follow-on changes to preserve the current `commit_batch_single_edit` win while watching for build-time or query-time regressions on larger corpora.
+
 ### No content-defined chunking for v1
 
 Posting list inflation from chunk-level documents outweighs the selectivity gains for typical source files. Block-level positional data is the preferred v2 alternative.

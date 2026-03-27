@@ -89,16 +89,14 @@ impl Manifest {
     pub fn load(index_dir: &Path) -> io::Result<Self> {
         let path = index_dir.join(Self::FILENAME);
         let data = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&data)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Atomically persist the manifest to `index_dir/manifest.json`.
     pub fn save(&self, index_dir: &Path) -> io::Result<()> {
         let tmp = index_dir.join("manifest.json.tmp");
         let final_path = index_dir.join(Self::FILENAME);
-        let json = serde_json::to_string_pretty(self)
-            .map_err(io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         std::fs::write(&tmp, json)?;
         std::fs::rename(tmp, final_path)?;
         Ok(())

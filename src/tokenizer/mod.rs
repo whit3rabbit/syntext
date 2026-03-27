@@ -321,7 +321,10 @@ mod tests {
         // "PARSE" and "parse" must produce the same gram hashes
         let upper = build_all(b"PARSE_QUERY");
         let lower = build_all(b"parse_query");
-        assert_eq!(upper, lower, "uppercase and lowercase must produce same grams");
+        assert_eq!(
+            upper, lower,
+            "uppercase and lowercase must produce same grams"
+        );
     }
 
     #[test]
@@ -380,4 +383,3 @@ mod tests {
         assert!(build_covering(&input).is_none());
     }
 }
-

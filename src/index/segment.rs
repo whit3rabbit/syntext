@@ -7,7 +7,6 @@
 //! All integers are little-endian. The xxhash64 checksum in the footer
 //! covers all bytes before the footer (file_len - 48 bytes).
 
-use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
@@ -64,8 +63,8 @@ pub struct SegmentMeta {
 /// Accumulates documents and gram postings, then serializes to an RPLX file.
 pub struct SegmentWriter {
     docs: Vec<DocEntry>,
-    /// gram_hash -> unsorted doc_ids (sorted at write time)
-    postings: BTreeMap<u64, Vec<u32>>,
+    /// Unsorted `(gram_hash, doc_id)` pairs, aggregated at write time.
+    postings: Vec<(u64, u32)>,
 }
 
 impl Default for SegmentWriter {
@@ -77,7 +76,10 @@ impl Default for SegmentWriter {
 impl SegmentWriter {
     /// Create a new segment writer.
     pub fn new() -> Self {
-        SegmentWriter { docs: Vec::new(), postings: BTreeMap::new() }
+        SegmentWriter {
+            docs: Vec::new(),
+            postings: Vec::new(),
+        }
     }
 
     /// Number of documents added to this writer.
@@ -87,12 +89,17 @@ impl SegmentWriter {
 
     /// Add a document to the segment.
     pub fn add_document(&mut self, doc_id: u32, path: &str, content_hash: u64, size_bytes: u64) {
-        self.docs.push(DocEntry { doc_id, content_hash, size_bytes, path: path.to_owned() });
+        self.docs.push(DocEntry {
+            doc_id,
+            content_hash,
+            size_bytes,
+            path: path.to_owned(),
+        });
     }
 
     /// Add a gram posting for a given document.
     pub fn add_gram_posting(&mut self, gram_hash: u64, doc_id: u32) {
-        self.postings.entry(gram_hash).or_default().push(doc_id);
+        self.postings.push((gram_hash, doc_id));
     }
 
     /// Write segment into `dir`, naming it `{uuid}.seg`.
@@ -105,7 +112,12 @@ impl SegmentWriter {
         let path = dir.join(&filename);
         let (bytes, doc_count, gram_count) = self.serialize()?;
         std::fs::write(&path, &bytes)?;
-        Ok(SegmentMeta { segment_id, filename, doc_count, gram_count })
+        Ok(SegmentMeta {
+            segment_id,
+            filename,
+            doc_count,
+            gram_count,
+        })
     }
 
     /// Write segment to an explicit `path` (used in unit tests with `NamedTempFile`).
@@ -120,19 +132,33 @@ impl SegmentWriter {
             .to_owned();
         let (bytes, doc_count, gram_count) = self.serialize()?;
         std::fs::write(path, &bytes)?;
-        Ok(SegmentMeta { segment_id, filename, doc_count, gram_count })
+        Ok(SegmentMeta {
+            segment_id,
+            filename,
+            doc_count,
+            gram_count,
+        })
     }
 
     /// Build the on-disk byte representation. Returns `(bytes, doc_count, gram_count)`.
     fn serialize(&mut self) -> io::Result<(Vec<u8>, u32, u32)> {
         self.docs.sort_by_key(|d| d.doc_id);
-        for ids in self.postings.values_mut() {
-            ids.sort_unstable();
-            ids.dedup();
-        }
+        self.postings.sort_unstable();
+        self.postings.dedup();
 
         let doc_count = self.docs.len() as u32;
-        let gram_count = self.postings.len() as u32;
+        let gram_count = self
+            .postings
+            .iter()
+            .map(|(gram_hash, _)| *gram_hash)
+            .fold((None, 0u32), |(prev, count), gram_hash| {
+                if prev == Some(gram_hash) {
+                    (prev, count)
+                } else {
+                    (Some(gram_hash), count + 1)
+                }
+            })
+            .1;
         let mut buf: Vec<u8> = Vec::new();
 
         // Header (40 bytes)
@@ -167,20 +193,34 @@ impl SegmentWriter {
 
         // Postings Section
         let postings_offset = buf.len() as u64;
-        let mut dict_entries: Vec<(u64, u64, u32)> = Vec::with_capacity(self.postings.len());
-        for (&gram_hash, doc_ids) in &self.postings {
+        let mut dict_entries: Vec<(u64, u64, u32)> = Vec::new();
+        let mut posting_idx = 0usize;
+        while posting_idx < self.postings.len() {
+            let gram_hash = self.postings[posting_idx].0;
+            let group_start = posting_idx;
+            posting_idx += 1;
+            while posting_idx < self.postings.len() && self.postings[posting_idx].0 == gram_hash {
+                posting_idx += 1;
+            }
+
             let posting_abs_off = buf.len() as u64;
+            let doc_ids: Vec<u32> = self.postings[group_start..posting_idx]
+                .iter()
+                .map(|(_, doc_id)| *doc_id)
+                .collect();
             let entry_count = doc_ids.len() as u32;
             if doc_ids.len() >= ROARING_THRESHOLD {
                 let mut bm = RoaringBitmap::new();
-                for &id in doc_ids { bm.insert(id); }
+                for id in doc_ids.iter().copied() {
+                    bm.insert(id);
+                }
                 let rbytes = roaring_util::serialize(&bm);
                 buf.push(1u8);
                 buf.extend_from_slice(&entry_count.to_le_bytes());
                 buf.extend_from_slice(&(rbytes.len() as u32).to_le_bytes());
                 buf.extend_from_slice(&rbytes);
             } else {
-                let encoded = varint_encode(doc_ids);
+                let encoded = varint_encode(&doc_ids);
                 buf.push(0u8);
                 buf.extend_from_slice(&entry_count.to_le_bytes());
                 buf.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
@@ -188,6 +228,7 @@ impl SegmentWriter {
             }
             dict_entries.push((gram_hash, posting_abs_off, entry_count));
         }
+        debug_assert_eq!(gram_count, dict_entries.len() as u32);
 
         // Page-align for dictionary
         let dict_offset = {
@@ -205,19 +246,20 @@ impl SegmentWriter {
 
         // Patch header offsets
         buf[hdr_offsets_pos..hdr_offsets_pos + 8].copy_from_slice(&doc_table_offset.to_le_bytes());
-        buf[hdr_offsets_pos + 8..hdr_offsets_pos + 16].copy_from_slice(&postings_offset.to_le_bytes());
+        buf[hdr_offsets_pos + 8..hdr_offsets_pos + 16]
+            .copy_from_slice(&postings_offset.to_le_bytes());
         buf[hdr_offsets_pos + 16..hdr_offsets_pos + 24].copy_from_slice(&dict_offset.to_le_bytes());
 
         // TOC Footer
         let checksum = xxh64(&buf, 0);
         buf.extend_from_slice(&doc_table_offset.to_le_bytes()); // -48
-        buf.extend_from_slice(&postings_offset.to_le_bytes());  // -40
-        buf.extend_from_slice(&dict_offset.to_le_bytes());      // -32
-        buf.extend_from_slice(&doc_count.to_le_bytes());        // -24
-        buf.extend_from_slice(&gram_count.to_le_bytes());       // -20
-        buf.extend_from_slice(&checksum.to_le_bytes());         // -16
-        buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes());   // -8
-        buf.extend_from_slice(MAGIC);                           // -4
+        buf.extend_from_slice(&postings_offset.to_le_bytes()); // -40
+        buf.extend_from_slice(&dict_offset.to_le_bytes()); // -32
+        buf.extend_from_slice(&doc_count.to_le_bytes()); // -24
+        buf.extend_from_slice(&gram_count.to_le_bytes()); // -20
+        buf.extend_from_slice(&checksum.to_le_bytes()); // -16
+        buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes()); // -8
+        buf.extend_from_slice(MAGIC); // -4
 
         Ok((buf, doc_count, gram_count))
     }
@@ -248,8 +290,11 @@ impl MmapSegment {
     /// Open a segment file, verify magic, version, and checksum.
     pub fn open(path: &Path) -> Result<Self, IndexError> {
         let file = std::fs::File::open(path)?;
+        file.try_lock_shared()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         // SAFETY: file handle is retained in the struct for the lifetime of the
-        // mmap, keeping the inode alive. The mmap is read-only.
+        // mmap, keeping the inode alive. The file lock ensures no other process
+        // can truncate it. The mmap is read-only.
         let mmap = unsafe { Mmap::map(&file)? };
         let len = mmap.len();
 
@@ -259,23 +304,33 @@ impl MmapSegment {
 
         let corrupt = |msg: &str| IndexError::CorruptIndex(msg.into());
 
-        let footer = mmap.get(len - FOOTER_SIZE..)
+        let footer = mmap
+            .get(len - FOOTER_SIZE..)
             .ok_or_else(|| corrupt("truncated: cannot read footer"))?;
         if footer.get(44..48) != Some(MAGIC.as_slice()) {
             return Err(corrupt("bad footer magic"));
         }
         let version = u32::from_le_bytes(
-            footer.get(40..44).ok_or_else(|| corrupt("truncated footer"))?
-                .try_into().map_err(|_| corrupt("footer slice"))?
+            footer
+                .get(40..44)
+                .ok_or_else(|| corrupt("truncated footer"))?
+                .try_into()
+                .map_err(|_| corrupt("footer slice"))?,
         );
         if version != FORMAT_VERSION {
-            return Err(IndexError::CorruptIndex(format!("unsupported version {version}")));
+            return Err(IndexError::CorruptIndex(format!(
+                "unsupported version {version}"
+            )));
         }
         let stored_checksum = u64::from_le_bytes(
-            footer.get(32..40).ok_or_else(|| corrupt("truncated footer"))?
-                .try_into().map_err(|_| corrupt("footer slice"))?
+            footer
+                .get(32..40)
+                .ok_or_else(|| corrupt("truncated footer"))?
+                .try_into()
+                .map_err(|_| corrupt("footer slice"))?,
         );
-        let content = mmap.get(..len - FOOTER_SIZE)
+        let content = mmap
+            .get(..len - FOOTER_SIZE)
             .ok_or_else(|| corrupt("truncated: cannot read content"))?;
         if xxh64(content, 0) != stored_checksum {
             return Err(corrupt("checksum mismatch"));
@@ -284,25 +339,30 @@ impl MmapSegment {
             return Err(corrupt("bad header magic"));
         }
 
-        let doc_table_offset = u64::from_le_bytes(
-            footer[0..8].try_into().unwrap()) as usize;
-        let dict_offset = u64::from_le_bytes(
-            footer[16..24].try_into().unwrap()) as usize;
-        let doc_count = u32::from_le_bytes(
-            footer[24..28].try_into().unwrap());
-        let gram_count = u32::from_le_bytes(
-            footer[28..32].try_into().unwrap());
+        let doc_table_offset = u64::from_le_bytes(footer[0..8].try_into().unwrap()) as usize;
+        let dict_offset = u64::from_le_bytes(footer[16..24].try_into().unwrap()) as usize;
+        let doc_count = u32::from_le_bytes(footer[24..28].try_into().unwrap());
+        let gram_count = u32::from_le_bytes(footer[28..32].try_into().unwrap());
 
         Ok(MmapSegment {
-            _file: file, mmap, expected_len: len,
-            doc_count, gram_count, doc_table_offset, dict_offset,
+            _file: file,
+            mmap,
+            expected_len: len,
+            doc_count,
+            gram_count,
+            doc_table_offset,
+            dict_offset,
         })
     }
 
     /// O(1) check that the underlying file has not been truncated or extended
     /// since the segment was opened. Returns `None` if the mmap length changed.
     fn check_len(&self) -> Option<()> {
-        if self.mmap.len() == self.expected_len { Some(()) } else { None }
+        if self.mmap.len() == self.expected_len {
+            Some(())
+        } else {
+            None
+        }
     }
 
     /// Re-verify the segment checksum. O(file_size), not intended for per-query
@@ -311,20 +371,29 @@ impl MmapSegment {
         let len = self.mmap.len();
         if len != self.expected_len {
             return Err(IndexError::CorruptIndex(format!(
-                "segment size changed: expected {}, got {}", self.expected_len, len,
+                "segment size changed: expected {}, got {}",
+                self.expected_len, len,
             )));
         }
-        let content = self.mmap.get(..len - FOOTER_SIZE)
+        let content = self
+            .mmap
+            .get(..len - FOOTER_SIZE)
             .ok_or_else(|| IndexError::CorruptIndex("truncated".into()))?;
-        let footer = self.mmap.get(len - FOOTER_SIZE..)
+        let footer = self
+            .mmap
+            .get(len - FOOTER_SIZE..)
             .ok_or_else(|| IndexError::CorruptIndex("truncated".into()))?;
         let stored = u64::from_le_bytes(
-            footer.get(32..40)
+            footer
+                .get(32..40)
                 .ok_or_else(|| IndexError::CorruptIndex("truncated footer".into()))?
-                .try_into().map_err(|_| IndexError::CorruptIndex("footer slice".into()))?
+                .try_into()
+                .map_err(|_| IndexError::CorruptIndex("footer slice".into()))?,
         );
         if xxh64(content, 0) != stored {
-            return Err(IndexError::CorruptIndex("checksum mismatch on re-verify".into()));
+            return Err(IndexError::CorruptIndex(
+                "checksum mismatch on re-verify".into(),
+            ));
         }
         Ok(())
     }
@@ -357,7 +426,12 @@ impl MmapSegment {
         let size_bytes = u64::from_le_bytes(e.get(12..20)?.try_into().ok()?);
         let path_len = u16::from_le_bytes(e.get(20..22)?.try_into().ok()?) as usize;
         let path = String::from_utf8(e.get(22..22 + path_len)?.to_vec()).ok()?;
-        Some(DocEntry { doc_id: doc_id_r, content_hash, size_bytes, path })
+        Some(DocEntry {
+            doc_id: doc_id_r,
+            content_hash,
+            size_bytes,
+            path,
+        })
     }
 
     fn dict_lookup(&self, gram_hash: u64) -> Option<(usize, u32)> {
@@ -368,16 +442,14 @@ impl MmapSegment {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let base = mid * DICT_ENTRY_SIZE;
-            let mid_hash =
-                u64::from_le_bytes(dict.get(base..base + 8)?.try_into().ok()?);
+            let mid_hash = u64::from_le_bytes(dict.get(base..base + 8)?.try_into().ok()?);
             match mid_hash.cmp(&gram_hash) {
                 std::cmp::Ordering::Equal => {
-                    let abs_off = u64::from_le_bytes(
-                        dict.get(base + 8..base + 16)?.try_into().ok()?,
-                    ) as usize;
-                    let count = u32::from_le_bytes(
-                        dict.get(base + 16..base + 20)?.try_into().ok()?,
-                    );
+                    let abs_off =
+                        u64::from_le_bytes(dict.get(base + 8..base + 16)?.try_into().ok()?)
+                            as usize;
+                    let count =
+                        u32::from_le_bytes(dict.get(base + 16..base + 20)?.try_into().ok()?);
                     return Some((abs_off, count));
                 }
                 std::cmp::Ordering::Less => lo = mid + 1,
@@ -450,6 +522,27 @@ mod tests {
         assert_eq!(pl2.to_vec().unwrap(), vec![0]);
 
         assert!(seg.lookup_gram(0xCCCC).is_none());
+    }
+
+    #[test]
+    fn duplicate_postings_are_deduplicated() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, "src/main.rs", 0xDEAD, 100);
+        writer.add_document(1, "src/lib.rs", 0xBEEF, 200);
+        writer.add_gram_posting(0xAAAA, 0);
+        writer.add_gram_posting(0xAAAA, 0);
+        writer.add_gram_posting(0xAAAA, 1);
+
+        let meta = writer.write_to_file(tmp.path()).unwrap();
+        assert_eq!(meta.gram_count, 1);
+
+        let seg = MmapSegment::open(tmp.path()).unwrap();
+        assert_eq!(seg.gram_cardinality(0xAAAA), Some(2));
+        assert_eq!(
+            seg.lookup_gram(0xAAAA).unwrap().to_vec().unwrap(),
+            vec![0, 1]
+        );
     }
 
     #[test]

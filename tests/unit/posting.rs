@@ -1,8 +1,6 @@
 //! Unit tests for posting list encode/decode, intersection, and union.
 
-use ripline_rs::posting::{
-    varint_decode, varint_encode,
-};
+use ripline_rs::posting::{varint_decode, varint_encode};
 
 // ---------------------------------------------------------------------------
 // Delta-varint encode / decode round-trips

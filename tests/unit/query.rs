@@ -4,8 +4,8 @@
 //! contribute grams. This is not a bug -- it is required for correctness.
 //! Requiring "foo" grams would produce false negatives for inputs like "bazbar".
 
-use ripline_rs::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
 use ripline_rs::query::regex_decompose::decompose;
+use ripline_rs::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
 
 // ---------------------------------------------------------------------------
 // GramQuery::simplify tests
@@ -98,7 +98,8 @@ fn decompose_dot_star_between_literals() {
     let q = decompose("foo.*bar", false).unwrap().simplify();
     assert!(
         matches!(q, GramQuery::All),
-        "foo.*bar should fall to full scan with forced boundaries, got {:?}", q
+        "foo.*bar should fall to full scan with forced boundaries, got {:?}",
+        q
     );
 }
 
@@ -119,7 +120,8 @@ fn decompose_required_repetition() {
     let q = decompose("(parse_query)+", false).unwrap().simplify();
     assert!(
         matches!(q, GramQuery::All),
-        "(parse_query)+ should fall to full scan with forced boundaries, got {:?}", q
+        "(parse_query)+ should fall to full scan with forced boundaries, got {:?}",
+        q
     );
 }
 
@@ -193,7 +195,8 @@ fn route_literal_pattern() {
     let route = route_query("parse_query", false).unwrap();
     assert!(
         matches!(route, QueryRoute::Literal),
-        "expected Literal route, got {:?}", route
+        "expected Literal route, got {:?}",
+        route
     );
 }
 
@@ -204,7 +207,18 @@ fn route_regex_without_interior_grams_is_fullscan() {
     let route = route_query("parse_query|process_batch", false).unwrap();
     assert!(
         matches!(route, QueryRoute::FullScan),
-        "expected FullScan for regex without interior grams, got {:?}", route
+        "expected FullScan for regex without interior grams, got {:?}",
+        route
+    );
+}
+
+#[test]
+fn route_regex_with_extractable_grams_is_indexed() {
+    let route = route_query("(fn_parse_filter_query)+", false).unwrap();
+    assert!(
+        matches!(route, QueryRoute::IndexedRegex(_)),
+        "expected IndexedRegex for extractable regex grams, got {:?}",
+        route
     );
 }
 
@@ -213,7 +227,8 @@ fn route_full_scan_for_dot_star() {
     let route = route_query(".*", false).unwrap();
     assert!(
         matches!(route, QueryRoute::FullScan),
-        "expected FullScan for .*, got {:?}", route
+        "expected FullScan for .*, got {:?}",
+        route
     );
 }
 
