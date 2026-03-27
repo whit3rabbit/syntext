@@ -19,6 +19,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use fs2::FileExt;
+
 use arc_swap::ArcSwap;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
@@ -101,6 +103,9 @@ pub struct Index {
     pub config: Config,
     snapshot: ArcSwap<IndexSnapshot>,
     pending: PendingEdits,
+    /// Advisory lock on the index directory. Held for the lifetime of the
+    /// Index: shared for readers (open), exclusive for builders (build).
+    _dir_lock: std::fs::File,
 }
 
 impl Index {
@@ -109,6 +114,14 @@ impl Index {
     /// `config.max_file_size`.
     pub fn build(config: Config) -> Result<Self, IndexError> {
         fs::create_dir_all(&config.index_dir)?;
+
+        // Exclusive lock for the duration of the build. Prevents concurrent
+        // builds and blocks open() callers until the build completes.
+        let lock_path = config.index_dir.join("lock");
+        let lock_file = std::fs::File::create(&lock_path)?;
+        lock_file
+            .try_lock_exclusive()
+            .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
 
         // Enumerate all candidate files, sorted by relative path.
         let file_list = enumerate_files(&config)?;
@@ -194,12 +207,29 @@ impl Index {
             );
         }
 
+        // Drop the exclusive lock before open() acquires a shared lock.
+        // (Both operate on the same lock file; holding exclusive while
+        // try_lock_shared is called from open() would deadlock on some
+        // platforms.)
+        drop(lock_file);
         Self::open(config)
     }
 
     /// Open an existing index. Loads the manifest, mmaps base segments,
     /// and rebuilds the path index from segment doc tables.
     pub fn open(config: Config) -> Result<Self, IndexError> {
+        // Shared lock: multiple readers are fine, but blocks an active build.
+        let lock_path = config.index_dir.join("lock");
+        let dir_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        dir_lock
+            .try_lock_shared()
+            .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+
         let manifest = Manifest::load(&config.index_dir)?;
 
         let mut base_segments: Vec<MmapSegment> = Vec::new();
@@ -260,6 +290,7 @@ impl Index {
             config,
             snapshot: ArcSwap::from(snapshot),
             pending: PendingEdits::new(),
+            _dir_lock: dir_lock,
         })
     }
 
@@ -317,6 +348,15 @@ impl Index {
             return Ok(());
         }
 
+        // Serialize concurrent writers. _write_lock is held until end of
+        // function (underscore prefix suppresses unused-variable lint without
+        // triggering the immediate-drop behaviour of bare `_`).
+        let write_lock_path = self.config.index_dir.join("write.lock");
+        let _write_lock = std::fs::File::create(&write_lock_path)?;
+        _write_lock
+            .try_lock_exclusive()
+            .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+
         let old_snap = self.snapshot.load_full();
         let take = self.pending.take_for_commit();
 
@@ -361,7 +401,11 @@ impl Index {
         all_paths.extend(take.newly_changed.iter().cloned());
         all_paths.sort_unstable();
         all_paths.dedup();
-        let path_index = PathIndex::build(&all_paths);
+        let path_index = PathIndex::build_incremental(
+            &old_snap.path_index,
+            &take.newly_deleted,
+            &take.newly_changed,
+        );
 
         let total_ids = overlay
             .docs
@@ -369,14 +413,10 @@ impl Index {
             .map(|d| d.doc_id + 1)
             .max()
             .unwrap_or(base_doc_count) as usize;
-        let mut doc_to_file_id = vec![u32::MAX; total_ids];
-        for (gid, path) in old_snap.base.base_doc_paths.iter().enumerate() {
-            if delete_set.contains(gid as u32) {
-                continue;
-            }
-            if let Some(fid) = path_index.file_id(path) {
-                doc_to_file_id[gid] = fid;
-            }
+        let mut doc_to_file_id = old_snap.doc_to_file_id.clone();
+        doc_to_file_id.resize(total_ids, u32::MAX);
+        for gid in delete_set.iter() {
+            doc_to_file_id[gid as usize] = u32::MAX;
         }
         for doc in &overlay.docs {
             if let Some(fid) = path_index.file_id(&doc.path) {

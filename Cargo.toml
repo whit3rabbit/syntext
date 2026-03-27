@@ -30,6 +30,9 @@ rayon = "1"
 # Lock-free snapshot swapping
 arc-swap = "1"
 
+# Advisory file locking
+fs2 = "0.4"
+
 # Gitignore and file-type filtering
 ignore = "0.4"
 

@@ -102,6 +102,8 @@ pub enum IndexError {
         /// Size of the file in bytes.
         size: u64,
     },
+    /// Another process holds a conflicting lock on the index directory.
+    LockConflict(PathBuf),
 }
 
 impl From<std::io::Error> for IndexError {
@@ -119,6 +121,9 @@ impl std::fmt::Display for IndexError {
             IndexError::PathOutsideRepo(p) => write!(f, "path outside repo: {}", p.display()),
             IndexError::FileTooLarge { path, size } => {
                 write!(f, "file too large: {} ({size} bytes)", path.display())
+            }
+            IndexError::LockConflict(p) => {
+                write!(f, "index locked by another process: {}", p.display())
             }
         }
     }
