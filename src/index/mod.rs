@@ -8,6 +8,7 @@
 
 pub mod manifest;
 pub mod overlay;
+pub mod pending;
 pub mod segment;
 mod stats;
 pub mod walk;
