@@ -60,6 +60,11 @@ pub struct Manifest {
     pub created_at: u64,
     /// Operation stamp for future concurrent-write ordering (currently 0).
     pub opstamp: u64,
+    /// Calibrated index vs. full-scan crossover fraction (0.0–1.0).
+    /// `None` means this index was built without calibration; callers should
+    /// fall back to the compile-time default of 0.10.
+    #[serde(default)]
+    pub scan_threshold_fraction: Option<f64>,
 }
 
 impl Manifest {
@@ -82,6 +87,7 @@ impl Manifest {
             total_files_indexed,
             created_at,
             opstamp: 0,
+            scan_threshold_fraction: None,  // populated by Index::build() after calibration
         }
     }
 
@@ -171,5 +177,44 @@ mod tests {
 
         let loaded = Manifest::load(dir.path()).unwrap();
         assert_eq!(loaded.total_docs(), 0);
+    }
+
+    #[test]
+    fn roundtrip_preserves_scan_threshold() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut manifest = Manifest::new(vec![], 0);
+        manifest.scan_threshold_fraction = Some(0.23);
+        manifest.save(dir.path()).unwrap();
+
+        let loaded = Manifest::load(dir.path()).unwrap();
+        assert_eq!(
+            loaded.scan_threshold_fraction,
+            Some(0.23),
+            "scan_threshold_fraction must round-trip through manifest.json"
+        );
+    }
+
+    #[test]
+    fn missing_threshold_deserializes_as_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Write a manifest without the field (simulates old index).
+        let json = r#"{
+        "version": 1,
+        "base_commit": null,
+        "segments": [],
+        "overlay_gen": 0,
+        "overlay_file": null,
+        "overlay_deletes_file": null,
+        "total_files_indexed": 0,
+        "created_at": 0,
+        "opstamp": 0
+    }"#;
+        std::fs::write(dir.path().join("manifest.json"), json).unwrap();
+
+        let loaded = Manifest::load(dir.path()).unwrap();
+        assert!(
+            loaded.scan_threshold_fraction.is_none(),
+            "old manifests without the field must deserialize as None"
+        );
     }
 }

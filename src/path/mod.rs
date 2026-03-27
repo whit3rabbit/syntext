@@ -13,6 +13,7 @@ use roaring::RoaringBitmap;
 ///
 /// Built once during `Index::build()` from the full sorted list of indexed paths.
 /// Queried by `filter.rs` (Phase 6) to produce a `RoaringBitmap` of candidate file_ids.
+#[derive(Clone)]
 pub struct PathIndex {
     /// All indexed paths, sorted lexicographically. `file_id = position`.
     pub paths: Vec<String>,
