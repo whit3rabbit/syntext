@@ -86,7 +86,9 @@ impl OverlayView {
 
         for (path, content) in dirty_files {
             let doc_id = next_id;
-            next_id += 1;
+            next_id = next_id
+                .checked_add(1)
+                .expect("doc_id overflow: base_doc_count + overlay size exceeds u32::MAX");
 
             let grams = build_all(&content);
             for &gram_hash in &grams {
@@ -148,7 +150,9 @@ impl OverlayView {
                 continue; // replaced by new version below
             }
             let doc_id = next_id;
-            next_id += 1;
+            next_id = next_id
+                .checked_add(1)
+                .expect("doc_id overflow: base_doc_count + overlay size exceeds u32::MAX");
 
             // Reuse cached grams instead of re-tokenizing.
             for &gram_hash in &old_doc.grams {
@@ -165,7 +169,9 @@ impl OverlayView {
         // Add newly changed/added files (freshly read from disk).
         for (path, content) in new_files {
             let doc_id = next_id;
-            next_id += 1;
+            next_id = next_id
+                .checked_add(1)
+                .expect("doc_id overflow: base_doc_count + overlay size exceeds u32::MAX");
 
             let grams = build_all(&content);
             for &gram_hash in &grams {

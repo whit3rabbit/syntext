@@ -208,6 +208,14 @@ fn compute_delete_set_marks_all_base_docs_for_invalidated_paths() {
 }
 
 #[test]
+#[test]
+#[should_panic(expected = "doc_id overflow")]
+fn overlay_build_panics_on_doc_id_overflow() {
+    // base_doc_count near u32::MAX means the first += 1 would overflow.
+    let _ = OverlayView::build(u32::MAX, dirty(&[("a.rs", b"fn a() {}")]));
+}
+
+#[test]
 fn incremental_reuses_cached_grams() {
     let old = OverlayView::build(10, dirty(&[("a.rs", b"fn alpha_function() {}")]));
 
