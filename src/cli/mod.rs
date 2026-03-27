@@ -4,6 +4,7 @@
 //! by default, with `--json` for machine-readable output.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 
@@ -91,6 +92,19 @@ enum Command {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Benchmark multiple queries against one opened index.
+    #[command(hide = true)]
+    BenchSearch {
+        /// Query spec, for example literal:workspace or regex:foo.*
+        #[arg(long = "query", required = true)]
+        queries: Vec<String>,
+        /// Timed iterations per query.
+        #[arg(long, default_value_t = 1)]
+        iterations: usize,
+        /// Warmup iterations per query.
+        #[arg(long, default_value_t = 0)]
+        warmups: usize,
+    },
 }
 
 /// Run the CLI. Returns the process exit code.
@@ -133,6 +147,11 @@ pub fn run() -> i32 {
         }
         Command::Status { json } => cmd_status(config, json),
         Command::Update { flush, quiet } => cmd_update(config, flush, quiet),
+        Command::BenchSearch {
+            queries,
+            iterations,
+            warmups,
+        } => cmd_bench_search(config, &queries, iterations, warmups),
     }
 }
 
@@ -217,6 +236,18 @@ struct SearchArgs {
     quiet: bool,
 }
 
+#[derive(Debug, Clone)]
+struct BenchQuerySpec {
+    mode: BenchQueryMode,
+    pattern: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchQueryMode {
+    Literal,
+    Regex,
+}
+
 fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let index = match Index::open(config) {
         Ok(idx) => idx,
@@ -226,20 +257,7 @@ fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         }
     };
 
-    let effective_pattern = if args.literal {
-        regex::escape(&args.pattern)
-    } else {
-        args.pattern.clone()
-    };
-
-    let opts = SearchOptions {
-        case_insensitive: args.ignore_case,
-        file_type: args.file_type.clone(),
-        max_results: args.max_count,
-        ..SearchOptions::default()
-    };
-
-    let results = match index.search(&effective_pattern, &opts) {
+    let results = match run_search(&index, args) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("ripline search: {e}");
@@ -315,6 +333,148 @@ fn cmd_status(config: Config, json: bool) -> i32 {
             println!("Commit:    {commit}");
         }
     }
+    0
+}
+
+fn run_search(
+    index: &Index,
+    args: &SearchArgs,
+) -> Result<Vec<crate::SearchMatch>, crate::IndexError> {
+    let effective_pattern = if args.literal {
+        regex::escape(&args.pattern)
+    } else {
+        args.pattern.clone()
+    };
+
+    let opts = SearchOptions {
+        case_insensitive: args.ignore_case,
+        file_type: args.file_type.clone(),
+        max_results: args.max_count,
+        ..SearchOptions::default()
+    };
+
+    index.search(&effective_pattern, &opts)
+}
+
+fn parse_bench_query(value: &str) -> Result<BenchQuerySpec, String> {
+    let (mode, pattern) = value.split_once(':').ok_or_else(|| {
+        format!("invalid query {value:?}, expected literal:<pattern> or regex:<pattern>")
+    })?;
+    if pattern.is_empty() {
+        return Err("query pattern must not be empty".to_string());
+    }
+
+    let mode = match mode {
+        "literal" => BenchQueryMode::Literal,
+        "regex" => BenchQueryMode::Regex,
+        other => {
+            return Err(format!(
+                "invalid query mode {other:?}, expected literal or regex"
+            ))
+        }
+    };
+
+    Ok(BenchQuerySpec {
+        mode,
+        pattern: pattern.to_string(),
+    })
+}
+
+fn summarize_samples(samples_ms: &[f64]) -> (f64, f64, f64) {
+    let mut ordered = samples_ms.to_vec();
+    ordered.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = ordered.len() / 2;
+    let median = if ordered.len().is_multiple_of(2) {
+        (ordered[mid - 1] + ordered[mid]) / 2.0
+    } else {
+        ordered[mid]
+    };
+    (median, ordered[0], ordered[ordered.len() - 1])
+}
+
+fn cmd_bench_search(config: Config, queries: &[String], iterations: usize, warmups: usize) -> i32 {
+    if iterations == 0 {
+        eprintln!("ripline bench-search: iterations must be >= 1");
+        return 2;
+    }
+
+    let parsed_queries: Result<Vec<_>, _> = queries.iter().map(|q| parse_bench_query(q)).collect();
+    let parsed_queries = match parsed_queries {
+        Ok(qs) => qs,
+        Err(e) => {
+            eprintln!("ripline bench-search: {e}");
+            return 2;
+        }
+    };
+
+    let index = match Index::open(config) {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("ripline bench-search: {e}");
+            return 2;
+        }
+    };
+
+    let mut results = Vec::with_capacity(parsed_queries.len());
+    for query in &parsed_queries {
+        let args = SearchArgs {
+            pattern: query.pattern.clone(),
+            literal: query.mode == BenchQueryMode::Literal,
+            ignore_case: false,
+            file_type: None,
+            max_count: None,
+            count: false,
+            json: false,
+            quiet: false,
+        };
+
+        let count = match run_search(&index, &args) {
+            Ok(r) => r.len(),
+            Err(e) => {
+                eprintln!("ripline bench-search: {e}");
+                return 2;
+            }
+        };
+
+        for _ in 0..warmups {
+            if let Err(e) = run_search(&index, &args) {
+                eprintln!("ripline bench-search: {e}");
+                return 2;
+            }
+        }
+
+        let mut samples = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let start = Instant::now();
+            if let Err(e) = run_search(&index, &args) {
+                eprintln!("ripline bench-search: {e}");
+                return 2;
+            }
+            samples.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        let (median, min, max) = summarize_samples(&samples);
+        let mode = match query.mode {
+            BenchQueryMode::Literal => "literal",
+            BenchQueryMode::Regex => "regex",
+        };
+        results.push(serde_json::json!({
+            "query": format!("{mode}:{}", query.pattern),
+            "count": count,
+            "timings_ms": {
+                "median_ms": (median * 1000.0).round() / 1000.0,
+                "min_ms": (min * 1000.0).round() / 1000.0,
+                "max_ms": (max * 1000.0).round() / 1000.0,
+            }
+        }));
+    }
+
+    println!(
+        "{}",
+        serde_json::json!({
+            "queries": results,
+        })
+    );
     0
 }
 

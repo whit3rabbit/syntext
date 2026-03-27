@@ -224,6 +224,31 @@ def ripline_search_cmd(
     return cmd
 
 
+def ripline_bench_search_cmd(
+    ripline_bin: Path,
+    repo_root: Path,
+    index_dir: Path,
+    queries: list[QuerySpec],
+    iterations: int,
+    warmups: int,
+) -> list[str]:
+    cmd = [
+        str(ripline_bin),
+        "--repo-root",
+        str(repo_root),
+        "--index-dir",
+        str(index_dir),
+        "bench-search",
+        "--iterations",
+        str(iterations),
+        "--warmups",
+        str(warmups),
+    ]
+    for query in queries:
+        cmd.extend(["--query", query.name])
+    return cmd
+
+
 def rg_search_cmd(repo_root: Path, query: QuerySpec) -> list[str]:
     cmd = ["rg", "-n", "--no-heading", "--color", "never", "--hidden"]
     if query.mode == "literal":
@@ -280,6 +305,44 @@ def parse_tools(value: str) -> tuple[str, ...]:
     return tools
 
 
+def ripline_batch_results(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> dict[str, dict[str, object]]:
+    completed = subprocess.run(
+        cmd,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"command failed with exit {completed.returncode}: {cmd!r}\n{completed.stderr}"
+        )
+    payload = json.loads(completed.stdout)
+    return {
+        item["query"]: {
+            "count": item["count"],
+            "timings_ms": item["timings_ms"],
+        }
+        for item in payload.get("queries", [])
+    }
+
+
+def report_tools(tools: tuple[str, ...], ripline_search_mode: str) -> list[str]:
+    expanded: list[str] = []
+    for tool in tools:
+        if tool == "ripline" and ripline_search_mode == "both":
+            expanded.extend(["ripline-fork", "ripline-persistent"])
+        else:
+            expanded.append(tool)
+    return expanded
+
+
 def render_markdown_report(report: dict[str, object]) -> str:
     lines: list[str] = []
     lines.append("# External Benchmark")
@@ -292,6 +355,7 @@ def render_markdown_report(report: dict[str, object]) -> str:
     lines.append(f"- Tools: `{', '.join(report['tools'])}`")
     lines.append(f"- Ripline build iterations: `{report['build_iterations']}`")
     lines.append(f"- Search iterations per tool/query: `{report['search_iterations']}`")
+    lines.append(f"- Ripline search mode: `{report['ripline_search_mode']}`")
     lines.append("")
 
     build_summary = report["ripline_index_build_ms"]
@@ -311,6 +375,10 @@ def render_markdown_report(report: dict[str, object]) -> str:
     lines.append(
         "- `ripline` search latency excludes index build time, which is reported separately."
     )
+    if report["ripline_search_mode"] == "both":
+        lines.append(
+            "- `ripline-fork` measures one process per query. `ripline-persistent` reuses one opened index for all queries in the run."
+        )
     if report["grep_mode"] == "tracked" and "grep" in report["tools"]:
         lines.append(
             "- `grep` uses `git ls-files` as its file list. That is a better baseline than raw recursive grep, but it is still not ignore-aware in the same way as `rg`."
@@ -432,6 +500,12 @@ def main() -> int:
         type=parse_tools,
         help="Comma-separated tool set, for example ripline,rg or ripline,rg,grep",
     )
+    parser.add_argument(
+        "--ripline-search-mode",
+        choices=("fork", "persistent", "both"),
+        default="fork",
+        help="fork runs one ripline process per search; persistent reuses one opened index per benchmark run; both reports both ripline modes side by side",
+    )
     args = parser.parse_args()
 
     preset_file = Path(args.preset_file).resolve()
@@ -491,6 +565,7 @@ def main() -> int:
         tools = selected_preset.tools
     if tools is None:
         tools = ("ripline", "rg", "grep")
+    display_tools = report_tools(tools, args.ripline_search_mode)
 
     ensure_ripline_binary(ripline_bin)
 
@@ -541,6 +616,20 @@ def main() -> int:
 
         try:
             query_results: list[dict[str, object]] = []
+            ripline_batch: dict[str, dict[str, object]] | None = None
+            if "ripline" in tools and args.ripline_search_mode in ("persistent", "both"):
+                ripline_batch = ripline_batch_results(
+                    ripline_bench_search_cmd(
+                        ripline_bin,
+                        repo_root,
+                        index_path,
+                        queries,
+                        search_iterations,
+                        warmups,
+                    ),
+                    cwd=repo_root,
+                    env=env,
+                )
             for query in queries:
                 ripline_cmd = ripline_search_cmd(ripline_bin, repo_root, index_path, query)
                 rg_cmd = rg_search_cmd(repo_root, query)
@@ -549,17 +638,37 @@ def main() -> int:
                 counts: dict[str, int] = {}
                 timings: dict[str, dict[str, float]] = {}
                 if "ripline" in tools:
-                    counts["ripline"] = output_line_count(
-                        ripline_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
-                    )
-                    timings["ripline"] = benchmark_command(
-                        ripline_cmd,
-                        cwd=repo_root,
-                        env=env,
-                        warmups=warmups,
-                        iterations=search_iterations,
-                        allowed_codes=(0, 1),
-                    )
+                    if args.ripline_search_mode == "both":
+                        batch_entry = ripline_batch[query.name]
+                        counts["ripline-persistent"] = int(batch_entry["count"])
+                        timings["ripline-persistent"] = batch_entry["timings_ms"]
+                        counts["ripline-fork"] = output_line_count(
+                            ripline_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
+                        )
+                        timings["ripline-fork"] = benchmark_command(
+                            ripline_cmd,
+                            cwd=repo_root,
+                            env=env,
+                            warmups=warmups,
+                            iterations=search_iterations,
+                            allowed_codes=(0, 1),
+                        )
+                    elif ripline_batch is not None:
+                        batch_entry = ripline_batch[query.name]
+                        counts["ripline"] = int(batch_entry["count"])
+                        timings["ripline"] = batch_entry["timings_ms"]
+                    else:
+                        counts["ripline"] = output_line_count(
+                            ripline_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
+                        )
+                        timings["ripline"] = benchmark_command(
+                            ripline_cmd,
+                            cwd=repo_root,
+                            env=env,
+                            warmups=warmups,
+                            iterations=search_iterations,
+                            allowed_codes=(0, 1),
+                        )
                 if "rg" in tools:
                     counts["rg"] = output_line_count(
                         rg_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
@@ -605,7 +714,8 @@ def main() -> int:
         "preset": selected_preset.name if selected_preset else None,
         "tracked_files": tracked_count,
         "grep_mode": args.grep_mode,
-        "tools": list(tools),
+        "tools": display_tools,
+        "ripline_search_mode": args.ripline_search_mode,
         "build_iterations": build_iterations,
         "search_iterations": search_iterations,
         "warmups": warmups,

@@ -72,6 +72,26 @@ python3 scripts/bench_compare.py \
   --output /tmp/react-bench.md
 ```
 
+Measure repeated queries against one already-opened `ripline` index in a single process:
+
+```sh
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --ripline-search-mode persistent
+```
+
+Use `--ripline-search-mode persistent` when you want to measure query-time reuse, such as snapshot-scoped posting bitmap caches, without paying process startup and index open cost on every `ripline` search. Keep `fork` as the default for apples-to-apples CLI comparisons, since `rg` and `grep` still run one process per query in this harness.
+
+Report both `ripline` modes side by side in one run:
+
+```sh
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --ripline-search-mode both
+```
+
+Use `both` when you want one report that shows the gap between CLI-style cold searches (`ripline-fork`) and hot in-process searches (`ripline-persistent`).
+
 For very large repos, or large-corpus preset:
 ```sh
 python3 scripts/bench_compare.py \
