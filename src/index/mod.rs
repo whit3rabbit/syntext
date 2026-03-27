@@ -17,7 +17,7 @@ pub use walk::is_binary;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use fs2::FileExt;
 
@@ -64,6 +64,8 @@ pub struct IndexSnapshot {
     pub doc_to_file_id: Vec<u32>,
     /// Cached bitmap of all valid doc IDs. Lazy-initialized on first access.
     all_doc_ids_cache: OnceLock<RoaringBitmap>,
+    /// Cached merged posting bitmaps for repeated gram lookups in this snapshot.
+    posting_bitmap_cache: OnceLock<Mutex<HashMap<u64, Arc<RoaringBitmap>>>>,
 }
 
 impl IndexSnapshot {
@@ -94,6 +96,47 @@ impl IndexSnapshot {
             }
             bm
         })
+    }
+
+    fn posting_bitmap_cache(&self) -> &Mutex<HashMap<u64, Arc<RoaringBitmap>>> {
+        self.posting_bitmap_cache
+            .get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub(crate) fn cached_posting_bitmap(&self, gram_hash: u64) -> Option<Arc<RoaringBitmap>> {
+        let cache = self
+            .posting_bitmap_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.get(&gram_hash).cloned()
+    }
+
+    pub(crate) fn store_posting_bitmap(
+        &self,
+        gram_hash: u64,
+        bitmap: Arc<RoaringBitmap>,
+    ) -> Arc<RoaringBitmap> {
+        let mut cache = self
+            .posting_bitmap_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache
+            .entry(gram_hash)
+            .or_insert_with(|| Arc::clone(&bitmap))
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn posting_bitmap_cache_len(&self) -> usize {
+        self.posting_bitmap_cache
+            .get()
+            .map(|cache| {
+                cache
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .len()
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -151,7 +194,7 @@ impl Index {
                 })
                 .collect();
 
-            let mut writer = SegmentWriter::new();
+            let mut writer = SegmentWriter::with_capacity(batch.len(), 120);
             for ((abs_path, rel_path, size), result) in batch.iter().zip(results.iter()) {
                 if let Some((content_hash, grams)) = result {
                     let doc_id = next_doc_id;
@@ -284,6 +327,7 @@ impl Index {
             path_index,
             doc_to_file_id,
             all_doc_ids_cache: OnceLock::new(),
+            posting_bitmap_cache: OnceLock::new(),
         });
 
         Ok(Index {
@@ -426,6 +470,7 @@ impl Index {
             path_index,
             doc_to_file_id,
             all_doc_ids_cache: OnceLock::new(),
+            posting_bitmap_cache: OnceLock::new(),
         });
 
         self.snapshot.store(new_snap);

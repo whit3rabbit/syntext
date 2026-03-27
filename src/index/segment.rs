@@ -82,6 +82,17 @@ impl SegmentWriter {
         }
     }
 
+    /// Create a segment writer with pre-allocated capacity.
+    ///
+    /// `doc_hint`: expected number of documents.
+    /// `grams_per_doc_hint`: estimated grams per document (typically 80-150).
+    pub fn with_capacity(doc_hint: usize, grams_per_doc_hint: usize) -> Self {
+        SegmentWriter {
+            docs: Vec::with_capacity(doc_hint),
+            postings: Vec::with_capacity(doc_hint * grams_per_doc_hint),
+        }
+    }
+
     /// Number of documents added to this writer.
     pub fn doc_count(&self) -> usize {
         self.docs.len()
@@ -326,7 +337,7 @@ impl MmapSegment {
             return Err(corrupt("bad header magic"));
         }
 
-        // Use map_err rather than unwrap() for slice-to-array conversions to 
+        // Use map_err rather than unwrap() for slice-to-array conversions to
         // prevent panics (Denial of Service) when reading potentially corrupt or
         // malformed index segments.
         let doc_table_offset = u64::from_le_bytes(
