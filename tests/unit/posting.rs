@@ -1,6 +1,6 @@
 //! Unit tests for posting list encode/decode, intersection, and union.
 
-use ripline_rs::posting::{varint_decode, varint_encode};
+use ripline_rs::posting::{varint_decode, varint_encode, PostingList};
 
 // ---------------------------------------------------------------------------
 // Delta-varint encode / decode round-trips
@@ -41,4 +41,30 @@ fn varint_max_value() {
 fn varint_bad_bytes_returns_error() {
     // Truncated: continuation bit set but no next byte
     assert!(varint_decode(&[0x80u8]).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// PostingList::is_empty fast path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn posting_list_is_empty_small() {
+    let empty = PostingList::Small(vec![]);
+    assert!(empty.is_empty());
+
+    let non_empty = PostingList::Small(varint_encode(&[1, 2, 3]));
+    assert!(!non_empty.is_empty());
+}
+
+#[test]
+fn posting_list_is_empty_large() {
+    use roaring::RoaringBitmap;
+
+    let empty = PostingList::Large(RoaringBitmap::new());
+    assert!(empty.is_empty());
+
+    let mut bm = RoaringBitmap::new();
+    bm.insert(42);
+    let non_empty = PostingList::Large(bm);
+    assert!(!non_empty.is_empty());
 }

@@ -148,9 +148,13 @@ impl PostingList {
 
     /// Returns true if this posting list is empty.
     ///
-    /// **Warning:** O(n) for `Small` variant. See [`PostingList::len`].
+    /// O(1) for both variants (checks byte-slice length for `Small`,
+    /// bitmap length for `Large`).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        match self {
+            PostingList::Small(bytes) => bytes.is_empty(),
+            PostingList::Large(bm) => bm.is_empty(),
+        }
     }
 }
 
