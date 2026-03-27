@@ -43,9 +43,9 @@ pub fn build_filter(
     // Path glob: substring match on full path, build bitmap.
     if path_glob.is_some() {
         let mut glob_bitmap = RoaringBitmap::new();
-        for (i, path) in path_index.paths.iter().enumerate() {
+        for (file_id, path) in path_index.visible_paths() {
             if matches_path_filter(path, file_type, exclude_type, path_glob) {
-                glob_bitmap.insert(i as u32);
+                glob_bitmap.insert(file_id);
             }
         }
         result = Some(match result {
@@ -65,8 +65,8 @@ pub fn build_filter(
                 None => {
                     // Start with all files, then exclude.
                     let mut all = RoaringBitmap::new();
-                    for i in 0..path_index.paths.len() as u32 {
-                        all.insert(i);
+                    for (file_id, _) in path_index.visible_paths() {
+                        all.insert(file_id);
                     }
                     all -= ext_bitmap;
                     all
@@ -118,22 +118,30 @@ pub(crate) fn matches_path_filter(
 /// Check if a path matches a simple glob pattern.
 ///
 /// Supports:
-/// - Bare substring: "src/" matches any path containing "src/"
-/// - Leading "**/" is treated as substring match
-/// - Trailing "/*.ext" matches files in a directory with that extension
-/// - Simple extension glob "*.rs" matches by extension
+/// - `*.ext`: match files by extension
+/// - `**/*.ext`: match files by extension (recursive)
+/// - `dir/`: match directory prefix
+/// - `src/foo`: paths containing this exact segment sequence (has slash)
+/// - Bare word `test`: match as a whole path component (filename or directory),
+///   not as an arbitrary substring. Matches `test/`, `/test.rs`, `/test/`.
 pub(crate) fn path_matches_glob(path: &str, glob: &str) -> bool {
     // "*.ext" pattern: match by extension
     if glob.starts_with("*.") && !glob.contains('/') {
         let ext = &glob[2..];
-        return path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+        return path
+            .rsplit('.')
+            .next()
+            .is_some_and(|e| e.eq_ignore_ascii_case(ext));
     }
 
     // "**/*.ext" pattern: match any file with that extension
     if let Some(rest) = glob.strip_prefix("**/") {
         if rest.starts_with("*.") && !rest.contains('/') {
             let ext = &rest[2..];
-            return path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+            return path
+                .rsplit('.')
+                .next()
+                .is_some_and(|e| e.eq_ignore_ascii_case(ext));
         }
         // Substring match on the rest
         return path.contains(rest);
@@ -144,8 +152,32 @@ pub(crate) fn path_matches_glob(path: &str, glob: &str) -> bool {
         return path.starts_with(glob) || path.contains(&format!("/{glob}"));
     }
 
-    // Default: substring match
-    path.contains(glob)
+    // Contains a slash: treat as literal path substring (e.g. "src/test")
+    if glob.contains('/') {
+        return path.contains(glob);
+    }
+
+    // Bare word (no slash, no glob chars): match as a whole path component.
+    // A component matches if its full name equals the word, or if the
+    // filename stem (before the last dot) equals the word.
+    path_has_component(path, glob)
+}
+
+/// Check if any path component matches `word` as a whole component.
+/// Matches full component name or filename stem (before last dot).
+fn path_has_component(path: &str, word: &str) -> bool {
+    for component in path.split('/') {
+        if component == word {
+            return true;
+        }
+        // Match filename stem: "test.rs" matches "test"
+        if let Some((stem, _)) = component.rsplit_once('.') {
+            if stem == word {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -234,5 +266,30 @@ mod tests {
             None,
             Some("src/")
         ));
+    }
+
+    #[test]
+    fn bare_word_glob_requires_component_boundary() {
+        // "test" should match as a directory name or filename stem
+        assert!(path_matches_glob("test/foo.rs", "test"));
+        assert!(path_matches_glob("src/test.rs", "test"));
+        assert!(path_matches_glob("src/test/util.rs", "test"));
+
+        // Should NOT match as arbitrary substring
+        assert!(
+            !path_matches_glob("src/contest.rs", "test"),
+            "bare word should not match as arbitrary substring"
+        );
+        assert!(
+            !path_matches_glob("src/testing.rs", "test"),
+            "bare word should match whole components only"
+        );
+    }
+
+    #[test]
+    fn path_with_slash_still_uses_substring() {
+        // Patterns containing a slash use substring match (existing behavior)
+        assert!(path_matches_glob("src/test/foo.rs", "src/test"));
+        assert!(!path_matches_glob("lib/test/foo.rs", "src/test"));
     }
 }
