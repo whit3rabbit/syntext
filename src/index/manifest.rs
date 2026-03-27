@@ -85,9 +85,24 @@ impl Manifest {
         }
     }
 
+    /// Maximum manifest file size (10 MB). A normal manifest for a 100K-file
+    /// repo is under 1 MB. Anything larger is likely corrupt or adversarial.
+    const MAX_MANIFEST_SIZE: u64 = 10 * 1024 * 1024;
+
     /// Load the manifest from `index_dir/manifest.json`.
     pub fn load(index_dir: &Path) -> io::Result<Self> {
         let path = index_dir.join(Self::FILENAME);
+        let meta = std::fs::metadata(&path)?;
+        if meta.len() > Self::MAX_MANIFEST_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "manifest too large ({} bytes, max {})",
+                    meta.len(),
+                    Self::MAX_MANIFEST_SIZE
+                ),
+            ));
+        }
         let data = std::fs::read_to_string(&path)?;
         serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
@@ -95,7 +110,7 @@ impl Manifest {
     /// Atomically persist the manifest to `index_dir/manifest.json`.
     pub fn save(&self, index_dir: &Path) -> io::Result<()> {
         // Use a random UUID for the temporary file to prevent TOCTOU (Time-of-Check to Time-of-Use)
-        // symlink attacks where an attacker could pre-create `manifest.json.tmp` as a symlink 
+        // symlink attacks where an attacker could pre-create `manifest.json.tmp` as a symlink
         // leading to arbitrary file overwrite.
         let tmp = index_dir.join(format!("manifest-{}.tmp", uuid::Uuid::new_v4()));
         let final_path = index_dir.join(Self::FILENAME);
@@ -125,5 +140,36 @@ impl Manifest {
     /// Total number of documents across all segments.
     pub fn total_docs(&self) -> u32 {
         self.segments.iter().map(|s| s.doc_count).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_rejects_oversized_manifest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(Manifest::FILENAME);
+        let data = "x".repeat(11 * 1024 * 1024);
+        std::fs::write(&path, data).unwrap();
+
+        let result = Manifest::load(dir.path());
+        assert!(result.is_err(), "should reject manifest > 10MB");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("too large"),
+            "error should mention size: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn load_accepts_normal_manifest() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manifest = Manifest::new(vec![], 0);
+        manifest.save(dir.path()).unwrap();
+
+        let loaded = Manifest::load(dir.path()).unwrap();
+        assert_eq!(loaded.total_docs(), 0);
     }
 }
