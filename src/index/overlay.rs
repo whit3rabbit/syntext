@@ -61,6 +61,9 @@ pub struct OverlayView {
     doc_id_map: HashMap<u32, usize>,
     /// Next overlay-space doc_id (starts after base range).
     pub next_doc_id: u32,
+    /// The base_doc_count at which this overlay was built.
+    /// Used to detect whether a segment flush occurred between commits.
+    pub base_doc_count: u32,
 }
 
 impl OverlayView {
@@ -71,6 +74,7 @@ impl OverlayView {
             docs: Vec::new(),
             doc_id_map: HashMap::new(),
             next_doc_id: 0,
+            base_doc_count: 0,
         }
     }
 
@@ -120,6 +124,7 @@ impl OverlayView {
             docs,
             doc_id_map,
             next_doc_id: next_id,
+            base_doc_count,
         }
     }
 
@@ -201,6 +206,7 @@ impl OverlayView {
             docs,
             doc_id_map,
             next_doc_id: next_id,
+            base_doc_count,
         }
     }
 

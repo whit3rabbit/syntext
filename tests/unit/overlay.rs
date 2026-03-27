@@ -208,6 +208,18 @@ fn compute_delete_set_marks_all_base_docs_for_invalidated_paths() {
 }
 
 #[test]
+fn overlay_build_stores_base_doc_count() {
+    let ov = OverlayView::build(42, dirty(&[("a.rs", b"fn a() {}")]));
+    assert_eq!(ov.base_doc_count, 42);
+}
+
+#[test]
+fn overlay_empty_base_doc_count_is_zero() {
+    let ov = OverlayView::empty();
+    assert_eq!(ov.base_doc_count, 0);
+}
+
+#[test]
 #[should_panic(expected = "doc_id overflow")]
 fn overlay_build_panics_on_doc_id_overflow() {
     // base_doc_count near u32::MAX means the first += 1 would overflow.
