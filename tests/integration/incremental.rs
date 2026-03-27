@@ -347,3 +347,49 @@ fn large_file_rejected_during_commit() {
         "error should mention 'too large', got: {err_msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Concurrency: write lock conflict
+// ---------------------------------------------------------------------------
+
+/// A second concurrent commit_batch must return LockConflict, not block.
+#[test]
+fn concurrent_commit_batch_returns_lock_conflict() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+
+    // Create two files so we have something to commit.
+    fs::write(repo.path().join("a.rs"), "fn aaa() {}\n").unwrap();
+    fs::write(repo.path().join("b.rs"), "fn bbb() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // Modify a file and notify.
+    fs::write(repo.path().join("a.rs"), "fn aaa_v2() {}\n").unwrap();
+    index.notify_change(&repo.path().join("a.rs")).unwrap();
+
+    // Hold the write lock manually to simulate a concurrent writer.
+    let lock_path = index_dir.path().join("write.lock");
+    let lock_file = std::fs::File::create(&lock_path).unwrap();
+    use fs2::FileExt;
+    lock_file.lock_exclusive().unwrap();
+
+    // commit_batch should fail with LockConflict, not block or succeed.
+    let result = index.commit_batch();
+    assert!(result.is_err(), "should fail when lock is held");
+    let err = result.unwrap_err();
+    let err_str = format!("{err}");
+    assert!(
+        err_str.contains("lock") || err_str.contains("Lock"),
+        "error should mention lock conflict: {err_str}"
+    );
+
+    // Release lock and verify commit succeeds.
+    lock_file.unlock().unwrap();
+    index.commit_batch().unwrap();
+}
