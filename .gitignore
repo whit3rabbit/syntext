@@ -35,5 +35,9 @@ __pycache__/
 *.py[cod]
 .venv/
 
+# Generated docs
+doc/
+docs/superpowers/
+
 # Repomix
 repomix.xml
