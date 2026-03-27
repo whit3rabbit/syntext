@@ -210,10 +210,10 @@ fn execute_query_bitmap(
             let Some(first) = iter.next() else {
                 return Ok(snap.all_doc_ids().clone());
             };
-            let mut acc = posting_bitmap(first, snap)?.as_ref().clone();
+            let mut acc = posting_bitmap(first, snap)?;
             for hash in iter {
                 let postings = posting_bitmap(hash, snap)?;
-                acc &= postings.as_ref();
+                acc &= &postings;
                 if acc.is_empty() {
                     break;
                 }
@@ -239,11 +239,7 @@ fn gram_cardinality(gram_hash: u64, snap: &IndexSnapshot) -> u32 {
     base_total.saturating_add(overlay_total)
 }
 
-fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBitmap>, IndexError> {
-    if let Some(bitmap) = snap.cached_posting_bitmap(gram_hash) {
-        return Ok(bitmap);
-    }
-
+fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<RoaringBitmap, IndexError> {
     let mut bitmap = RoaringBitmap::new();
 
     for seg in snap.base_segments() {
@@ -260,7 +256,7 @@ fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBit
     }
 
     bitmap -= &snap.delete_set;
-    Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
+    Ok(bitmap)
 }
 
 /// Resolve a global doc ID to its path and content.
@@ -370,27 +366,5 @@ mod tests {
 
         let candidates = execute_query(&GramQuery::Grams(grams), &snap).unwrap();
         assert!(candidates.is_empty());
-    }
-
-    #[test]
-    fn posting_bitmaps_are_cached_per_snapshot() {
-        let index_dir = TempDir::new().unwrap();
-        let config = Config {
-            index_dir: index_dir.path().to_path_buf(),
-            repo_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/corpus"),
-            ..Config::default()
-        };
-        let index = Index::build(config).unwrap();
-        let snap = index.snapshot();
-        let gram = literal_grams("parse_query").unwrap()[0];
-
-        assert_eq!(snap.posting_bitmap_cache_len(), 0);
-
-        let first = posting_bitmap(gram, &snap).unwrap();
-        assert_eq!(snap.posting_bitmap_cache_len(), 1);
-
-        let second = posting_bitmap(gram, &snap).unwrap();
-        assert_eq!(snap.posting_bitmap_cache_len(), 1);
-        assert!(Arc::ptr_eq(&first, &second));
     }
 }
