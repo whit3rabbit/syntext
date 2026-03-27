@@ -10,34 +10,6 @@ AI coding agents call grep dozens of times per task. On large monorepos, each `r
 
 ripline builds a content index so queries only touch candidate files, not all files. The verifier confirms matches against actual file content, so results are correct (identical to ripgrep).
 
-## Architecture
-
-For the full quantitative analysis (selectivity math, index size estimates, posting list encoding tradeoffs), see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
-
-The high-level flow:
-
-```
-Query -> Router -> [Literal | Indexed Regex | Full Scan]
-                        |
-                   Gram extraction
-                        |
-                   Posting list intersection (smallest-first)
-                        |
-                   Candidate file IDs
-                        |
-                   Verifier (memchr or regex against file content)
-                        |
-                   Results
-```
-
-Three index components feed candidate selection:
-
-- **Content index**: sparse n-gram posting lists (the core). Trigram augmentation ensures no false negatives for token-aligned queries.
-- **Path index**: Roaring bitmap component sets for path/type filtering.
-- **Symbol index** (optional): Tree-sitter extraction into SQLite.
-
-Segments are immutable single-file mmap structures (RPLX format). Updates go through an in-memory overlay with atomic batch commit via `ArcSwap`.
-
 ## Benchmarks
 
 Real-world benchmark runs are tracked in
@@ -140,6 +112,34 @@ index.notify_change(Path::new("src/bar.rs"))?;
 index.commit_batch()?;  // atomic visibility
 let fresh_results = index.search("new_function", &SearchOptions::default())?;
 ```
+
+## Architecture
+
+For the full quantitative analysis (selectivity math, index size estimates, posting list encoding tradeoffs), see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+The high-level flow:
+
+```
+Query -> Router -> [Literal | Indexed Regex | Full Scan]
+                        |
+                   Gram extraction
+                        |
+                   Posting list intersection (smallest-first)
+                        |
+                   Candidate file IDs
+                        |
+                   Verifier (memchr or regex against file content)
+                        |
+                   Results
+```
+
+Three index components feed candidate selection:
+
+- **Content index**: sparse n-gram posting lists (the core). Trigram augmentation ensures no false negatives for token-aligned queries.
+- **Path index**: Roaring bitmap component sets for path/type filtering.
+- **Symbol index** (optional): Tree-sitter extraction into SQLite.
+
+Segments are immutable single-file mmap structures (RPLX format). Updates go through an in-memory overlay with atomic batch commit via `ArcSwap`.
 
 ## Project status
 
