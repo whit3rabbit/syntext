@@ -614,6 +614,8 @@ fn search_finds_match_in_file_that_grew_beyond_max_size() {
 fn search_does_not_follow_symlink_outside_repo() {
     use std::os::unix::fs::symlink;
 
+    let _guard = correctness_build_lock().lock().unwrap();
+
     let repo = tempfile::TempDir::new().unwrap();
     let index_dir = tempfile::TempDir::new().unwrap();
     let outside = tempfile::TempDir::new().unwrap();

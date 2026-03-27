@@ -111,6 +111,18 @@ fn decompose_alternation() {
     assert!(matches!(q, GramQuery::All), "expected All, got {:?}", q);
 }
 
+#[test]
+fn decompose_exact_literal_alternation_with_shared_prefix() {
+    let q = decompose("LanguageServer(Id|InstallationStatus)", false)
+        .unwrap()
+        .simplify();
+    assert!(
+        matches!(q, GramQuery::Or(_) | GramQuery::Grams(_)),
+        "expected indexed grams for exact literal alternation, got {:?}",
+        q
+    );
+}
+
 /// `(parse_query)+` -> All because the regex literal "parse_query" has no
 /// interior forced-boundary grams (both "parse" and "query" touch synthetic
 /// edges). Required repetition (min=1) is valid for gram constraints, but
@@ -218,6 +230,16 @@ fn route_regex_with_extractable_grams_is_indexed() {
     assert!(
         matches!(route, QueryRoute::IndexedRegex(_)),
         "expected IndexedRegex for extractable regex grams, got {:?}",
+        route
+    );
+}
+
+#[test]
+fn route_exact_literal_alternation_with_shared_prefix_is_indexed() {
+    let route = route_query("LanguageServer(Id|InstallationStatus)", false).unwrap();
+    assert!(
+        matches!(route, QueryRoute::IndexedRegex(_)),
+        "expected IndexedRegex for exact literal alternation, got {:?}",
         route
     );
 }

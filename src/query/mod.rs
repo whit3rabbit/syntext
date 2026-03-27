@@ -117,8 +117,7 @@ pub fn is_literal(pattern: &str) -> bool {
 
 /// Extract covering gram hashes from a literal pattern.
 ///
-/// Lowercases the pattern (index grams are always lowercase). Returns `None`
-/// if the pattern is too short to produce any qualifying gram.
+/// Returns `None` if the pattern is too short to produce any qualifying gram.
 pub fn literal_grams(pattern: &str) -> Option<Vec<u64>> {
-    build_covering(pattern.to_ascii_lowercase().as_bytes())
+    build_covering(pattern.as_bytes())
 }

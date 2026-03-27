@@ -104,7 +104,8 @@ fn is_forced_boundary(byte: u8) -> bool {
 /// Position 0 and `bytes.len()` are always included. Interior positions use
 /// two-tier detection:
 /// 1. Forced: either side of position `i` is a delimiter byte.
-/// 2. Weight-based: `BIGRAM_WEIGHTS[bytes[i-1]*256 + bytes[i]] >= BOUNDARY_THRESHOLD`.
+/// 2. Camel-case: a lowercase ASCII letter followed by uppercase ASCII.
+/// 3. Weight-based: `BIGRAM_WEIGHTS[lower(bytes[i-1])*256 + lower(bytes[i])] >= BOUNDARY_THRESHOLD`.
 fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
     let n = bytes.len();
     let mut positions = Vec::with_capacity(n / 4);
@@ -116,8 +117,15 @@ fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
             positions.push(i);
             continue;
         }
-        // Tier 2: weight-based boundary for rare bigrams within alphanumeric spans
-        let idx = (bytes[i - 1] as usize) << 8 | (bytes[i] as usize);
+        // Tier 2: lowercase -> uppercase transition in CamelCase identifiers.
+        if bytes[i - 1].is_ascii_lowercase() && bytes[i].is_ascii_uppercase() {
+            positions.push(i);
+            continue;
+        }
+        // Tier 3: weight-based boundary for rare bigrams within alphanumeric spans
+        let left = bytes[i - 1].to_ascii_lowercase();
+        let right = bytes[i].to_ascii_lowercase();
+        let idx = (left as usize) << 8 | (right as usize);
         if BIGRAM_WEIGHTS[idx] >= BOUNDARY_THRESHOLD {
             positions.push(i);
         }
@@ -137,8 +145,9 @@ fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
 
 /// Extract all sparse n-grams from `input` for index construction.
 ///
-/// Lowercases `input`, finds all boundary positions, and emits the hash of
-/// each consecutive-boundary span with length in `[MIN_GRAM_LEN, MAX_GRAM_LEN]`.
+/// Finds all boundary positions from the original bytes, lowercases the spans,
+/// and emits the hash of each consecutive-boundary span with length in
+/// `[MIN_GRAM_LEN, MAX_GRAM_LEN]`.
 ///
 /// Returns an unordered list of hashes. Duplicates are possible and should
 /// be deduplicated by the caller (e.g. into a `HashSet` before writing to
@@ -156,22 +165,12 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
         return Vec::new();
     }
 
-    // Lowercase in-place so boundary detection and hashing are case-agnostic.
+    // Keep the original lowercase-token grams for the token-aligned coverage
+    // invariant, and add case-aware spans so CamelCase literals become indexable.
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
-    let boundaries = boundary_positions(&lower);
-
     let mut hashes = Vec::new();
-    for w in boundaries.windows(2) {
-        let (start, end) = (w[0], w[1]);
-        let span = end - start;
-        if (MIN_GRAM_LEN..=MAX_GRAM_LEN).contains(&span) {
-            hashes.push(gram_hash(&lower[start..end]));
-        }
-        // Spans shorter than MIN_GRAM_LEN: no gram emitted. Queries whose
-        // covering set falls entirely in such a span will fall back to full scan.
-        // Spans longer than MAX_GRAM_LEN: skipped (very long tokens are not
-        // selective and waste posting list space). The verifier handles matches.
-    }
+    append_grams_for_boundaries(&mut hashes, &lower, &boundary_positions(&lower));
+    append_grams_for_boundaries(&mut hashes, &lower, &boundary_positions(input));
 
     hashes
 }
@@ -182,8 +181,8 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
 
 /// Extract the minimal covering set of grams from a query pattern.
 ///
-/// Lowercases `input`, detects the same boundary positions as `build_all`,
-/// and emits one gram hash per consecutive-boundary span with length >=
+/// Lowercases `input`, detects the same boundary positions as the original
+/// token-aligned query path, and emits one gram hash per consecutive-boundary span with length >=
 /// `MIN_GRAM_LEN`. The result is used as an AND query: all emitted grams
 /// must appear in a document for it to be a candidate.
 ///
@@ -237,9 +236,9 @@ pub fn build_covering(input: &[u8]) -> Option<Vec<u64>> {
 /// Extract covering grams from a regex literal fragment.
 ///
 /// Unlike `build_covering` (which treats position 0 and `len` as boundaries),
-/// this function only emits grams whose both boundary positions are caused by
-/// forced boundary characters. This avoids false negatives when the literal
-/// appears at an arbitrary position within a larger regex match.
+/// this function refuses spans that rely on synthetic fragment edges. Interior
+/// boundaries are safe, because the current tokenizer's boundary decisions are
+/// determined by the adjacent bytes at that position.
 ///
 /// For a regex like `parse_quer[yi]`, the HIR literal "parse_quer" ends
 /// mid-token. `build_covering` would emit gram "quer" (ending at synthetic
@@ -255,7 +254,7 @@ pub fn build_covering_inner(input: &[u8]) -> Option<Vec<u64>> {
     }
 
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
-    let boundaries = boundary_positions(&lower);
+    let boundaries = boundary_positions(input);
 
     let mut hashes = Vec::new();
     for w in boundaries.windows(2) {
@@ -265,21 +264,8 @@ pub fn build_covering_inner(input: &[u8]) -> Option<Vec<u64>> {
             continue;
         }
 
-        // Check that the start boundary is backed by a forced boundary char,
-        // not just the synthetic position-0 boundary.
-        let start_is_real = if start == 0 {
-            is_forced_boundary(lower[0])
-        } else {
-            is_forced_boundary(lower[start - 1]) || is_forced_boundary(lower[start])
-        };
-
-        // Check that the end boundary is backed by a forced boundary char,
-        // not just the synthetic position-len boundary.
-        let end_is_real = if end == lower.len() {
-            is_forced_boundary(lower[lower.len() - 1])
-        } else {
-            is_forced_boundary(lower[end - 1]) || is_forced_boundary(lower[end])
-        };
+        let start_is_real = start > 0 || is_forced_boundary(lower[0]);
+        let end_is_real = end < lower.len() || is_forced_boundary(lower[lower.len() - 1]);
 
         if start_is_real && end_is_real {
             hashes.push(gram_hash(&lower[start..end]));
@@ -290,6 +276,20 @@ pub fn build_covering_inner(input: &[u8]) -> Option<Vec<u64>> {
         None
     } else {
         Some(hashes)
+    }
+}
+
+fn append_grams_for_boundaries(hashes: &mut Vec<u64>, lower: &[u8], boundaries: &[usize]) {
+    for w in boundaries.windows(2) {
+        let (start, end) = (w[0], w[1]);
+        let span = end - start;
+        if (MIN_GRAM_LEN..=MAX_GRAM_LEN).contains(&span) {
+            hashes.push(gram_hash(&lower[start..end]));
+        }
+        // Spans shorter than MIN_GRAM_LEN: no gram emitted. Queries whose
+        // covering set falls entirely in such a span will fall back to full scan.
+        // Spans longer than MAX_GRAM_LEN: skipped (very long tokens are not
+        // selective and waste posting list space). The verifier handles matches.
     }
 }
 
@@ -324,6 +324,23 @@ mod tests {
         assert_eq!(
             upper, lower,
             "uppercase and lowercase must produce same grams"
+        );
+    }
+
+    #[test]
+    fn build_covering_inner_rejects_truncated_fragment_edge() {
+        assert!(
+            build_covering_inner(b"parse_quer").is_none(),
+            "truncated regex literal fragments must not rely on synthetic end boundaries"
+        );
+    }
+
+    #[test]
+    fn build_all_indexes_camel_case_identifiers() {
+        let grams = build_all(b"LanguageServerId");
+        assert!(
+            grams.len() >= 2,
+            "camel-case identifiers should contribute extra indexed grams"
         );
     }
 
