@@ -327,26 +327,45 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         }
     };
 
+    let mut changed: Vec<String> = Vec::new();
+
     // Detect changed files via git diff against HEAD.
-    let diff_output = match std::process::Command::new("git")
+    // This fails on repos with no commits, which is fine -- we fall through
+    // to untracked file detection below.
+    if let Ok(diff_output) = std::process::Command::new("git")
         .arg("-C")
         .arg(&config.repo_root)
         .args(["diff", "--name-only", "HEAD"])
         .output()
     {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("ripline update: failed to run git diff: {e}");
-            return 2;
+        if diff_output.status.success() {
+            let diff_stdout = String::from_utf8_lossy(&diff_output.stdout);
+            changed.extend(
+                diff_stdout
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(String::from),
+            );
         }
-    };
+    }
 
-    let diff_stdout = String::from_utf8_lossy(&diff_output.stdout);
-    let mut changed: Vec<String> = diff_stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(String::from)
-        .collect();
+    // Pick up staged changes (covers initial commit scenario where HEAD
+    // doesn't exist yet).
+    if let Ok(staged_output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&config.repo_root)
+        .args(["diff", "--name-only", "--cached"])
+        .output()
+    {
+        if staged_output.status.success() {
+            let staged_stdout = String::from_utf8_lossy(&staged_output.stdout);
+            for line in staged_stdout.lines().filter(|l| !l.is_empty()) {
+                if !changed.iter().any(|c| c == line) {
+                    changed.push(line.to_string());
+                }
+            }
+        }
+    }
 
     // Pick up new untracked files that git-diff doesn't report.
     if let Ok(ut_output) = std::process::Command::new("git")
@@ -355,10 +374,12 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         .args(["ls-files", "--others", "--exclude-standard"])
         .output()
     {
-        let ut_stdout = String::from_utf8_lossy(&ut_output.stdout);
-        for line in ut_stdout.lines().filter(|l| !l.is_empty()) {
-            if !changed.iter().any(|c| c == line) {
-                changed.push(line.to_string());
+        if ut_output.status.success() {
+            let ut_stdout = String::from_utf8_lossy(&ut_output.stdout);
+            for line in ut_stdout.lines().filter(|l| !l.is_empty()) {
+                if !changed.iter().any(|c| c == line) {
+                    changed.push(line.to_string());
+                }
             }
         }
     }
@@ -406,7 +427,7 @@ mod tests {
     use crate::index::Index;
     use crate::{Config, SearchOptions};
 
-    use super::cmd_index;
+    use super::{cmd_index, cmd_update};
 
     #[test]
     fn cmd_index_rebuilds_existing_index_without_force() {
@@ -439,5 +460,33 @@ mod tests {
             1,
             "new content should be indexed after rebuild"
         );
+    }
+
+    #[test]
+    fn cmd_update_on_repo_with_no_commits() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let index_dir = tempfile::TempDir::new().unwrap();
+
+        // Initialize git repo with no commits.
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["init"])
+            .output()
+            .unwrap();
+
+        // Create a file and build the index.
+        fs::write(repo.path().join("hello.rs"), "fn hello() {}\n").unwrap();
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        assert_eq!(cmd_index(config.clone(), false, false, true), 0);
+
+        // cmd_update should not crash on a repo with no commits.
+        // git diff HEAD fails, but we fall through to untracked file detection.
+        let code = cmd_update(config, false, true);
+        assert_ne!(code, 2, "cmd_update should not error on repo with no commits");
     }
 }
