@@ -41,3 +41,6 @@ docs/superpowers/
 
 # Repomix
 repomix.xml
+
+# Git worktrees
+.worktrees/
