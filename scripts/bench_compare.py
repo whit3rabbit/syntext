@@ -30,6 +30,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_RIPLINE_BIN = REPO_ROOT / "target" / "release" / "ripline"
 DEFAULT_PRESET_FILE = REPO_ROOT / "benchmarks" / "repo_presets.json"
+DEFAULT_BUILD_ITERATIONS = 3
+DEFAULT_SEARCH_ITERATIONS = 5
+DEFAULT_WARMUPS = 1
 
 
 @dataclass(frozen=True)
@@ -460,19 +463,19 @@ def main() -> int:
     parser.add_argument(
         "--build-iterations",
         type=int,
-        default=3,
+        default=None,
         help="Number of ripline index builds to time",
     )
     parser.add_argument(
         "--search-iterations",
         type=int,
-        default=5,
+        default=None,
         help="Number of search iterations per tool and query",
     )
     parser.add_argument(
         "--warmups",
         type=int,
-        default=1,
+        default=None,
         help="Warmup runs before timed search iterations",
     )
     parser.add_argument(
@@ -549,16 +552,24 @@ def main() -> int:
         raise SystemExit("at least one --query is required")
 
     build_iterations = args.build_iterations
-    if selected_preset and args.build_iterations == parser.get_default("build_iterations"):
-        build_iterations = selected_preset.build_iterations
+    if build_iterations is None:
+        build_iterations = (
+            selected_preset.build_iterations
+            if selected_preset
+            else DEFAULT_BUILD_ITERATIONS
+        )
 
     search_iterations = args.search_iterations
-    if selected_preset and args.search_iterations == parser.get_default("search_iterations"):
-        search_iterations = selected_preset.search_iterations
+    if search_iterations is None:
+        search_iterations = (
+            selected_preset.search_iterations
+            if selected_preset
+            else DEFAULT_SEARCH_ITERATIONS
+        )
 
     warmups = args.warmups
-    if selected_preset and args.warmups == parser.get_default("warmups"):
-        warmups = selected_preset.warmups
+    if warmups is None:
+        warmups = selected_preset.warmups if selected_preset else DEFAULT_WARMUPS
 
     tools = args.tools
     if selected_preset and tools is None:
