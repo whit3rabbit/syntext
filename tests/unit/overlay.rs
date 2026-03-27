@@ -208,7 +208,6 @@ fn compute_delete_set_marks_all_base_docs_for_invalidated_paths() {
 }
 
 #[test]
-#[test]
 #[should_panic(expected = "doc_id overflow")]
 fn overlay_build_panics_on_doc_id_overflow() {
     // base_doc_count near u32::MAX means the first += 1 would overflow.
