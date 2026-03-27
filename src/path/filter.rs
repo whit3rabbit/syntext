@@ -17,7 +17,7 @@ pub struct PathFilter {
 ///
 /// - `file_type`: include only files with this extension (e.g. "rs").
 /// - `exclude_type`: exclude files with this extension (e.g. "js").
-/// - `path_glob`: substring match on the full relative path.
+/// - `path_glob`: simple glob-style match on the full relative path.
 ///
 /// Returns `None` if no filter applies (all files are candidates).
 pub fn build_filter(
@@ -41,10 +41,10 @@ pub fn build_filter(
     }
 
     // Path glob: substring match on full path, build bitmap.
-    if let Some(glob) = path_glob {
+    if path_glob.is_some() {
         let mut glob_bitmap = RoaringBitmap::new();
         for (i, path) in path_index.paths.iter().enumerate() {
-            if path_matches_glob(path, glob) {
+            if matches_path_filter(path, file_type, exclude_type, path_glob) {
                 glob_bitmap.insert(i as u32);
             }
         }
@@ -78,6 +78,43 @@ pub fn build_filter(
     result.map(|file_ids| PathFilter { file_ids })
 }
 
+/// Check whether a path satisfies the same file type and path-glob semantics
+/// used by `build_filter`.
+pub(crate) fn matches_path_filter(
+    path: &str,
+    file_type: Option<&str>,
+    exclude_type: Option<&str>,
+    path_glob: Option<&str>,
+) -> bool {
+    if let Some(ext) = file_type {
+        if !path
+            .rsplit('.')
+            .next()
+            .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        {
+            return false;
+        }
+    }
+
+    if let Some(ext) = exclude_type {
+        if path
+            .rsplit('.')
+            .next()
+            .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        {
+            return false;
+        }
+    }
+
+    if let Some(glob) = path_glob {
+        if !path_matches_glob(path, glob) {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Check if a path matches a simple glob pattern.
 ///
 /// Supports:
@@ -85,7 +122,7 @@ pub fn build_filter(
 /// - Leading "**/" is treated as substring match
 /// - Trailing "/*.ext" matches files in a directory with that extension
 /// - Simple extension glob "*.rs" matches by extension
-fn path_matches_glob(path: &str, glob: &str) -> bool {
+pub(crate) fn path_matches_glob(path: &str, glob: &str) -> bool {
     // "*.ext" pattern: match by extension
     if glob.starts_with("*.") && !glob.contains('/') {
         let ext = &glob[2..];
@@ -175,5 +212,27 @@ mod tests {
     fn glob_double_star_extension() {
         assert!(path_matches_glob("deep/nested/file.rs", "**/*.rs"));
         assert!(!path_matches_glob("deep/nested/file.py", "**/*.rs"));
+    }
+
+    #[test]
+    fn matches_path_filter_combines_type_and_glob() {
+        assert!(matches_path_filter(
+            "src/main.rs",
+            Some("rs"),
+            None,
+            Some("src/")
+        ));
+        assert!(!matches_path_filter(
+            "src/main.py",
+            Some("rs"),
+            None,
+            Some("src/")
+        ));
+        assert!(!matches_path_filter(
+            "tests/main.rs",
+            Some("rs"),
+            None,
+            Some("src/")
+        ));
     }
 }

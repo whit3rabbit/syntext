@@ -25,7 +25,7 @@ pub fn verify_literal(pattern: &str, path: &Path, content: &[u8]) -> Vec<SearchM
         return Vec::new(); // skip binary files
     }
     let finder = memmem::Finder::new(pattern.as_bytes());
-    collect_line_matches(path, content, |line| finder.find(line).is_some())
+    collect_line_matches(path, content, |line| finder.find(line))
 }
 
 /// Verify a compiled regex against raw file bytes.
@@ -39,19 +39,20 @@ pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch>
     collect_line_matches(path, content, |line| {
         // Convert bytes to str; skip lines that are not valid UTF-8.
         if let Ok(s) = std::str::from_utf8(line) {
-            re.is_match(s)
+            re.find(s).map(|m| m.start())
         } else {
-            false
+            None
         }
     })
 }
 
 /// Iterate `content` line by line, calling `predicate` on each line's bytes.
-/// Returns `SearchMatch` for every line where `predicate` returns `true`.
+/// Returns `SearchMatch` for every line where `predicate` returns the start
+/// offset of the first match within that line.
 fn collect_line_matches(
     path: &Path,
     content: &[u8],
-    mut predicate: impl FnMut(&[u8]) -> bool,
+    mut predicate: impl FnMut(&[u8]) -> Option<usize>,
 ) -> Vec<SearchMatch> {
     let mut matches = Vec::new();
     let mut line_num: u32 = 1;
@@ -69,12 +70,12 @@ fn collect_line_matches(
             };
             let line = &content[line_start..line_end];
 
-            if predicate(line) {
+            if let Some(match_start) = predicate(line) {
                 matches.push(SearchMatch {
                     path: path.to_path_buf(),
                     line_number: line_num,
                     line_content: String::from_utf8_lossy(line).into_owned(),
-                    byte_offset: line_start as u64,
+                    byte_offset: (line_start + match_start) as u64,
                 });
             }
 
@@ -84,4 +85,33 @@ fn collect_line_matches(
     }
 
     matches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_reports_match_start_offset() {
+        let matches = verify_literal("needle", Path::new("file.txt"), b"prefix needle suffix\n");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].byte_offset, 7);
+    }
+
+    #[test]
+    fn regex_reports_match_start_offset() {
+        let re = Regex::new("needle").unwrap();
+        let matches = verify_regex(&re, Path::new("file.txt"), b"prefix needle suffix\n");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].byte_offset, 7);
+    }
+
+    #[test]
+    fn crlf_offsets_include_line_break_bytes_before_match() {
+        let matches = verify_literal("needle", Path::new("file.txt"), b"one\r\ntwo needle\r\n");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_number, 2);
+        assert_eq!(matches[0].byte_offset, 9);
+        assert_eq!(matches[0].line_content, "two needle");
+    }
 }

@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use regex::RegexBuilder;
 
 use crate::index::IndexSnapshot;
-use crate::path::filter::build_filter;
+use crate::path::filter::{build_filter, matches_path_filter};
 use crate::query::{route_query, QueryRoute};
 use crate::{Config, IndexError, SearchMatch, SearchOptions};
 
@@ -94,7 +94,12 @@ pub fn search(
                     .filter(|&fid| fid != u32::MAX);
                 if let Some(file_id) = file_id_opt {
                     if !pf.file_ids.contains(file_id) { return None; }
-                } else if !path_matches_opts(&rel_path, opts) {
+                } else if !matches_path_filter(
+                    &rel_path,
+                    opts.file_type.as_deref(),
+                    None,
+                    opts.path_filter.as_deref(),
+                ) {
                     return None;
                 }
             }
@@ -114,22 +119,6 @@ pub fn search(
         matches.truncate(max);
     }
     Ok(matches)
-}
-
-/// String-based path/type filter fallback for docs not in the PathIndex.
-fn path_matches_opts(rel_path: &str, opts: &SearchOptions) -> bool {
-    if let Some(ref path_filter) = opts.path_filter {
-        if !rel_path.contains(path_filter.as_str()) {
-            return false;
-        }
-    }
-    if let Some(ref file_type) = opts.file_type {
-        let ext = rel_path.rsplit('.').next().unwrap_or("");
-        if !ext.eq_ignore_ascii_case(file_type) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Sort matches by path (lexicographic), then by line number ascending.
@@ -185,4 +174,32 @@ fn resolve_doc(
     let abs_path = repo_root.join(&doc_entry.path);
     let content = std::fs::read(&abs_path).ok()?;
     Some((doc_entry.path, Arc::from(content)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_path_filter_uses_same_glob_semantics() {
+        let opts = SearchOptions {
+            path_filter: Some("*.rs".to_string()),
+            file_type: None,
+            max_results: None,
+            case_insensitive: false,
+        };
+
+        assert!(matches_path_filter(
+            "src/main.rs",
+            opts.file_type.as_deref(),
+            None,
+            opts.path_filter.as_deref(),
+        ));
+        assert!(!matches_path_filter(
+            "src/main.py",
+            opts.file_type.as_deref(),
+            None,
+            opts.path_filter.as_deref(),
+        ));
+    }
 }

@@ -327,7 +327,7 @@ fn case_insensitive_literal() {
         "case-insensitive must find at least as many matches as case-sensitive"
     );
     assert!(
-        rg_ci.len() > 0,
+        !rg_ci.is_empty(),
         "fixture invariant: case-insensitive ParseQuery must match at least 1 file"
     );
     let (_tmp, index) = build_test_index(&corpus);

@@ -45,7 +45,7 @@ pub struct SearchMatch {
     pub line_number: u32,
     /// Full text of the matching line (without trailing newline).
     pub line_content: String,
-    /// Byte offset of the start of the matching line from the beginning of the file.
+    /// Byte offset of the start of the first match on the line.
     pub byte_offset: u64,
 }
 

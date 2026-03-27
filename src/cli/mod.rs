@@ -166,21 +166,12 @@ fn detect_repo_root() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 
 fn cmd_index(config: Config, force: bool, stats: bool, _quiet: bool) -> i32 {
-    let index = if force || !config.index_dir.join("manifest.json").exists() {
-        match Index::build(config) {
-            Ok(idx) => idx,
-            Err(e) => {
-                eprintln!("ripline index: {e}");
-                return 2;
-            }
-        }
-    } else {
-        match Index::open(config) {
-            Ok(idx) => idx,
-            Err(e) => {
-                eprintln!("ripline index: {e}");
-                return 2;
-            }
+    let _ = force;
+    let index = match Index::build(config) {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("ripline index: {e}");
+            return 2;
         }
     };
 
@@ -382,4 +373,43 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         println!("ripline: updated {} file(s)", count);
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::index::Index;
+    use crate::{Config, SearchOptions};
+
+    use super::cmd_index;
+
+    #[test]
+    fn cmd_index_rebuilds_existing_index_without_force() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let index_dir = tempfile::TempDir::new().unwrap();
+
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        let file = repo.path().join("src/main.rs");
+        fs::write(&file, "fn first_version() {}\n").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        assert_eq!(cmd_index(config.clone(), false, false, true), 0);
+
+        fs::write(&file, "fn second_version() {}\n").unwrap();
+        assert_eq!(cmd_index(config.clone(), false, false, true), 0);
+
+        let index = Index::open(config).unwrap();
+        let opts = SearchOptions::default();
+        let first = index.search("first_version", &opts).unwrap();
+        let second = index.search("second_version", &opts).unwrap();
+
+        assert!(first.is_empty(), "old content should be gone after rebuild");
+        assert_eq!(second.len(), 1, "new content should be indexed after rebuild");
+    }
 }
