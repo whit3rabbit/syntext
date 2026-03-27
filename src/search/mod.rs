@@ -210,10 +210,10 @@ fn execute_query_bitmap(
             let Some(first) = iter.next() else {
                 return Ok(snap.all_doc_ids().clone());
             };
-            let mut acc = posting_bitmap(first, snap)?;
+            let mut acc = posting_bitmap(first, snap)?.as_ref().clone();
             for hash in iter {
                 let postings = posting_bitmap(hash, snap)?;
-                acc &= &postings;
+                acc &= postings.as_ref();
                 if acc.is_empty() {
                     break;
                 }
@@ -239,7 +239,11 @@ fn gram_cardinality(gram_hash: u64, snap: &IndexSnapshot) -> u32 {
     base_total.saturating_add(overlay_total)
 }
 
-fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<RoaringBitmap, IndexError> {
+fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBitmap>, IndexError> {
+    if let Some(bitmap) = snap.cached_posting_bitmap(gram_hash) {
+        return Ok(bitmap);
+    }
+
     let mut bitmap = RoaringBitmap::new();
 
     for seg in snap.base_segments() {
@@ -256,7 +260,7 @@ fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<RoaringBitmap,
     }
 
     bitmap -= &snap.delete_set;
-    Ok(bitmap)
+    Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
 }
 
 /// Resolve a global doc ID to its path and content.
@@ -366,5 +370,108 @@ mod tests {
 
         let candidates = execute_query(&GramQuery::Grams(grams), &snap).unwrap();
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn posting_bitmaps_are_cached_per_snapshot() {
+        let index_dir = TempDir::new().unwrap();
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/corpus"),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let snap = index.snapshot();
+        let gram = literal_grams("parse_query").unwrap()[0];
+
+        assert_eq!(snap.posting_bitmap_cache_len(), 0);
+
+        let first = posting_bitmap(gram, &snap).unwrap();
+        assert_eq!(snap.posting_bitmap_cache_len(), 1);
+
+        let second = posting_bitmap(gram, &snap).unwrap();
+        assert_eq!(snap.posting_bitmap_cache_len(), 1);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn should_use_index_below_threshold() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        // Create 20 files. Only 2 contain the target gram.
+        for i in 0..20 {
+            let content = if i < 2 {
+                format!("fn unique_target_gram_{i}() {{}}\n")
+            } else {
+                format!("fn generic_function_{i}() {{}}\n")
+            };
+            std::fs::write(repo.path().join(format!("file_{i:03}.rs")), content).unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let snap = index.snapshot();
+
+        // A term in only 2/20 files (10%) should use the index.
+        let grams = literal_grams("unique_target_gram").unwrap();
+        assert!(
+            should_use_index(&grams, &snap),
+            "selective term should use index"
+        );
+    }
+
+    #[test]
+    fn should_use_index_above_threshold() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        // All 10 files contain the same term.
+        for i in 0..10 {
+            std::fs::write(
+                repo.path().join(format!("file_{i:03}.rs")),
+                "fn common_everywhere() {}\n",
+            )
+            .unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let snap = index.snapshot();
+
+        // Grams from "common_everywhere" appear in all 10 files (100%) -> skip index.
+        let grams = literal_grams("common_everywhere").unwrap();
+        assert!(
+            !should_use_index(&grams, &snap),
+            "ubiquitous term should fall back to full scan"
+        );
+    }
+
+    #[test]
+    fn should_use_index_empty_hashes() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("a.rs"), "fn a() {}\n").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let snap = index.snapshot();
+
+        assert!(
+            !should_use_index(&[], &snap),
+            "empty gram list should not use index"
+        );
     }
 }
