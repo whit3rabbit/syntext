@@ -268,8 +268,8 @@ fn delta_unchanged_files_keep_doc_ids() {
     let removed: HashSet<String> = HashSet::new();
     let new_files = dirty(&[("b.rs", b"fn beta_v2() {}")]);
 
-    // Same base_doc_count = 10 triggers delta path.
-    let inc = OverlayView::build_incremental(10, &old, new_files, &newly_changed, &removed);
+    // Call delta directly to verify its behavior (routing added in Task 3).
+    let inc = OverlayView::build_incremental_delta(10, &old, new_files, &newly_changed, &removed);
 
     let a_new_id = inc.docs.iter().find(|d| d.path == "a.rs").unwrap().doc_id;
     assert_eq!(a_new_id, a_old_id, "unchanged doc keeps its doc_id on delta path");
@@ -287,7 +287,8 @@ fn delta_gram_index_matches_full_rebuild() {
     let removed: HashSet<String> = HashSet::new();
     let new_b = dirty(&[("b.rs", b"fn beta_v2() {}")]);
 
-    let delta = OverlayView::build_incremental(10, &old, new_b.clone(), &newly_changed, &removed);
+    // Call delta directly to verify its behavior (routing added in Task 3).
+    let delta = OverlayView::build_incremental_delta(10, &old, new_b.clone(), &newly_changed, &removed);
 
     // Full rebuild for comparison.
     let all_files = dirty(&[("a.rs", b"fn alpha() {}"), ("b.rs", b"fn beta_v2() {}")]);
@@ -322,7 +323,8 @@ fn delta_deletion_removes_grams() {
     if let Some(h) = zzzq_hash {
         let removed: HashSet<String> = ["a.rs".to_string()].into();
         let newly_changed: HashSet<String> = HashSet::new();
-        let inc = OverlayView::build_incremental(5, &old, vec![], &newly_changed, &removed);
+        // Call delta directly to verify its behavior (routing added in Task 3).
+        let inc = OverlayView::build_incremental_delta(5, &old, vec![], &newly_changed, &removed);
 
         assert!(
             !inc.gram_index.contains_key(&h),
@@ -342,7 +344,8 @@ fn delta_posting_lists_sorted_after_new_doc() {
     // b.rs shares some grams with a.rs (e.g., "fn").
     let new_files = dirty(&[("b.rs", b"fn shared_token() {}")]);
 
-    let inc = OverlayView::build_incremental(0, &old, new_files, &newly_changed, &removed);
+    // Call delta directly to verify its behavior (routing added in Task 3).
+    let inc = OverlayView::build_incremental_delta(0, &old, new_files, &newly_changed, &removed);
 
     for (_, ids) in &inc.gram_index {
         let mut sorted = ids.clone();

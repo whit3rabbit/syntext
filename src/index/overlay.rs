@@ -215,7 +215,9 @@ impl OverlayView {
     /// changed/deleted files using their cached grams, append new doc_ids for
     /// new/changed files. New doc_ids are always > all existing ids so posting
     /// lists remain sorted after push.
-    fn build_incremental_delta(
+    // Routing from build_incremental is added in the next task.
+    #[allow(dead_code)]
+    pub fn build_incremental_delta(
         base_doc_count: u32,
         old_overlay: &OverlayView,
         new_files: Vec<(String, Arc<[u8]>)>,
