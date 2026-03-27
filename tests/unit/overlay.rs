@@ -268,8 +268,8 @@ fn delta_unchanged_files_keep_doc_ids() {
     let removed: HashSet<String> = HashSet::new();
     let new_files = dirty(&[("b.rs", b"fn beta_v2() {}")]);
 
-    // Call delta directly to verify its behavior (routing added in Task 3).
-    let inc = OverlayView::build_incremental_delta(10, &old, new_files, &newly_changed, &removed);
+    // Same base_doc_count => routes to delta path via build_incremental.
+    let inc = OverlayView::build_incremental(10, &old, new_files, &newly_changed, &removed);
 
     let a_new_id = inc.docs.iter().find(|d| d.path == "a.rs").unwrap().doc_id;
     assert_eq!(a_new_id, a_old_id, "unchanged doc keeps its doc_id on delta path");
@@ -287,8 +287,8 @@ fn delta_gram_index_matches_full_rebuild() {
     let removed: HashSet<String> = HashSet::new();
     let new_b = dirty(&[("b.rs", b"fn beta_v2() {}")]);
 
-    // Call delta directly to verify its behavior (routing added in Task 3).
-    let delta = OverlayView::build_incremental_delta(10, &old, new_b.clone(), &newly_changed, &removed);
+    // Same base_doc_count => routes to delta path via build_incremental.
+    let delta = OverlayView::build_incremental(10, &old, new_b.clone(), &newly_changed, &removed);
 
     // Full rebuild for comparison.
     let all_files = dirty(&[("a.rs", b"fn alpha() {}"), ("b.rs", b"fn beta_v2() {}")]);
@@ -300,6 +300,28 @@ fn delta_gram_index_matches_full_rebuild() {
     delta_keys.sort_unstable();
     full_keys.sort_unstable();
     assert_eq!(delta_keys, full_keys, "gram_index keys must match full rebuild");
+
+    // Also verify posting list contents (not just keys).
+    for (&hash, delta_ids) in &delta.gram_index {
+        let mut d = delta_ids.clone();
+        d.sort_unstable();
+        // Map delta doc_ids back to paths, compare against full's doc_ids for same gram.
+        // Since doc_ids differ between delta and full (stable vs. reassigned), compare
+        // via the set of paths that contain each gram.
+        let delta_paths: std::collections::BTreeSet<String> = d
+            .iter()
+            .filter_map(|&id| delta.get_doc(id).map(|doc| doc.path.clone()))
+            .collect();
+        let full_ids = full.gram_index.get(&hash).cloned().unwrap_or_default();
+        let full_paths: std::collections::BTreeSet<String> = full_ids
+            .iter()
+            .filter_map(|&id| full.get_doc(id).map(|doc| doc.path.clone()))
+            .collect();
+        assert_eq!(
+            delta_paths, full_paths,
+            "posting list paths must match for gram {hash:#x}"
+        );
+    }
 }
 
 /// Delta path: deleting a file removes all its grams from gram_index.
@@ -323,8 +345,8 @@ fn delta_deletion_removes_grams() {
     if let Some(h) = zzzq_hash {
         let removed: HashSet<String> = ["a.rs".to_string()].into();
         let newly_changed: HashSet<String> = HashSet::new();
-        // Call delta directly to verify its behavior (routing added in Task 3).
-        let inc = OverlayView::build_incremental_delta(5, &old, vec![], &newly_changed, &removed);
+        // Same base_doc_count => routes to delta path via build_incremental.
+        let inc = OverlayView::build_incremental(5, &old, vec![], &newly_changed, &removed);
 
         assert!(
             !inc.gram_index.contains_key(&h),
@@ -344,12 +366,29 @@ fn delta_posting_lists_sorted_after_new_doc() {
     // b.rs shares some grams with a.rs (e.g., "fn").
     let new_files = dirty(&[("b.rs", b"fn shared_token() {}")]);
 
-    // Call delta directly to verify its behavior (routing added in Task 3).
-    let inc = OverlayView::build_incremental_delta(0, &old, new_files, &newly_changed, &removed);
+    // Same base_doc_count => routes to delta path via build_incremental.
+    let inc = OverlayView::build_incremental(0, &old, new_files, &newly_changed, &removed);
 
     for (_, ids) in &inc.gram_index {
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         assert_eq!(ids, &sorted, "posting list must be sorted");
     }
+}
+
+/// When base_doc_count changes (segment flush), incremental falls back to full
+/// rebuild: all doc_ids are reassigned starting from the new base.
+#[test]
+fn incremental_base_changed_reassigns_doc_ids() {
+    let old = OverlayView::build(10, dirty(&[("a.rs", b"fn alpha() {}")]));
+    let a_old_id = old.docs[0].doc_id; // == 10
+
+    // Simulate a segment flush: base_doc_count grew from 10 to 20.
+    let newly_changed: HashSet<String> = HashSet::new();
+    let removed: HashSet<String> = HashSet::new();
+    let inc = OverlayView::build_incremental(20, &old, vec![], &newly_changed, &removed);
+
+    let a_new_id = inc.docs[0].doc_id;
+    assert_ne!(a_new_id, a_old_id, "doc_id must be reassigned when base_doc_count grows");
+    assert_eq!(a_new_id, 20, "first doc starts at new base_doc_count");
 }

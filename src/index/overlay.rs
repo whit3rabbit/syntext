@@ -135,6 +135,10 @@ impl OverlayView {
     /// from `old_overlay` are carried forward with `Arc::clone` on content
     /// (refcount bump, no data copy). All docs are re-indexed with new doc_ids
     /// since the ID space starts at `base_doc_count`.
+    ///
+    /// Fast path: when `base_doc_count == old_overlay.base_doc_count`, overlay
+    /// doc_ids for unchanged files are stable and the delta path is used instead
+    /// of a full rebuild.
     pub fn build_incremental(
         base_doc_count: u32,
         old_overlay: &OverlayView,
@@ -142,6 +146,18 @@ impl OverlayView {
         newly_changed: &HashSet<String>,
         removed_paths: &HashSet<String>,
     ) -> Self {
+        // Fast path: base has not grown since the last commit.
+        // Overlay doc_ids for unchanged files are stable; use delta update.
+        if base_doc_count == old_overlay.base_doc_count {
+            return Self::build_incremental_delta(
+                base_doc_count,
+                old_overlay,
+                new_files,
+                newly_changed,
+                removed_paths,
+            );
+        }
+
         let mut gram_index: HashMap<u64, Vec<u32>> = HashMap::new();
         let mut docs = Vec::new();
         let mut next_id = base_doc_count;
@@ -215,9 +231,7 @@ impl OverlayView {
     /// changed/deleted files using their cached grams, append new doc_ids for
     /// new/changed files. New doc_ids are always > all existing ids so posting
     /// lists remain sorted after push.
-    // Routing from build_incremental is added in the next task.
-    #[allow(dead_code)]
-    pub fn build_incremental_delta(
+    fn build_incremental_delta(
         base_doc_count: u32,
         old_overlay: &OverlayView,
         new_files: Vec<(String, Arc<[u8]>)>,
