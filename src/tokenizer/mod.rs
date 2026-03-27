@@ -29,6 +29,7 @@
 //! Greedy left-to-right: emits one gram per consecutive-boundary span that is
 //! >= `MIN_GRAM_LEN`. Returns `None` if no such spans exist (full scan required).
 
+/// Weight table for bigram frequencies.
 pub mod weights;
 
 use weights::BIGRAM_WEIGHTS;
@@ -146,7 +147,7 @@ fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
 /// # Example
 ///
 /// ```
-/// let grams = ripline::tokenizer::build_all(b"parse_query");
+/// let grams = ripline_rs::tokenizer::build_all(b"parse_query");
 /// // Forced boundary at '_' splits into "parse" and "query".
 /// assert!(!grams.is_empty());
 /// ```
@@ -192,7 +193,7 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
 /// # Example
 ///
 /// ```
-/// use ripline::tokenizer::build_covering;
+/// use ripline_rs::tokenizer::build_covering;
 ///
 /// // "parse_query" splits at forced boundaries around '_' into
 /// // "parse" and "query" (two grams, each >= MIN_GRAM_LEN).

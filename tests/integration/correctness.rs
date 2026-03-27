@@ -120,8 +120,8 @@ fn corpus_path() -> PathBuf {
 // ripline helpers
 // ---------------------------------------------------------------------------
 
-use ripline::index::Index;
-use ripline::{Config, SearchOptions};
+use ripline_rs::index::Index;
+use ripline_rs::{Config, SearchOptions};
 
 /// Build a ripline index over the corpus in a temporary directory.
 /// Returns the temp dir (kept alive) and the index handle.

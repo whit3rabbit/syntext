@@ -7,6 +7,7 @@
 // Usage: BIGRAM_WEIGHTS[(b1 as usize) << 8 | (b2 as usize)]
 // Corpus: mixed open-source code (Rust, Python, JS, Go, Java, C/C++, TS)
 
+/// Pre-trained byte-pair frequency table.
 pub static BIGRAM_WEIGHTS: [u16; 65536] = [
     65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535,
     65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535,

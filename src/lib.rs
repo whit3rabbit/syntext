@@ -1,3 +1,7 @@
+//! Hybrid code search index library.
+//!
+//! Provides the core index, search, and configuration APIs.
+
 pub mod cli;
 pub mod index;
 pub mod path;
@@ -89,7 +93,12 @@ pub enum IndexError {
     /// Path is outside the repository root.
     PathOutsideRepo(PathBuf),
     /// File exceeds maximum indexable size.
-    FileTooLarge { path: PathBuf, size: u64 },
+    FileTooLarge {
+        /// Path to the file.
+        path: PathBuf,
+        /// Size of the file in bytes.
+        size: u64,
+    },
 }
 
 impl From<std::io::Error> for IndexError {

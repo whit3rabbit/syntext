@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use proptest::prelude::*;
-use ripline::tokenizer::{build_all, build_covering, MIN_GRAM_LEN};
+use ripline_rs::tokenizer::{build_all, build_covering, MIN_GRAM_LEN};
 
 // ---------------------------------------------------------------------------
 // Curated invariant test (deterministic, exhaustive on small inputs)

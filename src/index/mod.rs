@@ -36,10 +36,13 @@ const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Shared base segments (Arc-shared across snapshot swaps).
 pub struct BaseSegments {
+    /// The memory mapped segments.
     pub segments: Vec<MmapSegment>,
+    /// Global doc_id offsets for each segment.
     pub base_ids: Vec<u32>,
 }
 
+/// A consistent point-in-time view of the index for querying.
 pub struct IndexSnapshot {
     /// Shared base segments (immutable between full rebuilds).
     pub base: Arc<BaseSegments>,
@@ -57,7 +60,9 @@ pub struct IndexSnapshot {
 }
 
 impl IndexSnapshot {
+    /// Return the immutable base segments.
     pub fn base_segments(&self) -> &[MmapSegment] { &self.base.segments }
+    /// Return the global doc_id offsets for each base segment.
     pub fn segment_base_ids(&self) -> &[u32] { &self.base.base_ids }
 
     /// All valid global doc IDs (base minus deleted, plus overlay). Cached.
@@ -83,6 +88,7 @@ impl IndexSnapshot {
 
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
 pub struct Index {
+    /// The index configuration.
     pub config: Config,
     snapshot: ArcSwap<IndexSnapshot>,
     pending: PendingEdits,

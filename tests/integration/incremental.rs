@@ -6,8 +6,8 @@
 
 use std::fs;
 
-use ripline::index::Index;
-use ripline::{Config, SearchOptions};
+use ripline_rs::index::Index;
+use ripline_rs::{Config, SearchOptions};
 
 /// Create a temp directory with some source files, build an index, return both.
 fn setup() -> (tempfile::TempDir, tempfile::TempDir, Index) {

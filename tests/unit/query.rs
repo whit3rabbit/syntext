@@ -4,8 +4,8 @@
 //! contribute grams. This is not a bug -- it is required for correctness.
 //! Requiring "foo" grams would produce false negatives for inputs like "bazbar".
 
-use ripline::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
-use ripline::query::regex_decompose::decompose;
+use ripline_rs::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
+use ripline_rs::query::regex_decompose::decompose;
 
 // ---------------------------------------------------------------------------
 // GramQuery::simplify tests

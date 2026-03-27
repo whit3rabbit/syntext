@@ -61,6 +61,7 @@ pub struct OverlayView {
 }
 
 impl OverlayView {
+    /// Create an empty overlay view.
     pub fn empty() -> Self {
         OverlayView {
             gram_index: HashMap::new(),
@@ -216,6 +217,7 @@ impl Default for PendingEdits {
 }
 
 impl PendingEdits {
+    /// Create a new, empty pending edits collector.
     pub fn new() -> Self {
         PendingEdits {
             inner: Mutex::new(PendingState {

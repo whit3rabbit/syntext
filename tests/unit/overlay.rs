@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use ripline::index::overlay::OverlayView;
+use ripline_rs::index::overlay::OverlayView;
 
 /// Helper: build dirty file list with Arc<[u8]> content.
 fn dirty(files: &[(&str, &[u8])]) -> Vec<(String, Arc<[u8]>)> {

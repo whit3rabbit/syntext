@@ -6,6 +6,7 @@ use ignore::WalkBuilder;
 
 use crate::{Config, IndexError};
 
+/// A record of a scanned file pending indexing: `(absolute_path, relative_path, size_bytes)`.
 pub type FileRecord = (PathBuf, String, u64);
 
 /// Walk the repository collecting indexable files. Respects `.gitignore`.

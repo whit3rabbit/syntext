@@ -19,11 +19,16 @@ use xxhash_rust::xxh64::xxh64;
 use crate::posting::{roaring_util, varint_encode, PostingList, ROARING_THRESHOLD};
 use crate::IndexError;
 
+/// Magic bytes identifying an RPLX segment file.
 pub const MAGIC: &[u8; 4] = b"RPLX";
+/// Current segment format version.
 pub const FORMAT_VERSION: u32 = 1;
+/// Page size for dictionary alignment.
 pub const PAGE_SIZE: usize = 4096;
 const HEADER_SIZE: usize = 40;
+/// Size of the segment footer in bytes.
 pub const FOOTER_SIZE: usize = 48;
+/// Size of a single dictionary entry in bytes.
 pub const DICT_ENTRY_SIZE: usize = 20;
 
 /// Document metadata stored in a segment's document table.
@@ -70,18 +75,22 @@ impl Default for SegmentWriter {
 }
 
 impl SegmentWriter {
+    /// Create a new segment writer.
     pub fn new() -> Self {
         SegmentWriter { docs: Vec::new(), postings: BTreeMap::new() }
     }
 
+    /// Number of documents added to this writer.
     pub fn doc_count(&self) -> usize {
         self.docs.len()
     }
 
+    /// Add a document to the segment.
     pub fn add_document(&mut self, doc_id: u32, path: &str, content_hash: u64, size_bytes: u64) {
         self.docs.push(DocEntry { doc_id, content_hash, size_bytes, path: path.to_owned() });
     }
 
+    /// Add a gram posting for a given document.
     pub fn add_gram_posting(&mut self, gram_hash: u64, doc_id: u32) {
         self.postings.entry(gram_hash).or_default().push(doc_id);
     }
@@ -227,7 +236,9 @@ pub struct MmapSegment {
     _file: std::fs::File,
     mmap: Mmap,
     expected_len: usize,
+    /// Number of documents in this segment.
     pub doc_count: u32,
+    /// Number of distinct gram hashes in the dictionary.
     pub gram_count: u32,
     doc_table_offset: usize,
     dict_offset: usize,
