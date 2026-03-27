@@ -50,10 +50,14 @@ pub fn search(
 
     let candidates: Vec<u32> = match &route {
         QueryRoute::Literal => match literal_grams(pattern) {
-            Some(hashes) if should_use_index(&hashes, &snap) => {
-                execute_query(&GramQuery::Grams(hashes), &snap)?
+            Some(hashes) => {
+                if should_use_index(&hashes, &snap)? {
+                    execute_query(&GramQuery::Grams(hashes), &snap)?
+                } else {
+                    all_doc_ids(&snap)
+                }
             }
-            _ => all_doc_ids(&snap),
+            None => all_doc_ids(&snap),
         },
         QueryRoute::IndexedRegex(query) => execute_query(query, &snap)?,
         _ => all_doc_ids(&snap),
@@ -150,25 +154,45 @@ fn all_doc_ids(snap: &IndexSnapshot) -> Vec<u32> {
     snap.all_doc_ids().iter().collect()
 }
 
-/// Return true if the smallest literal posting list is selective enough to
-/// justify index execution instead of a full scan.
-fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> bool {
+/// Return true if the literal looks selective enough to justify indexed
+/// execution instead of a full scan.
+fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> Result<bool, IndexError> {
     if hashes.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     let total_docs = snap.all_doc_ids().len();
     if total_docs == 0 {
-        return false;
+        return Ok(false);
     }
 
-    let smallest = hashes
-        .iter()
-        .map(|&hash| gram_cardinality(hash, snap))
-        .min()
-        .unwrap_or(0);
+    let mut ordered = hashes.to_vec();
+    ordered.sort_unstable_by_key(|&hash| gram_cardinality(hash, snap));
 
-    u64::from(smallest) * 10 <= total_docs
+    let smallest = ordered
+        .first()
+        .map(|&hash| gram_cardinality(hash, snap))
+        .unwrap_or(0);
+    if is_selective_enough(u64::from(smallest), total_docs) {
+        return Ok(true);
+    }
+
+    if ordered.len() == 1 {
+        return Ok(false);
+    }
+
+    // Probe the intersection of a few smallest postings. Compound identifiers
+    // can be highly selective even when each component gram is common alone.
+    let mut acc = posting_bitmap(ordered[0], snap)?.as_ref().clone();
+    for &hash in ordered.iter().skip(1).take(2) {
+        let postings = posting_bitmap(hash, snap)?;
+        acc &= postings.as_ref();
+        if acc.is_empty() || is_selective_enough(acc.len(), total_docs) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 /// Execute a gram query against base segments plus overlay and return sorted
@@ -183,7 +207,9 @@ fn execute_query_bitmap(
 ) -> Result<RoaringBitmap, IndexError> {
     match query {
         GramQuery::And(children) => {
-            let mut iter = children.iter();
+            let mut ordered: Vec<_> = children.iter().collect();
+            ordered.sort_unstable_by_key(|child| query_cardinality_upper_bound(child, snap));
+            let mut iter = ordered.into_iter();
             let Some(first) = iter.next() else {
                 return Ok(snap.all_doc_ids().clone());
             };
@@ -206,7 +232,9 @@ fn execute_query_bitmap(
             Ok(acc)
         }
         GramQuery::Grams(hashes) => {
-            let mut iter = hashes.iter().copied();
+            let mut ordered = hashes.to_vec();
+            ordered.sort_unstable_by_key(|&hash| gram_cardinality(hash, snap));
+            let mut iter = ordered.into_iter();
             let Some(first) = iter.next() else {
                 return Ok(snap.all_doc_ids().clone());
             };
@@ -237,6 +265,34 @@ fn gram_cardinality(gram_hash: u64, snap: &IndexSnapshot) -> u32 {
         .get(&gram_hash)
         .map_or(0, |ids| ids.len() as u32);
     base_total.saturating_add(overlay_total)
+}
+
+fn query_cardinality_upper_bound(query: &GramQuery, snap: &IndexSnapshot) -> u32 {
+    let total_docs = snap.all_doc_ids().len() as u32;
+    match query {
+        GramQuery::And(children) => children
+            .iter()
+            .map(|child| query_cardinality_upper_bound(child, snap))
+            .min()
+            .unwrap_or(total_docs),
+        GramQuery::Or(children) => children
+            .iter()
+            .fold(0u32, |acc, child| {
+                acc.saturating_add(query_cardinality_upper_bound(child, snap))
+            })
+            .min(total_docs),
+        GramQuery::Grams(hashes) => hashes
+            .iter()
+            .map(|&hash| gram_cardinality(hash, snap))
+            .min()
+            .unwrap_or(total_docs),
+        GramQuery::All => total_docs,
+        GramQuery::None => 0,
+    }
+}
+
+fn is_selective_enough(candidate_count: u64, total_docs: u64) -> bool {
+    candidate_count * 10 <= total_docs
 }
 
 fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBitmap>, IndexError> {
@@ -366,7 +422,7 @@ mod tests {
         let snap = index.snapshot();
         let grams = literal_grams("xyzzy_no_match_sentinel_42").unwrap();
 
-        assert!(should_use_index(&grams, &snap));
+        assert!(should_use_index(&grams, &snap).unwrap());
 
         let candidates = execute_query(&GramQuery::Grams(grams), &snap).unwrap();
         assert!(candidates.is_empty());
@@ -420,7 +476,7 @@ mod tests {
         // A term in only 2/20 files (10%) should use the index.
         let grams = literal_grams("unique_target_gram").unwrap();
         assert!(
-            should_use_index(&grams, &snap),
+            should_use_index(&grams, &snap).unwrap(),
             "selective term should use index"
         );
     }
@@ -450,7 +506,7 @@ mod tests {
         // Grams from "common_everywhere" appear in all 10 files (100%) -> skip index.
         let grams = literal_grams("common_everywhere").unwrap();
         assert!(
-            !should_use_index(&grams, &snap),
+            !should_use_index(&grams, &snap).unwrap(),
             "ubiquitous term should fall back to full scan"
         );
     }
@@ -470,8 +526,52 @@ mod tests {
         let snap = index.snapshot();
 
         assert!(
-            !should_use_index(&[], &snap),
+            !should_use_index(&[], &snap).unwrap(),
             "empty gram list should not use index"
+        );
+    }
+
+    #[test]
+    fn should_use_index_for_compound_identifier_with_selective_intersection() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..8 {
+            std::fs::write(
+                repo.path().join(format!("irq_{i:02}.rs")),
+                format!("fn irq_handler_{i}() {{ let irq = {i}; }}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                repo.path().join(format!("work_{i:02}.rs")),
+                format!("fn work_handler_{i}() {{ let work = {i}; }}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                repo.path().join(format!("queue_{i:02}.rs")),
+                format!("fn queue_handler_{i}() {{ let queue = {i}; }}\n"),
+            )
+            .unwrap();
+        }
+
+        std::fs::write(
+            repo.path().join("match.rs"),
+            "fn target() { irq_work_queue(); }\n",
+        )
+        .unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let snap = index.snapshot();
+
+        let grams = literal_grams("irq_work_queue").unwrap();
+        assert!(
+            should_use_index(&grams, &snap).unwrap(),
+            "compound identifier should use index when gram intersection is selective"
         );
     }
 }

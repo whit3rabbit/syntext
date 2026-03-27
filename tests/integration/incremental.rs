@@ -313,6 +313,26 @@ fn delete_path_outside_repo_rejected() {
     assert!(result.is_err(), "delete outside repo should be rejected");
 }
 
+/// notify_change rejects lexical traversal outside the repo root.
+#[test]
+fn path_with_parent_component_outside_repo_rejected() {
+    let (repo, _idx, index) = setup();
+
+    let traversal = repo.path().join("../evil_file.rs");
+    let result = index.notify_change(&traversal);
+    assert!(result.is_err(), "path traversal should be rejected");
+}
+
+/// notify_delete rejects lexical traversal outside the repo root.
+#[test]
+fn delete_path_with_parent_component_outside_repo_rejected() {
+    let (repo, _idx, index) = setup();
+
+    let traversal = repo.path().join("../evil_file.rs");
+    let result = index.notify_delete(&traversal);
+    assert!(result.is_err(), "delete path traversal should be rejected");
+}
+
 // ---------------------------------------------------------------------------
 // Security: file size enforcement during commit
 // ---------------------------------------------------------------------------
@@ -345,6 +365,53 @@ fn large_file_rejected_during_commit() {
     assert!(
         err_msg.contains("too large"),
         "error should mention 'too large', got: {err_msg}"
+    );
+}
+
+/// Incremental updates should skip binary files just like full builds.
+#[test]
+fn binary_file_added_during_commit_is_not_indexed() {
+    let (repo, _idx, index) = setup();
+
+    let binary_path = repo.path().join("src/data.bin");
+    let mut binary = vec![0u8; 100];
+    binary[0..5].copy_from_slice(b"BINAR");
+    fs::write(&binary_path, binary).unwrap();
+
+    index.notify_change(&binary_path).unwrap();
+    index.commit_batch().unwrap();
+
+    let snap = index.snapshot();
+    assert!(
+        !snap.path_index.paths.iter().any(|p| p == "src/data.bin"),
+        "binary file should not appear in the path index after incremental commit"
+    );
+}
+
+/// A text file changed to binary should disappear from the visible index.
+#[test]
+fn text_file_changed_to_binary_is_removed_from_visible_index() {
+    let (repo, _idx, index) = setup();
+
+    let main_path = repo.path().join("src/main.rs");
+    let mut binary = vec![0u8; 64];
+    binary[0..4].copy_from_slice(b"BIN!");
+    fs::write(&main_path, binary).unwrap();
+
+    index.notify_change(&main_path).unwrap();
+    index.commit_batch().unwrap();
+
+    let snap = index.snapshot();
+    assert!(
+        !snap.path_index.paths.iter().any(|p| p == "src/main.rs"),
+        "binary replacement should remove the path from the visible path index"
+    );
+
+    let results = search(&index, "parse_query");
+    let main_results: Vec<_> = results.iter().filter(|(p, _)| p == "src/main.rs").collect();
+    assert!(
+        main_results.is_empty(),
+        "binary replacement should remove stale search hits from the old text file"
     );
 }
 

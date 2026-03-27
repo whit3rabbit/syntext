@@ -16,7 +16,7 @@ pub use walk::is_binary;
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use fs2::FileExt;
@@ -152,6 +152,22 @@ pub struct Index {
 }
 
 impl Index {
+    fn repo_relative_path(&self, path: &Path) -> Result<String, IndexError> {
+        let rel = path
+            .strip_prefix(&self.config.repo_root)
+            .map_err(|_| IndexError::PathOutsideRepo(path.to_path_buf()))?;
+        if rel.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            return Err(IndexError::PathOutsideRepo(path.to_path_buf()));
+        }
+
+        Ok(rel.to_string_lossy().replace('\\', "/"))
+    }
+
     /// Build the index from scratch, writing segments and a manifest.
     /// Respects `.gitignore`, skips binary files and files exceeding
     /// `config.max_file_size`.
@@ -363,11 +379,7 @@ impl Index {
     ///
     /// Returns `PathOutsideRepo` if `path` is not under `repo_root`.
     pub fn notify_change(&self, path: &Path) -> Result<(), IndexError> {
-        let rel = path
-            .strip_prefix(&self.config.repo_root)
-            .map_err(|_| IndexError::PathOutsideRepo(path.to_path_buf()))?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = self.repo_relative_path(path)?;
         self.pending.notify_change(&rel);
         Ok(())
     }
@@ -376,11 +388,7 @@ impl Index {
     ///
     /// Returns `PathOutsideRepo` if `path` is not under `repo_root`.
     pub fn notify_delete(&self, path: &Path) -> Result<(), IndexError> {
-        let rel = path
-            .strip_prefix(&self.config.repo_root)
-            .map_err(|_| IndexError::PathOutsideRepo(path.to_path_buf()))?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = self.repo_relative_path(path)?;
         self.pending.notify_delete(&rel);
         Ok(())
     }
@@ -410,6 +418,7 @@ impl Index {
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
         let mut new_files: Vec<(String, Arc<[u8]>)> = Vec::new();
+        let mut excluded_changed = std::collections::HashSet::new();
         for path in &take.newly_changed {
             let abs = self.config.repo_root.join(path);
             // Enforce the same max_file_size limit used during full builds.
@@ -421,15 +430,27 @@ impl Index {
                 });
             }
             let content = fs::read(&abs)?;
+            if is_binary(&content) {
+                excluded_changed.insert(path.clone());
+                continue;
+            }
             new_files.push((path.clone(), Arc::from(content)));
         }
+
+        let mut visible_changed = take.newly_changed.clone();
+        for path in &excluded_changed {
+            visible_changed.remove(path);
+        }
+
+        let mut removed_paths = take.newly_deleted.clone();
+        removed_paths.extend(excluded_changed.iter().cloned());
 
         let overlay = OverlayView::build_incremental(
             base_doc_count,
             &old_snap.overlay,
             new_files,
-            &take.newly_changed,
-            &take.newly_deleted,
+            &visible_changed,
+            &removed_paths,
         );
 
         // Compute delete_set: base doc_ids invalidated by changes.
@@ -440,11 +461,8 @@ impl Index {
         );
 
         // Update the path index incrementally from the previous snapshot.
-        let path_index = PathIndex::build_incremental(
-            &old_snap.path_index,
-            &take.newly_deleted,
-            &take.newly_changed,
-        );
+        let path_index =
+            PathIndex::build_incremental(&old_snap.path_index, &removed_paths, &visible_changed);
 
         let total_ids = overlay
             .docs
