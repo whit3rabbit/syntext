@@ -340,6 +340,9 @@ impl Index {
 
         // Calibrate index-vs-scan crossover threshold from actual disk timing.
         let scan_threshold = calibrate_threshold(&indexed_paths, &config);
+        if config.verbose {
+            eprintln!("ripline: calibrated scan threshold: {:.3}", scan_threshold);
+        }
         // Write manifest.
         let mut manifest = Manifest::new(seg_refs, total_indexed);
         manifest.scan_threshold_fraction = Some(scan_threshold);
