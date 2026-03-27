@@ -1,6 +1,8 @@
-# ripline
+# ripline-rs
 
 Hybrid code search index for agent workflows. Sparse n-gram content index + Roaring bitmap path index + optional Tree-sitter symbol index.
+
+> **Crate name:** `ripline-rs` (the name `ripline` was already taken on crates.io). Binary is still `ripline`.
 
 - See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for resolved and open design issues.
 - See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for quantitative design reasoning.
