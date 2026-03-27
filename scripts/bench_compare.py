@@ -280,6 +280,86 @@ def parse_tools(value: str) -> tuple[str, ...]:
     return tools
 
 
+def render_markdown_report(report: dict[str, object]) -> str:
+    lines: list[str] = []
+    lines.append("# External Benchmark")
+    lines.append("")
+    lines.append(f"- Repo: `{report['repo']}`")
+    if report["preset"]:
+        lines.append(f"- Preset: `{report['preset']}`")
+    lines.append(f"- Tracked files: `{report['tracked_files']}`")
+    lines.append(f"- Grep mode: `{report['grep_mode']}`")
+    lines.append(f"- Tools: `{', '.join(report['tools'])}`")
+    lines.append(f"- Ripline build iterations: `{report['build_iterations']}`")
+    lines.append(f"- Search iterations per tool/query: `{report['search_iterations']}`")
+    lines.append("")
+
+    build_summary = report["ripline_index_build_ms"]
+    lines.append("## Ripline index build")
+    lines.append("")
+    lines.append(
+        f"- median: `{build_summary['median_ms']}` ms"
+        f", min: `{build_summary['min_ms']}` ms"
+        f", max: `{build_summary['max_ms']}` ms"
+    )
+    lines.append("")
+
+    lines.extend(render_markdown_tables(report))
+    lines.append("")
+    lines.append("## Notes")
+    lines.append("")
+    lines.append(
+        "- `ripline` search latency excludes index build time, which is reported separately."
+    )
+    if report["grep_mode"] == "tracked" and "grep" in report["tools"]:
+        lines.append(
+            "- `grep` uses `git ls-files` as its file list. That is a better baseline than raw recursive grep, but it is still not ignore-aware in the same way as `rg`."
+        )
+    elif "grep" in report["tools"]:
+        lines.append(
+            "- `grep` uses recursive traversal and may include files that `rg` or `ripline` skip."
+        )
+
+    mismatched = [
+        result
+        for result in report["queries"]
+        if len(set(result["counts"].values())) != 1
+    ]
+    if mismatched:
+        lines.append(
+            "- Match counts differ for at least one query. Treat timing comparisons cautiously."
+        )
+        literal_mismatches = [
+            result
+            for result in mismatched
+            if str(result["query"]).startswith("literal:")
+        ]
+        if literal_mismatches:
+            lines.append(
+                "- For literal queries, a lower `ripline` count often means the pattern is being matched as a mid-token substring inside larger identifiers. Current `ripline` coverage guarantees are strongest for token-aligned queries."
+            )
+    return "\n".join(lines)
+
+
+def render_markdown_tables(report: dict[str, object]) -> list[str]:
+    lines: list[str] = []
+    lines.append("## Search latency")
+    lines.append("")
+    lines.append("| Query | Tool | Matches | Median ms | Min ms | Max ms |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
+    for result in report["queries"]:
+        query_name = result["query"]
+        counts = result["counts"]
+        timings = result["timings_ms"]
+        for tool in report["tools"]:
+            summary = timings[tool]
+            lines.append(
+                f"| `{query_name}` | `{tool}` | `{counts[tool]}` | "
+                f"`{summary['median_ms']}` | `{summary['min_ms']}` | `{summary['max_ms']}` |"
+            )
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="Git repository to benchmark")
@@ -337,6 +417,15 @@ def main() -> int:
         "--json",
         action="store_true",
         help="Emit machine-readable JSON instead of Markdown",
+    )
+    parser.add_argument(
+        "--markdown-table-only",
+        action="store_true",
+        help="Emit only the Markdown search-latency table section for easy paste into docs",
+    )
+    parser.add_argument(
+        "--output",
+        help="Write the rendered output to a file instead of stdout",
     )
     parser.add_argument(
         "--tools",
@@ -524,69 +613,20 @@ def main() -> int:
         "queries": query_results,
     }
 
+    if args.json and args.markdown_table_only:
+        raise SystemExit("choose either --json or --markdown-table-only, not both")
+
     if args.json:
-        print(json.dumps(report, indent=2))
-        return 0
-
-    print(f"# External Benchmark\n")
-    print(f"- Repo: `{report['repo']}`")
-    if report["preset"]:
-        print(f"- Preset: `{report['preset']}`")
-    print(f"- Tracked files: `{report['tracked_files']}`")
-    print(f"- Grep mode: `{report['grep_mode']}`")
-    print(f"- Tools: `{', '.join(report['tools'])}`")
-    print(f"- Ripline build iterations: `{report['build_iterations']}`")
-    print(f"- Search iterations per tool/query: `{report['search_iterations']}`\n")
-
-    build_summary = report["ripline_index_build_ms"]
-    print("## Ripline index build\n")
-    print(
-        f"- median: `{build_summary['median_ms']}` ms"
-        f", min: `{build_summary['min_ms']}` ms"
-        f", max: `{build_summary['max_ms']}` ms\n"
-    )
-
-    print("## Search latency\n")
-    print("| Query | Tool | Matches | Median ms | Min ms | Max ms |")
-    print("|---|---:|---:|---:|---:|---:|")
-    for result in report["queries"]:
-        query_name = result["query"]
-        counts = result["counts"]
-        timings = result["timings_ms"]
-        for tool in report["tools"]:
-            summary = timings[tool]
-            print(
-                f"| `{query_name}` | `{tool}` | `{counts[tool]}` | "
-                f"`{summary['median_ms']}` | `{summary['min_ms']}` | `{summary['max_ms']}` |"
-            )
-
-    print("\n## Notes\n")
-    print(
-        "- `ripline` search latency excludes index build time, which is reported separately."
-    )
-    if args.grep_mode == "tracked":
-        print(
-            "- `grep` uses `git ls-files` as its file list. That is a better baseline than raw recursive grep, but it is still not ignore-aware in the same way as `rg`."
-        )
+        rendered = json.dumps(report, indent=2)
+    elif args.markdown_table_only:
+        rendered = "\n".join(render_markdown_tables(report))
     else:
-        print("- `grep` uses recursive traversal and may include files that `rg` or `ripline` skip.")
+        rendered = render_markdown_report(report)
 
-    mismatched = [
-        result
-        for result in report["queries"]
-        if len(set(result["counts"].values())) != 1
-    ]
-    if mismatched:
-        print("- Match counts differ for at least one query. Treat timing comparisons cautiously.")
-        literal_mismatches = [
-            result
-            for result in mismatched
-            if str(result["query"]).startswith("literal:")
-        ]
-        if literal_mismatches:
-            print(
-                "- For literal queries, a lower `ripline` count often means the pattern is being matched as a mid-token substring inside larger identifiers. Current `ripline` coverage guarantees are strongest for token-aligned queries."
-            )
+    if args.output:
+        Path(args.output).write_text(rendered + ("\n" if not rendered.endswith("\n") else ""))
+    else:
+        print(rendered)
 
     return 0
 

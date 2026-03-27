@@ -171,7 +171,7 @@ Most source files are small enough that file-level granularity is sufficient. Th
 
 The path index originally used `file_id = sorted path position`. That is simple and fast to build, but it makes incremental maintenance awkward: inserting or deleting one path can renumber many file IDs, which forces broad rebuilds of path-scoped structures (`extension_to_files`, `component_to_files`, `doc_to_file_id`).
 
-We intentionally chose to move toward **stable file IDs** even though the first measured implementation did **not** improve `commit_batch()` yet. The benchmark history in [`docs/PERFORMANCE_BASELINE.md`](/Users/whit3rabbit/Documents/GitHub/ripline/docs/PERFORMANCE_BASELINE.md) now shows the full arc:
+We intentionally chose to move toward **stable file IDs** even though the first measured implementation did **not** improve `commit_batch()` yet. The benchmark history in [`docs/BENCHMARKS.md`](BENCHMARKS.md) now shows the full arc:
 
 - Query latency stayed roughly flat.
 - Full build stayed in the same range, with a small bookkeeping cost.

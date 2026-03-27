@@ -41,12 +41,13 @@ Segments are immutable single-file mmap structures (RPLX format). Updates go thr
 ## Benchmarks
 
 Real-world benchmark runs are tracked in
-[docs/PERFORMANCE_EXTERNAL.md](docs/PERFORMANCE_EXTERNAL.md). The table below is
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md). The table below is
 the current snapshot of preset-backed external runs using the shared harness
 `scripts/bench_compare.py`.
 
 Method:
 
+- **Note**: These benchmarks were run against `ripline` version `0.01`.
 - External repos use the same harness and preset catalog.
 - Times below are single-shot preset runs on macOS unless noted otherwise.
 - `ripline` search time excludes index build time. Build time is shown separately.
@@ -86,12 +87,12 @@ Method:
 Notes:
 
 - The exact-count validated preset terms are documented in
-  [docs/BENCHMARK_REPOS.md](docs/BENCHMARK_REPOS.md).
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - Substring-heavy terms such as `ReactElement`, `useEffect`, and `TyCtxt` are
   intentionally not in the headline README table because they can undercount in
   `ripline` relative to `rg`.
 - Historical and exploratory runs, including mismatched-count investigations,
-  remain in [docs/PERFORMANCE_EXTERNAL.md](docs/PERFORMANCE_EXTERNAL.md).
+  remain in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Usage
 
@@ -161,8 +162,6 @@ See `specs/001-hybrid-code-search-index/tasks.md` for the full implementation pl
 ## Design documents
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** -- Quantitative analysis: selectivity math, index size estimates, posting list encoding, design tradeoffs
-- **[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)** -- Open and resolved design issues
-
 Detailed specs in `specs/001-hybrid-code-search-index/`:
 
 - **[spec.md](specs/001-hybrid-code-search-index/spec.md)** -- Feature specification with user stories and acceptance criteria

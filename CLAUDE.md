@@ -4,7 +4,6 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 
 > **Crate name:** `ripline-rs` (the name `ripline` was already taken on crates.io). Binary is still `ripline`.
 
-- See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for resolved and open design issues.
 - See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for quantitative design reasoning.
 
 ## Architecture
@@ -14,6 +13,10 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 - **Query router**: literal (`build_covering` + memchr::memmem) / indexed regex (`build_covering_inner` + HIR decomposition) / full scan. Cardinality-based fallback skips index when smallest posting list > 10% of total docs. Path filter always first.
 - **Overlay**: single merged in-memory OverlayView, rebuilt from all dirty files on each `commit_batch()`. ArcSwap<IndexSnapshot> for snapshot isolation. On-disk generations for crash recovery only.
 - **Build**: batched-segment construction, 256MB per batch, sort-based aggregation, rayon for parallelism. Peak memory ~1.5GB per batch.
+
+## General Rules
+
+- **Never put full file paths in documents.** Always use relative paths when referencing internal files. When referencing external repositories, use links to the original Git repository and lock it to a specific version or tag when possible.
 
 ## Dependencies
 
@@ -81,7 +84,7 @@ cargo bench --bench selectivity -- --sample-size 10
 
 Use these when changing tokenizer coverage, posting execution, query routing,
 or commit-path performance. Record before/after results in
-`docs/PERFORMANCE_BASELINE.md`.
+`docs/BENCHMARKS.md`.
 
 ### External repository comparison harness
 
@@ -100,6 +103,11 @@ Useful options:
 python3 scripts/bench_compare.py --help
 python3 scripts/bench_compare.py --list-presets
 python3 scripts/bench_compare.py --json --repo /path/to/repo --query literal:foo
+python3 scripts/bench_compare.py --preset react_token_aligned --markdown-table-only
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --markdown-table-only \
+  --output /tmp/react-bench.md
 python3 scripts/bench_compare.py \
   --preset react_token_aligned
 python3 scripts/bench_compare.py \
@@ -112,8 +120,8 @@ python3 scripts/bench_compare.py \
 For very large repos, start with `--build-iterations 1 --search-iterations 1 --warmups 0`
 and only increase iterations if the runtime is acceptable.
 
-Use the preset catalog in [`benchmarks/repo_presets.json`](/Users/whit3rabbit/Documents/GitHub/ripline/benchmarks/repo_presets.json)
-and the rationale in [`docs/BENCHMARK_REPOS.md`](/Users/whit3rabbit/Documents/GitHub/ripline/docs/BENCHMARK_REPOS.md).
+Use the preset catalog in [`benchmarks/repo_presets.json`](benchmarks/repo_presets.json)
+and the rationale in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 The benchmark process should stay on this one script and this one preset catalog
 so runs are reproducible over time.
 
@@ -122,12 +130,12 @@ so runs are reproducible over time.
 Shallow clones are enough for search benchmarks:
 
 ```sh
-mkdir -p /Users/whit3rabbit/Documents/GitHub/_ripline-bench
-git clone --depth 1 --single-branch https://github.com/torvalds/linux.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/linux
-git clone --depth 1 --single-branch https://github.com/rust-lang/rust.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/rust
-git clone --depth 1 --single-branch https://github.com/facebook/react.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/react
-git clone --depth 1 --single-branch https://github.com/microsoft/TypeScript.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/typescript
-git clone --depth 1 --single-branch https://github.com/nodejs/node.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/node
+mkdir -p ./_ripline-bench
+git clone --depth 1 -b v6.8 https://github.com/torvalds/linux.git ./_ripline-bench/linux
+git clone --depth 1 -b 1.77.0 https://github.com/rust-lang/rust.git ./_ripline-bench/rust
+git clone --depth 1 -b v18.2.0 https://github.com/facebook/react.git ./_ripline-bench/react
+git clone --depth 1 -b v5.4.3 https://github.com/microsoft/TypeScript.git ./_ripline-bench/typescript
+git clone --depth 1 -b v20.12.0 https://github.com/nodejs/node.git ./_ripline-bench/node
 ```
 
 macOS warning: default APFS is case-insensitive. `linux` and `rust` have
@@ -220,7 +228,7 @@ All PRs must pass before merge:
 - **No FM-index for v1**. Construction time 10x slower, locate is expensive, zero incrementality. Valid v2 path.
 - **No content-defined chunking for v1**. Most files are small, posting list inflation outweighs gains. Block-level positional data is the preferred v2 alternative.
 - **Lowercase normalization** at index time. ~15-20% more candidates for case-sensitive queries, eliminated by verifier. Dual dictionary is a v2 option.
-- **Stable file IDs are a long-term choice** for incremental path-index maintenance, even though the first implementation regressed `commit_batch`; compare against `docs/PERFORMANCE_BASELINE.md` before changing course.
+- **Stable file IDs are a long-term choice** for incremental path-index maintenance, even though the first implementation regressed `commit_batch`; compare against `docs/BENCHMARKS.md` before changing course.
 - **File-level documents**, not chunks. Segment format uses u32 IDs that can represent chunk_ids later.
 - **Full reindex at 30% overlay threshold** is the only mechanism that cleans stale doc_ids from base segments. Overlay compaction is not needed (single merged view).
 
