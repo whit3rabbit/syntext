@@ -299,9 +299,17 @@ fn resolve_doc(
     let doc_entry = snap.base_segments()[seg_idx].get_doc(local_id)?;
 
     let abs_path = repo_root.join(&doc_entry.path);
+    // Guard: reject symlinks that resolve outside the repo root.
+    // canonicalize() resolves all symlinks; if the result doesn't start
+    // with repo_root, the file has escaped.
+    let canonical = std::fs::canonicalize(&abs_path).ok()?;
+    let canonical_root = std::fs::canonicalize(repo_root).ok()?;
+    if !canonical.starts_with(&canonical_root) {
+        return None;
+    }
     // Bounded read: cap at max_file_size to prevent unbounded memory growth
     // when a file grows after it was indexed.
-    let file = std::fs::File::open(&abs_path).ok()?;
+    let file = std::fs::File::open(&canonical).ok()?;
     let mut reader = file.take(max_file_size);
     let mut content = Vec::new();
     reader.read_to_end(&mut content).ok()?;

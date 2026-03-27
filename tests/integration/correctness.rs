@@ -607,6 +607,50 @@ fn search_finds_match_in_file_that_grew_beyond_max_size() {
     );
 }
 
+/// Symlink escape: a symlink replacing an indexed file must not leak content
+/// from outside the repo root.
+#[cfg(unix)]
+#[test]
+fn search_does_not_follow_symlink_outside_repo() {
+    use std::os::unix::fs::symlink;
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+
+    // Create a real file in the repo and index it.
+    let real_file = repo.path().join("data.rs");
+    std::fs::write(&real_file, "fn real_content() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    // Build index, then drop to release exclusive lock before re-opening.
+    drop(Index::build(config.clone()).unwrap());
+
+    // Create a secret file outside the repo.
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "fn real_content() {}\n").unwrap();
+
+    // Replace the indexed file with a symlink to the secret.
+    std::fs::remove_file(&real_file).unwrap();
+    symlink(&secret, &real_file).unwrap();
+
+    // Re-open index. The segment still references "data.rs" but the
+    // file is now a symlink escaping the repo root.
+    let index2 = Index::open(config).unwrap();
+    let opts = SearchOptions::default();
+    let results = index2.search("real_content", &opts).unwrap();
+
+    // Should NOT return results from the symlinked file.
+    assert!(
+        results.is_empty(),
+        "search should not follow symlinks that escape repo root"
+    );
+}
+
 /// Verify the rg oracle itself produces consistent results across two runs.
 ///
 /// This is a meta-test: if rg is non-deterministic on this corpus, the
