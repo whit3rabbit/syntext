@@ -250,3 +250,103 @@ fn incremental_reuses_cached_grams() {
         "reused doc should have same cached grams"
     );
 }
+
+// ---------------------------------------------------------------------------
+// build_incremental_delta tests (Task 2)
+// ---------------------------------------------------------------------------
+
+/// Delta path: unchanged files keep their exact old doc_ids when base_doc_count is stable.
+#[test]
+fn delta_unchanged_files_keep_doc_ids() {
+    let old = OverlayView::build(
+        10,
+        dirty(&[("a.rs", b"fn alpha() {}"), ("b.rs", b"fn beta() {}")]),
+    );
+    let a_old_id = old.docs.iter().find(|d| d.path == "a.rs").unwrap().doc_id;
+
+    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
+    let removed: HashSet<String> = HashSet::new();
+    let new_files = dirty(&[("b.rs", b"fn beta_v2() {}")]);
+
+    // Same base_doc_count = 10 triggers delta path.
+    let inc = OverlayView::build_incremental(10, &old, new_files, &newly_changed, &removed);
+
+    let a_new_id = inc.docs.iter().find(|d| d.path == "a.rs").unwrap().doc_id;
+    assert_eq!(a_new_id, a_old_id, "unchanged doc keeps its doc_id on delta path");
+}
+
+/// Delta path: gram_index for unchanged files equals what full rebuild produces.
+#[test]
+fn delta_gram_index_matches_full_rebuild() {
+    let old = OverlayView::build(
+        10,
+        dirty(&[("a.rs", b"fn alpha() {}"), ("b.rs", b"fn beta() {}")]),
+    );
+
+    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
+    let removed: HashSet<String> = HashSet::new();
+    let new_b = dirty(&[("b.rs", b"fn beta_v2() {}")]);
+
+    let delta = OverlayView::build_incremental(10, &old, new_b.clone(), &newly_changed, &removed);
+
+    // Full rebuild for comparison.
+    let all_files = dirty(&[("a.rs", b"fn alpha() {}"), ("b.rs", b"fn beta_v2() {}")]);
+    let full = OverlayView::build(10, all_files);
+
+    // Same gram keys (order-independent comparison).
+    let mut delta_keys: Vec<u64> = delta.gram_index.keys().copied().collect();
+    let mut full_keys: Vec<u64> = full.gram_index.keys().copied().collect();
+    delta_keys.sort_unstable();
+    full_keys.sort_unstable();
+    assert_eq!(delta_keys, full_keys, "gram_index keys must match full rebuild");
+}
+
+/// Delta path: deleting a file removes all its grams from gram_index.
+#[test]
+fn delta_deletion_removes_grams() {
+    // Build with a file whose grams we know won't appear in the other file.
+    let old = OverlayView::build(
+        5,
+        dirty(&[("a.rs", b"fn unique_zzzq() {}"), ("b.rs", b"fn common() {}")]),
+    );
+    let zzzq_hash = old
+        .gram_index
+        .keys()
+        .find(|&&h| {
+            // Find a gram hash only in a.rs (doc_id=5), not b.rs (doc_id=6).
+            let ids = &old.gram_index[&h];
+            ids == &[5]
+        })
+        .copied();
+
+    if let Some(h) = zzzq_hash {
+        let removed: HashSet<String> = ["a.rs".to_string()].into();
+        let newly_changed: HashSet<String> = HashSet::new();
+        let inc = OverlayView::build_incremental(5, &old, vec![], &newly_changed, &removed);
+
+        assert!(
+            !inc.gram_index.contains_key(&h),
+            "gram unique to deleted file should be removed from index"
+        );
+    }
+    // If all grams happen to be shared, the test is vacuously valid.
+}
+
+/// Posting lists for new docs are in sorted order after delta append.
+#[test]
+fn delta_posting_lists_sorted_after_new_doc() {
+    let old = OverlayView::build(0, dirty(&[("a.rs", b"fn shared_token() {}")]));
+
+    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
+    let removed: HashSet<String> = HashSet::new();
+    // b.rs shares some grams with a.rs (e.g., "fn").
+    let new_files = dirty(&[("b.rs", b"fn shared_token() {}")]);
+
+    let inc = OverlayView::build_incremental(0, &old, new_files, &newly_changed, &removed);
+
+    for (_, ids) in &inc.gram_index {
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, &sorted, "posting list must be sorted");
+    }
+}

@@ -210,6 +210,77 @@ impl OverlayView {
         }
     }
 
+    /// Delta path: base_doc_count is unchanged, so overlay doc_ids for unchanged
+    /// files are stable. Clone the old gram_index, remove stale entries for
+    /// changed/deleted files using their cached grams, append new doc_ids for
+    /// new/changed files. New doc_ids are always > all existing ids so posting
+    /// lists remain sorted after push.
+    fn build_incremental_delta(
+        base_doc_count: u32,
+        old_overlay: &OverlayView,
+        new_files: Vec<(String, Arc<[u8]>)>,
+        newly_changed: &HashSet<String>,
+        removed_paths: &HashSet<String>,
+    ) -> Self {
+        // Clone old gram_index; remove stale doc_ids for changed/deleted files.
+        let mut gram_index = old_overlay.gram_index.clone();
+
+        for old_doc in &old_overlay.docs {
+            if removed_paths.contains(&old_doc.path) || newly_changed.contains(&old_doc.path) {
+                for &gram_hash in &old_doc.grams {
+                    if let Some(list) = gram_index.get_mut(&gram_hash) {
+                        list.retain(|&id| id != old_doc.doc_id);
+                    }
+                }
+            }
+        }
+        // Drop posting lists that became empty after removal.
+        gram_index.retain(|_, list| !list.is_empty());
+
+        // Carry forward unchanged docs with their existing (stable) doc_ids.
+        let mut docs: Vec<OverlayDoc> = old_overlay
+            .docs
+            .iter()
+            .filter(|d| !removed_paths.contains(&d.path) && !newly_changed.contains(&d.path))
+            .cloned()
+            .collect();
+
+        // New/changed files get fresh doc_ids starting from next_doc_id.
+        // Since next_doc_id > all existing doc_ids, push keeps posting lists sorted.
+        let mut next_id = old_overlay.next_doc_id;
+        for (path, content) in new_files {
+            let doc_id = next_id;
+            next_id = next_id
+                .checked_add(1)
+                .expect("doc_id overflow: base_doc_count + overlay size exceeds u32::MAX");
+
+            let grams = build_all(&content);
+            for &gram_hash in &grams {
+                gram_index.entry(gram_hash).or_default().push(doc_id);
+            }
+            docs.push(OverlayDoc {
+                doc_id,
+                path,
+                content,
+                grams,
+            });
+        }
+
+        let doc_id_map = docs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.doc_id, i))
+            .collect();
+
+        OverlayView {
+            gram_index,
+            docs,
+            doc_id_map,
+            next_doc_id: next_id,
+            base_doc_count,
+        }
+    }
+
     /// Look up an overlay doc by its global doc_id. O(1) via HashMap.
     pub fn get_doc(&self, global_id: u32) -> Option<&OverlayDoc> {
         self.doc_id_map.get(&global_id).map(|&idx| &self.docs[idx])
