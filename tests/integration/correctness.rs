@@ -29,6 +29,8 @@
 //! - Optional prefix: `(foo)?bar` -- CORRECT: index emits Grams("bar") only,
 //!   NOT And(Grams("foo"), Grams("bar")). foo is optional so requiring it
 //!   would be a false negative. The verifier filters candidates.
+//! - Indexed regex repetition: `(fn_parse_filter_query)+` -- the required
+//!   repetition preserves grams from the inner literal, so this should narrow.
 //! - Dot-star fallback: `parse.*batch` -- no extractable grams spanning the
 //!   `.*`; query router must fall back to full scan. ripline must still find
 //!   all rg matches.
@@ -147,9 +149,7 @@ fn ripline_matches(
     // If the glob is a simple extension filter like "*.py", use file_type
     // (extension match). Otherwise use path_filter (substring match).
     let (path_filter, file_type) = match path_glob {
-        Some(g) if g.starts_with("*.") => {
-            (None, Some(g.trim_start_matches("*.").to_string()))
-        }
+        Some(g) if g.starts_with("*.") => (None, Some(g.trim_start_matches("*.").to_string())),
         Some(g) => (Some(g.to_string()), None),
         None => (None, None),
     };
@@ -294,7 +294,12 @@ fn regex_alternation() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let ripline_result = ripline_matches(&index, &corpus, "parse_query|process_batch", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "parse_query|process_batch");
+    assert_no_false_negatives(
+        &corpus,
+        &rg_result,
+        &ripline_result,
+        "parse_query|process_batch",
+    );
 }
 
 /// Regex character class: `parse_quer[yi]` (matches parse_query and parse_queri).
@@ -306,10 +311,36 @@ fn regex_character_class() {
     }
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "parse_quer[yi]", &[]);
-    assert!(!rg_result.is_empty(), "fixture invariant: character class must match at least 1 file");
+    assert!(
+        !rg_result.is_empty(),
+        "fixture invariant: character class must match at least 1 file"
+    );
     let (_tmp, index) = build_test_index(&corpus);
     let ripline_result = ripline_matches(&index, &corpus, "parse_quer[yi]", false, None);
     assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "parse_quer[yi]");
+}
+
+/// Indexed regex repetition: `(fn_parse_filter_query)+`.
+#[test]
+fn indexed_regex_repetition() {
+    if !rg_available() {
+        eprintln!("SKIP: rg not on PATH");
+        return;
+    }
+    let corpus = corpus_path();
+    let rg_result = rg_matches(&corpus, "(fn_parse_filter_query)+", &[]);
+    assert!(
+        !rg_result.is_empty(),
+        "fixture invariant: repetition pattern must match at least 1 file"
+    );
+    let (_tmp, index) = build_test_index(&corpus);
+    let ripline_result = ripline_matches(&index, &corpus, "(fn_parse_filter_query)+", false, None);
+    assert_no_false_negatives(
+        &corpus,
+        &rg_result,
+        &ripline_result,
+        "(fn_parse_filter_query)+",
+    );
 }
 
 /// Case-insensitive literal: `-i ParseQuery` matches parseQuery, PARSE_QUERY, etc.
@@ -332,7 +363,12 @@ fn case_insensitive_literal() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let ripline_result = ripline_matches(&index, &corpus, "ParseQuery", true, None);
-    assert_no_false_negatives(&corpus, &rg_ci, &ripline_result, "ParseQuery (case-insensitive)");
+    assert_no_false_negatives(
+        &corpus,
+        &rg_ci,
+        &ripline_result,
+        "ParseQuery (case-insensitive)",
+    );
 }
 
 /// No-match pattern: must return empty result set.
@@ -467,7 +503,12 @@ fn path_filter_py_only() {
             path
         );
     }
-    assert_no_false_negatives(&corpus, &rg_py, &ripline_result, "parse_query (*.py filter)");
+    assert_no_false_negatives(
+        &corpus,
+        &rg_py,
+        &ripline_result,
+        "parse_query (*.py filter)",
+    );
 }
 
 /// Gitignore: `build/output.txt` must not appear in results.
@@ -500,6 +541,48 @@ fn gitignore_excludes_build_dir() {
     }
 }
 
+/// Size guard: a file that grew beyond max_file_size after indexing must still
+/// produce a match when the sentinel is in the first max_file_size bytes.
+///
+/// Policy: do NOT skip oversized files (that would be a false negative).
+/// Read up to max_file_size bytes and verify against truncated content.
+#[test]
+fn search_finds_match_in_file_that_grew_beyond_max_size() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+
+    let file = repo.path().join("big.rs");
+    std::fs::write(&file, "fn unique_sentinel_xyzzy() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        max_file_size: 1024,
+        ..Config::default()
+    };
+    let index = ripline_rs::index::Index::build(config.clone()).unwrap();
+
+    // Baseline: found before growth.
+    let opts = SearchOptions::default();
+    let results = index.search("unique_sentinel_xyzzy", &opts).unwrap();
+    assert_eq!(results.len(), 1, "baseline: must find match in original file");
+
+    // Bloat the file: original content at the start, then padding.
+    // The sentinel is in the first 1024 bytes, so truncated read finds it.
+    let mut bloated = String::from("fn unique_sentinel_xyzzy() {}\n");
+    bloated.push_str(&"x".repeat(2048));
+    std::fs::write(&file, &bloated).unwrap();
+
+    // Re-open index (fresh snapshot) and search via truncated read.
+    let index2 = ripline_rs::index::Index::open(config).unwrap();
+    let results2 = index2.search("unique_sentinel_xyzzy", &opts).unwrap();
+    assert_eq!(
+        results2.len(),
+        1,
+        "should find match in truncated content of oversized file"
+    );
+}
+
 /// Verify the rg oracle itself produces consistent results across two runs.
 ///
 /// This is a meta-test: if rg is non-deterministic on this corpus, the
@@ -513,5 +596,8 @@ fn oracle_is_deterministic() {
     let corpus = corpus_path();
     let run1 = rg_matches(&corpus, "parse_query", &[]);
     let run2 = rg_matches(&corpus, "parse_query", &[]);
-    assert_eq!(run1, run2, "rg produced different results on two consecutive runs");
+    assert_eq!(
+        run1, run2,
+        "rg produced different results on two consecutive runs"
+    );
 }
