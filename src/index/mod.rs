@@ -79,7 +79,7 @@ fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
     // Two bitmaps with BITMAP_ENTRIES entries each, interleaved so the AND
     // result is half-dense (worst-case for the AND algorithm).
     let a: RoaringBitmap = (0..BITMAP_ENTRIES).collect();
-    let b: RoaringBitmap = (0..BITMAP_ENTRIES * 2).step_by(2).map(|x| x as u32).collect();
+    let b: RoaringBitmap = (0..BITMAP_ENTRIES * 2).step_by(2).collect();
 
     let t1 = std::time::Instant::now();
     for _ in 0..BITMAP_REPS {
