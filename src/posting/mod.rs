@@ -132,6 +132,10 @@ impl PostingList {
     }
 
     /// Number of entries in this posting list.
+    ///
+    /// **Warning:** O(n) for `Small` variant (fully decodes the varint stream).
+    /// For cardinality checks during search, use `MmapSegment::gram_cardinality()`
+    /// which reads the stored entry_count from the dictionary in O(1).
     pub fn len(&self) -> usize {
         match self {
             PostingList::Small(bytes) => {
@@ -143,6 +147,8 @@ impl PostingList {
     }
 
     /// Returns true if this posting list is empty.
+    ///
+    /// **Warning:** O(n) for `Small` variant. See [`PostingList::len`].
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -151,8 +157,6 @@ impl PostingList {
 // ---------------------------------------------------------------------------
 // T018: Adaptive intersection
 // ---------------------------------------------------------------------------
-
-
 
 // ---------------------------------------------------------------------------
 // Inline tests (unit tests in tests/unit/posting.rs)
@@ -185,6 +189,4 @@ mod tests {
         let ids = vec![0u32, 1_000_000, 2_000_000, u32::MAX - 1, u32::MAX];
         assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
     }
-
-
 }
