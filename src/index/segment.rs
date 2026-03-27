@@ -147,25 +147,14 @@ impl SegmentWriter {
         self.postings.dedup();
 
         let doc_count = self.docs.len() as u32;
-        let gram_count = self
-            .postings
-            .iter()
-            .map(|(gram_hash, _)| *gram_hash)
-            .fold((None, 0u32), |(prev, count), gram_hash| {
-                if prev == Some(gram_hash) {
-                    (prev, count)
-                } else {
-                    (Some(gram_hash), count + 1)
-                }
-            })
-            .1;
         let mut buf: Vec<u8> = Vec::new();
 
-        // Header (40 bytes)
+        // Header (40 bytes) -- gram_count placeholder patched after postings loop.
         buf.extend_from_slice(MAGIC);
         buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
         buf.extend_from_slice(&doc_count.to_le_bytes());
-        buf.extend_from_slice(&gram_count.to_le_bytes());
+        let gram_count_pos = buf.len();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // gram_count placeholder
         let hdr_offsets_pos = buf.len();
         buf.extend_from_slice(&0u64.to_le_bytes()); // doc_table_offset placeholder
         buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset placeholder
@@ -210,10 +199,7 @@ impl SegmentWriter {
                 .collect();
             let entry_count = doc_ids.len() as u32;
             if doc_ids.len() >= ROARING_THRESHOLD {
-                let mut bm = RoaringBitmap::new();
-                for id in doc_ids.iter().copied() {
-                    bm.insert(id);
-                }
+                let bm: RoaringBitmap = doc_ids.iter().copied().collect();
                 let rbytes = roaring_util::serialize(&bm);
                 buf.push(1u8);
                 buf.extend_from_slice(&entry_count.to_le_bytes());
@@ -228,7 +214,8 @@ impl SegmentWriter {
             }
             dict_entries.push((gram_hash, posting_abs_off, entry_count));
         }
-        debug_assert_eq!(gram_count, dict_entries.len() as u32);
+        let gram_count = dict_entries.len() as u32;
+        buf[gram_count_pos..gram_count_pos + 4].copy_from_slice(&gram_count.to_le_bytes());
 
         // Page-align for dictionary
         let dict_offset = {
@@ -339,10 +326,29 @@ impl MmapSegment {
             return Err(corrupt("bad header magic"));
         }
 
-        let doc_table_offset = u64::from_le_bytes(footer[0..8].try_into().unwrap()) as usize;
-        let dict_offset = u64::from_le_bytes(footer[16..24].try_into().unwrap()) as usize;
-        let doc_count = u32::from_le_bytes(footer[24..28].try_into().unwrap());
-        let gram_count = u32::from_le_bytes(footer[28..32].try_into().unwrap());
+        // Use map_err rather than unwrap() for slice-to-array conversions to 
+        // prevent panics (Denial of Service) when reading potentially corrupt or
+        // malformed index segments.
+        let doc_table_offset = u64::from_le_bytes(
+            footer[0..8]
+                .try_into()
+                .map_err(|_| corrupt("footer doc_table_offset slice"))?,
+        ) as usize;
+        let dict_offset = u64::from_le_bytes(
+            footer[16..24]
+                .try_into()
+                .map_err(|_| corrupt("footer dict_offset slice"))?,
+        ) as usize;
+        let doc_count = u32::from_le_bytes(
+            footer[24..28]
+                .try_into()
+                .map_err(|_| corrupt("footer doc_count slice"))?,
+        );
+        let gram_count = u32::from_le_bytes(
+            footer[28..32]
+                .try_into()
+                .map_err(|_| corrupt("footer gram_count slice"))?,
+        );
 
         Ok(MmapSegment {
             _file: file,

@@ -94,7 +94,10 @@ impl Manifest {
 
     /// Atomically persist the manifest to `index_dir/manifest.json`.
     pub fn save(&self, index_dir: &Path) -> io::Result<()> {
-        let tmp = index_dir.join("manifest.json.tmp");
+        // Use a random UUID for the temporary file to prevent TOCTOU (Time-of-Check to Time-of-Use)
+        // symlink attacks where an attacker could pre-create `manifest.json.tmp` as a symlink 
+        // leading to arbitrary file overwrite.
+        let tmp = index_dir.join(format!("manifest-{}.tmp", uuid::Uuid::new_v4()));
         let final_path = index_dir.join(Self::FILENAME);
         let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         std::fs::write(&tmp, json)?;

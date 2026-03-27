@@ -395,12 +395,7 @@ impl Index {
             &take.all_deleted,
         );
 
-        // Update the visible path set incrementally from the previous snapshot.
-        let mut all_paths = old_snap.path_index.paths.clone();
-        all_paths.retain(|path| !take.newly_deleted.contains(path));
-        all_paths.extend(take.newly_changed.iter().cloned());
-        all_paths.sort_unstable();
-        all_paths.dedup();
+        // Update the path index incrementally from the previous snapshot.
         let path_index = PathIndex::build_incremental(
             &old_snap.path_index,
             &take.newly_deleted,

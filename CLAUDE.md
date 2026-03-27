@@ -60,7 +60,101 @@ cargo test --test overlay     # unit: overlay/snapshot only
 cargo test --test boundary_fuzz  # unit: boundary fuzzing
 cargo test --test index_build # integration: index construction
 cargo test --test incremental # integration: incremental updates
+cargo bench --bench query_latency -- --sample-size 10
+cargo bench --bench index_build -- --sample-size 10
+cargo bench --bench selectivity -- --sample-size 10
 ```
+
+## Benchmarking Reference
+
+Run Criterion benches **sequentially**, one benchmark target at a time. Do not
+run multiple bench targets in parallel, and do not use one shell command that
+launches several Criterion benches back-to-back when collecting numbers for docs.
+
+### Synthetic corpus benchmarks
+
+```sh
+cargo bench --bench query_latency -- --sample-size 10
+cargo bench --bench index_build -- --sample-size 10
+cargo bench --bench selectivity -- --sample-size 10
+```
+
+Use these when changing tokenizer coverage, posting execution, query routing,
+or commit-path performance. Record before/after results in
+`docs/PERFORMANCE_BASELINE.md`.
+
+### External repository comparison harness
+
+Use the Python harness for `ripline` vs `rg` vs `grep` on a real repo:
+
+```sh
+python3 scripts/bench_compare.py \
+  --repo /path/to/repo \
+  --query literal:token_aligned_symbol \
+  --query literal:another_symbol
+```
+
+Useful options:
+
+```sh
+python3 scripts/bench_compare.py --help
+python3 scripts/bench_compare.py --list-presets
+python3 scripts/bench_compare.py --json --repo /path/to/repo --query literal:foo
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned
+python3 scripts/bench_compare.py \
+  --build-iterations 1 \
+  --search-iterations 1 \
+  --warmups 0 \
+  --preset rust_token_aligned
+```
+
+For very large repos, start with `--build-iterations 1 --search-iterations 1 --warmups 0`
+and only increase iterations if the runtime is acceptable.
+
+Use the preset catalog in [`benchmarks/repo_presets.json`](/Users/whit3rabbit/Documents/GitHub/ripline/benchmarks/repo_presets.json)
+and the rationale in [`docs/BENCHMARK_REPOS.md`](/Users/whit3rabbit/Documents/GitHub/ripline/docs/BENCHMARK_REPOS.md).
+The benchmark process should stay on this one script and this one preset catalog
+so runs are reproducible over time.
+
+### macOS corpus setup
+
+Shallow clones are enough for search benchmarks:
+
+```sh
+mkdir -p /Users/whit3rabbit/Documents/GitHub/_ripline-bench
+git clone --depth 1 --single-branch https://github.com/torvalds/linux.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/linux
+git clone --depth 1 --single-branch https://github.com/rust-lang/rust.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/rust
+git clone --depth 1 --single-branch https://github.com/facebook/react.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/react
+git clone --depth 1 --single-branch https://github.com/microsoft/TypeScript.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/typescript
+git clone --depth 1 --single-branch https://github.com/nodejs/node.git /Users/whit3rabbit/Documents/GitHub/_ripline-bench/node
+```
+
+macOS warning: default APFS is case-insensitive. `linux` and `rust` have
+case-colliding paths, so Git will warn and only one path from each collision set
+will exist in the working tree. That is acceptable for rough performance work,
+but not for strict corpus-correctness claims.
+
+### Recommended preset runs
+
+```sh
+python3 scripts/bench_compare.py --preset zed_mixed_app
+python3 scripts/bench_compare.py --preset react_token_aligned
+python3 scripts/bench_compare.py --preset rust_token_aligned
+python3 scripts/bench_compare.py --preset linux_token_aligned
+python3 scripts/bench_compare.py --preset typescript_compiler
+python3 scripts/bench_compare.py --preset node_runtime
+```
+
+### Benchmark query rules
+
+- Prefer token-aligned literal queries. Current `ripline` coverage guarantees are
+  strongest there.
+- Do not use substring-heavy literals like `ReactElement`, `useEffect`, or
+  `TyCtxt` as headline benchmark terms unless exact count agreement has already
+  been verified.
+- If `ripline`, `rg`, and `grep` counts differ, treat the timing comparison as
+  suspect until the mismatch is explained.
 
 ## Weight Table Generation
 

@@ -1,0 +1,126 @@
+{
+  "presets": [
+    {
+      "name": "zed_mixed_app",
+      "display_name": "Zed Research",
+      "repo_url": "https://github.com/zed-industries/zed.git",
+      "suggested_local_path": "/Users/whit3rabbit/Documents/GitHub/zed-research",
+      "language_focus": "Rust + TypeScript",
+      "scale": "large",
+      "build_iterations": 3,
+      "search_iterations": 5,
+      "warmups": 1,
+      "queries": [
+        "literal:workspace",
+        "literal:LanguageServerId",
+        "regex:LanguageServer(Id|InstallationStatus)"
+      ],
+      "notes": [
+        "Good mixed-language application benchmark.",
+        "Useful for broad literals and indexed-regex comparisons."
+      ]
+    },
+    {
+      "name": "react_token_aligned",
+      "display_name": "React",
+      "repo_url": "https://github.com/facebook/react.git",
+      "suggested_local_path": "/Users/whit3rabbit/Documents/GitHub/_ripline-bench/react",
+      "language_focus": "JavaScript + TypeScript",
+      "scale": "medium",
+      "build_iterations": 1,
+      "search_iterations": 1,
+      "warmups": 0,
+      "queries": [
+        "literal:useState",
+        "literal:getDisplayNameForReactElement"
+      ],
+      "notes": [
+        "Prefer token-aligned literals.",
+        "Do not use ReactElement as a headline benchmark term. It undercounts because many hits are mid-token substrings."
+      ]
+    },
+    {
+      "name": "rust_token_aligned",
+      "display_name": "Rust Compiler",
+      "repo_url": "https://github.com/rust-lang/rust.git",
+      "suggested_local_path": "/Users/whit3rabbit/Documents/GitHub/_ripline-bench/rust",
+      "language_focus": "Rust",
+      "scale": "xlarge",
+      "build_iterations": 1,
+      "search_iterations": 1,
+      "warmups": 0,
+      "queries": [
+        "literal:rustc_middle",
+        "literal:mir::Body"
+      ],
+      "notes": [
+        "Good large Rust corpus.",
+        "TyCtxt looked token-like at first but still undercounted in practice, so it is not part of the default preset."
+      ]
+    },
+    {
+      "name": "linux_token_aligned",
+      "display_name": "Linux Kernel",
+      "repo_url": "https://github.com/torvalds/linux.git",
+      "suggested_local_path": "/Users/whit3rabbit/Documents/GitHub/_ripline-bench/linux",
+      "language_focus": "C",
+      "scale": "xxlarge",
+      "build_iterations": 1,
+      "search_iterations": 1,
+      "warmups": 0,
+      "tools": [
+        "ripline",
+        "rg"
+      ],
+      "queries": [
+        "literal:irq_work_queue",
+        "literal:sched_clock",
+        "literal:raw_spin_lock"
+      ],
+      "notes": [
+        "Kernel-sized corpus for stress testing.",
+        "Uses ripline plus rg only by default. grep is intentionally skipped because the full three-tool harness is too expensive here on this machine."
+      ]
+    },
+    {
+      "name": "typescript_compiler",
+      "display_name": "TypeScript",
+      "repo_url": "https://github.com/microsoft/TypeScript.git",
+      "suggested_local_path": "/Users/whit3rabbit/Documents/GitHub/_ripline-bench/typescript",
+      "language_focus": "TypeScript",
+      "scale": "large",
+      "build_iterations": 1,
+      "search_iterations": 1,
+      "warmups": 0,
+      "queries": [
+        "literal:TransformationContext",
+        "literal:NodeBuilderFlags"
+      ],
+      "notes": [
+        "Good TypeScript-heavy compiler corpus.",
+        "Recommended for a cleaner TS-only baseline than a mixed React tree.",
+        "The original createProgram and SyntaxKind candidates undercounted slightly, so the preset now uses exact-match terms."
+      ]
+    },
+    {
+      "name": "node_runtime",
+      "display_name": "Node.js",
+      "repo_url": "https://github.com/nodejs/node.git",
+      "suggested_local_path": "/Users/whit3rabbit/Documents/GitHub/_ripline-bench/node",
+      "language_focus": "C++ + JavaScript",
+      "scale": "large",
+      "build_iterations": 1,
+      "search_iterations": 1,
+      "warmups": 0,
+      "queries": [
+        "literal:EnvironmentOptions",
+        "literal:MaybeStackBuffer"
+      ],
+      "notes": [
+        "Useful mixed systems/runtime benchmark.",
+        "Adds a C++-heavy corpus that is different from Linux kernel C.",
+        "The original Environment and AsyncWrap candidates undercounted, so the preset now uses exact-match terms."
+      ]
+    }
+  ]
+}

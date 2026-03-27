@@ -40,7 +40,58 @@ Segments are immutable single-file mmap structures (RPLX format). Updates go thr
 
 ## Benchmarks
 
-No benchmark data yet. Tables will be populated once the search pipeline is complete and measured on real corpora. Until then, the correctness test suite (ripgrep oracle) is the primary validation.
+Real-world benchmark runs are tracked in
+[docs/PERFORMANCE_EXTERNAL.md](docs/PERFORMANCE_EXTERNAL.md). The table below is
+the current snapshot of preset-backed external runs using the shared harness
+`scripts/bench_compare.py`.
+
+Method:
+
+- External repos use the same harness and preset catalog.
+- Times below are single-shot preset runs on macOS unless noted otherwise.
+- `ripline` search time excludes index build time. Build time is shown separately.
+- Linux uses the cheaper shared large-corpus mode (`ripline` + `rg`) because the
+  full `ripline` vs `rg` vs `grep` run is too expensive on this machine.
+
+### Index build
+
+| Repo | Preset | Tracked files | Tools | `ripline index` |
+|---|---|---:|---|---:|
+| Zed Research | `zed_mixed_app` | 3,593 | `ripline`, `rg`, `grep` | `225.103 ms` |
+| React | `react_token_aligned` | 6,840 | `ripline`, `rg`, `grep` | `347.956 ms` |
+| Rust compiler | `rust_token_aligned` | 58,698 | `ripline`, `rg`, `grep` | `2755.613 ms` |
+| TypeScript | `typescript_compiler` | 81,362 | `ripline`, `rg`, `grep` | `3659.839 ms` |
+| Node.js | `node_runtime` | 47,364 | `ripline`, `rg`, `grep` | `2810.84 ms` |
+| Linux kernel | `linux_token_aligned` | 93,018 | `ripline`, `rg` | `6101.93 ms` |
+
+### Search latency
+
+| Repo | Query | Count match | `ripline` | `rg` | `grep` |
+|---|---|---|---:|---:|---:|
+| Zed Research | `workspace` | yes | `50.39 ms` | `45.47 ms` | `233.07 ms` |
+| Zed Research | `LanguageServerId` | yes | `8.391 ms` | `44.718 ms` | `209.067 ms` |
+| Zed Research | `LanguageServer(Id\|InstallationStatus)` | yes | `44.046 ms` | `45.159 ms` | `234.345 ms` |
+| React | `useState` | yes | `111.716 ms` | `114.463 ms` | `273.504 ms` |
+| React | `getDisplayNameForReactElement` | yes | `10.354 ms` | `110.312 ms` | `315.521 ms` |
+| Rust compiler | `rustc_middle` | yes | `107.084 ms` | `1946.141 ms` | `2307.596 ms` |
+| Rust compiler | `mir::Body` | yes | `77.344 ms` | `1899.967 ms` | `2049.872 ms` |
+| TypeScript | `TransformationContext` | yes | `95.611 ms` | `2573.266 ms` | `3339.558 ms` |
+| TypeScript | `NodeBuilderFlags` | yes | `88.656 ms` | `2447.316 ms` | `3270.151 ms` |
+| Node.js | `EnvironmentOptions` | yes | `55.626 ms` | `1119.841 ms` | `3550.489 ms` |
+| Node.js | `MaybeStackBuffer` | yes | `55.454 ms` | `1089.497 ms` | `3097.734 ms` |
+| Linux kernel | `irq_work_queue` | yes | `3220.995 ms` | `3432.32 ms` | `n/a` |
+| Linux kernel | `sched_clock` | yes | `125.831 ms` | `3771.862 ms` | `n/a` |
+| Linux kernel | `raw_spin_lock` | yes | `121.53 ms` | `3820.238 ms` | `n/a` |
+
+Notes:
+
+- The exact-count validated preset terms are documented in
+  [docs/BENCHMARK_REPOS.md](docs/BENCHMARK_REPOS.md).
+- Substring-heavy terms such as `ReactElement`, `useEffect`, and `TyCtxt` are
+  intentionally not in the headline README table because they can undercount in
+  `ripline` relative to `rg`.
+- Historical and exploratory runs, including mismatched-count investigations,
+  remain in [docs/PERFORMANCE_EXTERNAL.md](docs/PERFORMANCE_EXTERNAL.md).
 
 ## Usage
 

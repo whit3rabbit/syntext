@@ -70,12 +70,152 @@ Repo: `/Users/whit3rabbit/Documents/GitHub/zed-research`
   verifier cost than selective literals.
 - `grep` is much slower in every measured case, even with a tracked-file list.
 
+## Cross-language token-aligned pass
+
+Date: `2026-03-27`
+
+Goal: rerun the external harness with cleaner literal terms across multiple
+language families.
+
+Settings:
+
+- `--build-iterations 1`
+- `--search-iterations 1`
+- `--warmups 0`
+
+### React
+
+Repo: `/Users/whit3rabbit/Documents/GitHub/_ripline-bench/react`
+
+- Tracked files: `6840`
+- `ripline index` build: `347.956 ms`
+
+| Query | Tool | Matches | Median ms |
+|---|---:|---:|---:|
+| `literal:useState` | `ripline` | `2708` | `111.716` |
+| `literal:useState` | `rg` | `2708` | `114.463` |
+| `literal:useState` | `grep` | `2708` | `273.504` |
+| `literal:useEffect` | `ripline` | `2564` | `21.232` |
+| `literal:useEffect` | `rg` | `2578` | `191.945` |
+| `literal:useEffect` | `grep` | `2578` | `310.818` |
+| `literal:getDisplayNameForReactElement` | `ripline` | `13` | `10.354` |
+| `literal:getDisplayNameForReactElement` | `rg` | `13` | `110.312` |
+| `literal:getDisplayNameForReactElement` | `grep` | `13` | `315.521` |
+
+### Rust
+
+Repo: `/Users/whit3rabbit/Documents/GitHub/_ripline-bench/rust`
+
+- Tracked files: `58698`
+- `ripline index` build: `2755.613 ms`
+
+| Query | Tool | Matches | Median ms |
+|---|---:|---:|---:|
+| `literal:rustc_middle` | `ripline` | `3757` | `107.084` |
+| `literal:rustc_middle` | `rg` | `3757` | `1946.141` |
+| `literal:rustc_middle` | `grep` | `3757` | `2307.596` |
+| `literal:TyCtxt` | `ripline` | `4941` | `79.917` |
+| `literal:TyCtxt` | `rg` | `5027` | `1900.225` |
+| `literal:TyCtxt` | `grep` | `5027` | `1742.422` |
+| `literal:mir::Body` | `ripline` | `141` | `77.344` |
+| `literal:mir::Body` | `rg` | `141` | `1899.967` |
+| `literal:mir::Body` | `grep` | `141` | `2049.872` |
+
+### Linux
+
+Repo: `/Users/whit3rabbit/Documents/GitHub/_ripline-bench/linux`
+
+- Tracked files: `93018`
+- Tools: `ripline`, `rg`
+- `ripline index` build: `6101.93 ms`
+
+| Query | Tool | Matches | Median ms |
+|---|---:|---:|---:|
+| `literal:irq_work_queue` | `ripline` | `128` | `3220.995` |
+| `literal:irq_work_queue` | `rg` | `128` | `3432.32` |
+| `literal:sched_clock` | `ripline` | `817` | `125.831` |
+| `literal:sched_clock` | `rg` | `817` | `3771.862` |
+| `literal:raw_spin_lock` | `ripline` | `2321` | `121.53` |
+| `literal:raw_spin_lock` | `rg` | `2321` | `3820.238` |
+
+### Takeaways
+
+- `useState`, `getDisplayNameForReactElement`, `rustc_middle`, and `mir::Body`
+  are clean comparison terms on these corpora. Counts matched exactly.
+- `useEffect` and `TyCtxt` still were not clean literal probes. Both undercounted
+  in `ripline`, which means they are still hitting mid-token substring cases in
+  real code.
+- The Linux preset now completes by using the same shared script with a cheaper
+  preset tool set: `ripline` plus `rg`, without `grep`.
+
+## Preset-backed TypeScript and Node runs
+
+Date: `2026-03-27`
+
+These runs use the shared preset catalog in
+[`benchmarks/repo_presets.json`](/Users/whit3rabbit/Documents/GitHub/ripline/benchmarks/repo_presets.json)
+through the same harness:
+
+```sh
+python3 scripts/bench_compare.py --preset typescript_compiler
+python3 scripts/bench_compare.py --preset node_runtime
+```
+
+### TypeScript
+
+Repo: `/Users/whit3rabbit/Documents/GitHub/_ripline-bench/typescript`
+
+- Tracked files: `81362`
+- `ripline index` build: `3659.839 ms`
+
+| Query | Tool | Matches | Median ms |
+|---|---:|---:|---:|
+| `literal:TransformationContext` | `ripline` | `142` | `95.611` |
+| `literal:TransformationContext` | `rg` | `142` | `2573.266` |
+| `literal:TransformationContext` | `grep` | `142` | `3339.558` |
+| `literal:NodeBuilderFlags` | `ripline` | `255` | `88.656` |
+| `literal:NodeBuilderFlags` | `rg` | `255` | `2447.316` |
+| `literal:NodeBuilderFlags` | `grep` | `255` | `3270.151` |
+
+### Node.js
+
+Repo: `/Users/whit3rabbit/Documents/GitHub/_ripline-bench/node`
+
+- Tracked files: `47364`
+- `ripline index` build: `2810.84 ms`
+
+| Query | Tool | Matches | Median ms |
+|---|---:|---:|---:|
+| `literal:EnvironmentOptions` | `ripline` | `158` | `55.626` |
+| `literal:EnvironmentOptions` | `rg` | `158` | `1119.841` |
+| `literal:EnvironmentOptions` | `grep` | `158` | `3550.489` |
+| `literal:MaybeStackBuffer` | `ripline` | `93` | `55.454` |
+| `literal:MaybeStackBuffer` | `rg` | `93` | `1089.497` |
+| `literal:MaybeStackBuffer` | `grep` | `93` | `3097.734` |
+
+### Takeaways
+
+- The shared preset workflow is now validated on React, Rust, TypeScript, Node.js,
+  and Linux.
+- The TypeScript and Node presets now use only exact-count default terms. The
+  earlier `createProgram`, `SyntaxKind`, `Environment`, and `AsyncWrap`
+  candidates were replaced because they undercounted in `ripline`.
+
 ## Caveats
 
-- This is not the Linux kernel. It is only the largest suitable local repo that
-  was already available on this machine.
+- This document now mixes two kinds of runs: a completed `zed-research` pass
+  and a later partial cross-language pass that included local `react`, `rust`,
+  and a non-completing `linux` attempt. Do not compare rows across sections
+  without checking the corpus and settings first.
 - `ripline` search latency excludes index build time. Index build is reported
   separately because `rg` and `grep` are no-index tools.
+- Literal benchmark queries should be token-aligned when possible. A query like
+  `ReactElement` in the React repo is a bad comparison term because many hits
+  are mid-token substrings inside larger identifiers such as
+  `getDisplayNameForReactElement`, `ReactElementValidator`, or
+  `ReactElementPropsTypeDestructor`. Current `ripline` coverage guarantees are
+  strongest for token-aligned queries, so those substring-heavy literals can
+  undercount versus `rg`.
 - If we later benchmark a kernel checkout, use the same script and record the
   command and corpus details here instead of mixing results across different
   repos.

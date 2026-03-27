@@ -29,6 +29,7 @@ from typing import Iterable
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_RIPLINE_BIN = REPO_ROOT / "target" / "release" / "ripline"
+DEFAULT_PRESET_FILE = REPO_ROOT / "benchmarks" / "repo_presets.json"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,22 @@ class QuerySpec:
         if len(cleaned) > 48:
             cleaned = f"{cleaned[:45]}..."
         return f"{self.mode}:{cleaned}"
+
+
+@dataclass(frozen=True)
+class PresetSpec:
+    name: str
+    display_name: str
+    repo_url: str
+    suggested_local_path: str
+    language_focus: str
+    scale: str
+    build_iterations: int
+    search_iterations: int
+    warmups: int
+    tools: tuple[str, ...]
+    queries: tuple[QuerySpec, ...]
+    notes: tuple[str, ...]
 
 
 def parse_query(value: str) -> QuerySpec:
@@ -58,6 +75,50 @@ def parse_query(value: str) -> QuerySpec:
     if not pattern:
         raise argparse.ArgumentTypeError("query pattern must not be empty")
     return QuerySpec(mode=mode, pattern=pattern)
+
+
+def load_presets(path: Path) -> dict[str, PresetSpec]:
+    raw = json.loads(path.read_text())
+    presets: dict[str, PresetSpec] = {}
+    for item in raw.get("presets", []):
+        preset = PresetSpec(
+            name=item["name"],
+            display_name=item["display_name"],
+            repo_url=item["repo_url"],
+            suggested_local_path=item["suggested_local_path"],
+            language_focus=item["language_focus"],
+            scale=item["scale"],
+            build_iterations=int(item["build_iterations"]),
+            search_iterations=int(item["search_iterations"]),
+            warmups=int(item["warmups"]),
+            tools=tuple(item.get("tools", ["ripline", "rg", "grep"])),
+            queries=tuple(parse_query(query) for query in item["queries"]),
+            notes=tuple(item.get("notes", [])),
+        )
+        presets[preset.name] = preset
+    return presets
+
+
+def print_presets(presets: dict[str, PresetSpec]) -> None:
+    print("# Benchmark Presets\n")
+    for preset in sorted(presets.values(), key=lambda item: item.name):
+        print(f"- `{preset.name}`: {preset.display_name}")
+        print(f"  repo: `{preset.repo_url}`")
+        print(f"  suggested local path: `{preset.suggested_local_path}`")
+        print(f"  focus: `{preset.language_focus}`, scale: `{preset.scale}`")
+        print(
+            "  default settings: "
+            f"build_iterations={preset.build_iterations}, "
+            f"search_iterations={preset.search_iterations}, warmups={preset.warmups}"
+        )
+        print("  tools: " + ", ".join(f"`{tool}`" for tool in preset.tools))
+        print(
+            "  queries: "
+            + ", ".join(f"`{query.name}`" for query in preset.queries)
+        )
+        if preset.notes:
+            print("  notes: " + " ".join(preset.notes))
+        print()
 
 
 def tracked_files(repo_root: Path) -> bytes:
@@ -206,9 +267,36 @@ def benchmark_command(
     return summarize(samples)
 
 
+def parse_tools(value: str) -> tuple[str, ...]:
+    allowed = {"ripline", "rg", "grep"}
+    tools = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not tools:
+        raise argparse.ArgumentTypeError("tool list must not be empty")
+    unknown = [tool for tool in tools if tool not in allowed]
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unknown tool(s): {', '.join(unknown)}; expected one of ripline, rg, grep"
+        )
+    return tools
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True, help="Git repository to benchmark")
+    parser.add_argument("--repo", help="Git repository to benchmark")
+    parser.add_argument(
+        "--preset",
+        help="Named benchmark preset from the preset catalog",
+    )
+    parser.add_argument(
+        "--preset-file",
+        default=str(DEFAULT_PRESET_FILE),
+        help="JSON preset catalog to load, default: benchmarks/repo_presets.json",
+    )
+    parser.add_argument(
+        "--list-presets",
+        action="store_true",
+        help="List available presets and exit",
+    )
     parser.add_argument(
         "--ripline-bin",
         default=str(DEFAULT_RIPLINE_BIN),
@@ -250,15 +338,70 @@ def main() -> int:
         action="store_true",
         help="Emit machine-readable JSON instead of Markdown",
     )
+    parser.add_argument(
+        "--tools",
+        type=parse_tools,
+        help="Comma-separated tool set, for example ripline,rg or ripline,rg,grep",
+    )
     args = parser.parse_args()
 
-    repo_root = Path(args.repo).resolve()
+    preset_file = Path(args.preset_file).resolve()
+    presets = load_presets(preset_file) if preset_file.exists() else {}
+    if args.list_presets:
+        if not presets:
+            raise SystemExit(f"no preset catalog found at {preset_file}")
+        print_presets(presets)
+        return 0
+
+    selected_preset = None
+    if args.preset:
+        if args.preset not in presets:
+            known = ", ".join(sorted(presets))
+            raise SystemExit(f"unknown preset {args.preset!r}. Known presets: {known}")
+        selected_preset = presets[args.preset]
+
+    repo_arg = args.repo
+    if selected_preset and repo_arg is None:
+        suggested_path = Path(selected_preset.suggested_local_path)
+        if suggested_path.joinpath(".git").exists():
+            repo_arg = str(suggested_path)
+        else:
+            raise SystemExit(
+                f"preset {selected_preset.name!r} suggests {suggested_path}, "
+                "but that repository is not present locally. Pass --repo explicitly."
+            )
+
+    if repo_arg is None:
+        raise SystemExit("either --repo or --preset is required")
+
+    repo_root = Path(repo_arg).resolve()
     ripline_bin = Path(args.ripline_bin).resolve()
 
     if not repo_root.joinpath(".git").exists():
         raise SystemExit(f"{repo_root} is not a Git repository")
-    if not args.query:
+    queries = list(args.query)
+    if selected_preset and not queries:
+        queries = list(selected_preset.queries)
+    if not queries:
         raise SystemExit("at least one --query is required")
+
+    build_iterations = args.build_iterations
+    if selected_preset and args.build_iterations == parser.get_default("build_iterations"):
+        build_iterations = selected_preset.build_iterations
+
+    search_iterations = args.search_iterations
+    if selected_preset and args.search_iterations == parser.get_default("search_iterations"):
+        search_iterations = selected_preset.search_iterations
+
+    warmups = args.warmups
+    if selected_preset and args.warmups == parser.get_default("warmups"):
+        warmups = selected_preset.warmups
+
+    tools = args.tools
+    if selected_preset and tools is None:
+        tools = selected_preset.tools
+    if tools is None:
+        tools = ("ripline", "rg", "grep")
 
     ensure_ripline_binary(ripline_bin)
 
@@ -266,10 +409,10 @@ def main() -> int:
     env.setdefault("LC_ALL", "C")
 
     tracked = tracked_files(repo_root)
-    tracked_count = tracked_file_count(repo_root)
+    tracked_count = sum(1 for part in tracked.split(b"\0") if part) if tracked else 0
 
     build_samples: list[float] = []
-    for _ in range(args.build_iterations):
+    for _ in range(build_iterations):
         with tempfile.TemporaryDirectory(prefix="ripline-bench-index-") as index_dir:
             cmd = [
                 str(ripline_bin),
@@ -309,54 +452,54 @@ def main() -> int:
 
         try:
             query_results: list[dict[str, object]] = []
-            for query in args.query:
+            for query in queries:
                 ripline_cmd = ripline_search_cmd(ripline_bin, repo_root, index_path, query)
                 rg_cmd = rg_search_cmd(repo_root, query)
                 grep_cmd = grep_search_cmd(repo_root, tracked_list_path, query, args.grep_mode)
 
-                counts = {
-                    "ripline": output_line_count(
+                counts: dict[str, int] = {}
+                timings: dict[str, dict[str, float]] = {}
+                if "ripline" in tools:
+                    counts["ripline"] = output_line_count(
                         ripline_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
-                    ),
-                    "rg": output_line_count(
-                        rg_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
-                    ),
-                    "grep": output_line_count(
-                        grep_cmd,
-                        cwd=repo_root,
-                        env=env,
-                        shell=True,
-                        allowed_codes=(0, 1, 123),
-                    ),
-                }
-
-                timings = {
-                    "ripline": benchmark_command(
+                    )
+                    timings["ripline"] = benchmark_command(
                         ripline_cmd,
                         cwd=repo_root,
                         env=env,
-                        warmups=args.warmups,
-                        iterations=args.search_iterations,
+                        warmups=warmups,
+                        iterations=search_iterations,
                         allowed_codes=(0, 1),
-                    ),
-                    "rg": benchmark_command(
+                    )
+                if "rg" in tools:
+                    counts["rg"] = output_line_count(
+                        rg_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
+                    )
+                    timings["rg"] = benchmark_command(
                         rg_cmd,
                         cwd=repo_root,
                         env=env,
-                        warmups=args.warmups,
-                        iterations=args.search_iterations,
+                        warmups=warmups,
+                        iterations=search_iterations,
                         allowed_codes=(0, 1),
-                    ),
-                    "grep": benchmark_command(
+                    )
+                if "grep" in tools:
+                    counts["grep"] = output_line_count(
                         grep_cmd,
                         cwd=repo_root,
                         env=env,
-                        warmups=args.warmups,
-                        iterations=args.search_iterations,
                         shell=True,
                         allowed_codes=(0, 1, 123),
-                    ),
-                }
+                    )
+                    timings["grep"] = benchmark_command(
+                        grep_cmd,
+                        cwd=repo_root,
+                        env=env,
+                        warmups=warmups,
+                        iterations=search_iterations,
+                        shell=True,
+                        allowed_codes=(0, 1, 123),
+                    )
 
                 query_results.append(
                     {
@@ -370,10 +513,13 @@ def main() -> int:
 
     report = {
         "repo": str(repo_root),
+        "preset": selected_preset.name if selected_preset else None,
         "tracked_files": tracked_count,
         "grep_mode": args.grep_mode,
-        "build_iterations": args.build_iterations,
-        "search_iterations": args.search_iterations,
+        "tools": list(tools),
+        "build_iterations": build_iterations,
+        "search_iterations": search_iterations,
+        "warmups": warmups,
         "ripline_index_build_ms": summarize(build_samples),
         "queries": query_results,
     }
@@ -384,8 +530,11 @@ def main() -> int:
 
     print(f"# External Benchmark\n")
     print(f"- Repo: `{report['repo']}`")
+    if report["preset"]:
+        print(f"- Preset: `{report['preset']}`")
     print(f"- Tracked files: `{report['tracked_files']}`")
     print(f"- Grep mode: `{report['grep_mode']}`")
+    print(f"- Tools: `{', '.join(report['tools'])}`")
     print(f"- Ripline build iterations: `{report['build_iterations']}`")
     print(f"- Search iterations per tool/query: `{report['search_iterations']}`\n")
 
@@ -404,7 +553,7 @@ def main() -> int:
         query_name = result["query"]
         counts = result["counts"]
         timings = result["timings_ms"]
-        for tool in ("ripline", "rg", "grep"):
+        for tool in report["tools"]:
             summary = timings[tool]
             print(
                 f"| `{query_name}` | `{tool}` | `{counts[tool]}` | "
@@ -429,6 +578,15 @@ def main() -> int:
     ]
     if mismatched:
         print("- Match counts differ for at least one query. Treat timing comparisons cautiously.")
+        literal_mismatches = [
+            result
+            for result in mismatched
+            if str(result["query"]).startswith("literal:")
+        ]
+        if literal_mismatches:
+            print(
+                "- For literal queries, a lower `ripline` count often means the pattern is being matched as a mid-token substring inside larger identifiers. Current `ripline` coverage guarantees are strongest for token-aligned queries."
+            )
 
     return 0
 
