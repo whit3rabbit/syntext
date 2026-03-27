@@ -23,6 +23,8 @@ pub struct Config {
     pub index_dir: PathBuf,
     /// Repository root path.
     pub repo_root: PathBuf,
+    /// Emit progress messages to stderr. Default: false (silent for library consumers).
+    pub verbose: bool,
 }
 
 impl Default for Config {
@@ -32,6 +34,7 @@ impl Default for Config {
             max_segments: 10,
             index_dir: PathBuf::from(".ripline"),
             repo_root: PathBuf::from("."),
+            verbose: false,
         }
     }
 }

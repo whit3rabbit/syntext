@@ -14,6 +14,7 @@ pub mod walk;
 
 pub use walk::is_binary;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -40,6 +41,10 @@ pub struct BaseSegments {
     pub segments: Vec<MmapSegment>,
     /// Global doc_id offsets for each segment.
     pub base_ids: Vec<u32>,
+    /// Global base doc_id -> repository-relative path.
+    pub base_doc_paths: Vec<String>,
+    /// Repository-relative path -> all base doc_ids for that path.
+    pub path_doc_ids: HashMap<String, Vec<u32>>,
 }
 
 /// A consistent point-in-time view of the index for querying.
@@ -61,9 +66,13 @@ pub struct IndexSnapshot {
 
 impl IndexSnapshot {
     /// Return the immutable base segments.
-    pub fn base_segments(&self) -> &[MmapSegment] { &self.base.segments }
+    pub fn base_segments(&self) -> &[MmapSegment] {
+        &self.base.segments
+    }
     /// Return the global doc_id offsets for each base segment.
-    pub fn segment_base_ids(&self) -> &[u32] { &self.base.base_ids }
+    pub fn segment_base_ids(&self) -> &[u32] {
+        &self.base.base_ids
+    }
 
     /// All valid global doc IDs (base minus deleted, plus overlay). Cached.
     pub fn all_doc_ids(&self) -> &RoaringBitmap {
@@ -104,10 +113,9 @@ impl Index {
         // Enumerate all candidate files, sorted by relative path.
         let file_list = enumerate_files(&config)?;
         let total_candidate = file_list.len();
-        eprintln!(
-            "ripline: indexing {} candidate files",
-            total_candidate
-        );
+        if config.verbose {
+            eprintln!("ripline: indexing {} candidate files", total_candidate);
+        }
 
         // Split into ~256MB batches and process each.
         let batches = split_batches(&file_list, BATCH_SIZE_BYTES);
@@ -162,7 +170,7 @@ impl Index {
                 .filter_map(|((_, _, size), r)| r.as_ref().map(|_| size))
                 .sum();
             let seg_size = fs::metadata(&seg_path).map(|m| m.len()).unwrap_or(0);
-            if seg_size > content_size / 2 && content_size > 0 {
+            if config.verbose && seg_size > content_size / 2 && content_size > 0 {
                 eprintln!(
                     "ripline: warning: segment is {seg_size} bytes for {content_size} bytes content"
                 );
@@ -178,7 +186,13 @@ impl Index {
         manifest.save(&config.index_dir)?;
         manifest.gc_orphan_segments(&config.index_dir)?;
 
-        eprintln!("ripline: indexed {} files into {} segment(s)", total_indexed, manifest.segments.len());
+        if config.verbose {
+            eprintln!(
+                "ripline: indexed {} files into {} segment(s)",
+                total_indexed,
+                manifest.segments.len()
+            );
+        }
 
         Self::open(config)
     }
@@ -190,7 +204,9 @@ impl Index {
 
         let mut base_segments: Vec<MmapSegment> = Vec::new();
         let mut segment_base_ids: Vec<u32> = Vec::new();
+        let mut base_doc_paths: Vec<String> = Vec::new();
         let mut all_paths: Vec<String> = Vec::new();
+        let mut path_doc_ids: HashMap<String, Vec<u32>> = HashMap::new();
         let mut next_global_id: u32 = 0;
 
         for seg_ref in &manifest.segments {
@@ -200,6 +216,12 @@ impl Index {
             // Iterate using local 0-based indices (0..seg.doc_count).
             for local_id in 0..seg.doc_count {
                 if let Some(doc) = seg.get_doc(local_id) {
+                    debug_assert_eq!(doc.doc_id as usize, base_doc_paths.len());
+                    base_doc_paths.push(doc.path.clone());
+                    path_doc_ids
+                        .entry(doc.path.clone())
+                        .or_default()
+                        .push(doc.doc_id);
                     all_paths.push(doc.path);
                 }
             }
@@ -214,16 +236,16 @@ impl Index {
         let base = Arc::new(BaseSegments {
             segments: base_segments,
             base_ids: segment_base_ids,
+            base_doc_paths,
+            path_doc_ids,
         });
 
-        let doc_to_file_id = path_index.build_doc_to_file_id(
-            next_global_id as usize,
-            |gid| {
-                let seg_idx = base.base_ids.partition_point(|&b| b <= gid).saturating_sub(1);
-                let local = gid.checked_sub(base.base_ids[seg_idx])?;
-                base.segments[seg_idx].get_doc(local).map(|d| d.path)
-            },
-        );
+        let mut doc_to_file_id = vec![u32::MAX; next_global_id as usize];
+        for (gid, path) in base.base_doc_paths.iter().enumerate() {
+            if let Some(fid) = path_index.file_id(path) {
+                doc_to_file_id[gid] = fid;
+            }
+        }
 
         let snapshot = Arc::new(IndexSnapshot {
             base,
@@ -291,15 +313,15 @@ impl Index {
     /// Atomically commit all pending edits. After return, changes are visible
     /// to subsequent queries. In-flight searches see the old snapshot.
     pub fn commit_batch(&self) -> Result<(), IndexError> {
+        if !self.pending.has_uncommitted() {
+            return Ok(());
+        }
+
         let old_snap = self.snapshot.load_full();
         let take = self.pending.take_for_commit();
 
         // Total base doc count for overlay doc_id assignment.
-        let base_doc_count: u32 = old_snap
-            .base_segments()
-            .iter()
-            .map(|s| s.doc_count)
-            .sum();
+        let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
 
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
@@ -328,46 +350,39 @@ impl Index {
 
         // Compute delete_set: base doc_ids invalidated by changes.
         let delete_set = compute_delete_set(
-            &old_snap.base.segments,
-            &old_snap.base.base_ids,
+            &old_snap.base.path_doc_ids,
             &take.all_changed,
             &take.all_deleted,
         );
 
-        // Rebuild path index to include overlay paths and exclude deleted.
-        let mut all_paths: Vec<String> = Vec::new();
-        for (seg_idx, seg) in old_snap.base.segments.iter().enumerate() {
-            let base_id = old_snap.base.base_ids.get(seg_idx).copied().unwrap_or(0);
-            for local_id in 0..seg.doc_count {
-                let global_id = base_id + local_id;
-                if delete_set.contains(global_id) {
-                    continue;
-                }
-                if let Some(doc) = seg.get_doc(local_id) {
-                    all_paths.push(doc.path);
-                }
-            }
-        }
-        for doc in &overlay.docs {
-            all_paths.push(doc.path.clone());
-        }
+        // Update the visible path set incrementally from the previous snapshot.
+        let mut all_paths = old_snap.path_index.paths.clone();
+        all_paths.retain(|path| !take.newly_deleted.contains(path));
+        all_paths.extend(take.newly_changed.iter().cloned());
         all_paths.sort_unstable();
         all_paths.dedup();
         let path_index = PathIndex::build(&all_paths);
 
-        let total_ids = overlay.docs.iter().map(|d| d.doc_id + 1).max()
+        let total_ids = overlay
+            .docs
+            .iter()
+            .map(|d| d.doc_id + 1)
+            .max()
             .unwrap_or(base_doc_count) as usize;
-        let doc_to_file_id = path_index.build_doc_to_file_id(total_ids, |gid| {
-            // Check overlay first (overlay doc_ids >= base_doc_count).
-            if let Some(doc) = overlay.get_doc(gid) {
-                return Some(doc.path.clone());
+        let mut doc_to_file_id = vec![u32::MAX; total_ids];
+        for (gid, path) in old_snap.base.base_doc_paths.iter().enumerate() {
+            if delete_set.contains(gid as u32) {
+                continue;
             }
-            if delete_set.contains(gid) { return None; }
-            let seg_idx = old_snap.base.base_ids
-                .partition_point(|&b| b <= gid).saturating_sub(1);
-            let local = gid.checked_sub(old_snap.base.base_ids[seg_idx])?;
-            old_snap.base.segments[seg_idx].get_doc(local).map(|d| d.path)
-        });
+            if let Some(fid) = path_index.file_id(path) {
+                doc_to_file_id[gid] = fid;
+            }
+        }
+        for doc in &overlay.docs {
+            if let Some(fid) = path_index.file_id(&doc.path) {
+                doc_to_file_id[doc.doc_id as usize] = fid;
+            }
+        }
 
         let new_snap = Arc::new(IndexSnapshot {
             base: Arc::clone(&old_snap.base),
@@ -388,4 +403,3 @@ impl Index {
         self.commit_batch()
     }
 }
-

@@ -9,23 +9,21 @@
 use std::path::Path;
 use tempfile::TempDir;
 
-use ripline_rs::index::segment::{FOOTER_SIZE, MAGIC, MmapSegment};
-use ripline_rs::{Config, SearchOptions};
+use ripline_rs::index::segment::{MmapSegment, FOOTER_SIZE, MAGIC};
 use ripline_rs::index::Index;
+use ripline_rs::{Config, SearchOptions};
 
 /// Path to the fixture corpus committed to the repo.
 fn corpus_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/corpus")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/corpus")
 }
 
 /// Create a minimal Config pointing at the fixture corpus.
 fn make_config(index_dir: &TempDir) -> Config {
     Config {
-        max_file_size: 10 * 1024 * 1024,
-        max_segments: 10,
         index_dir: index_dir.path().to_path_buf(),
         repo_root: corpus_dir(),
+        ..Config::default()
     }
 }
 
@@ -77,7 +75,10 @@ fn gitignored_file_not_indexed() {
         .paths
         .iter()
         .any(|p| p.contains("build/output.txt") || p.contains("build\\output.txt"));
-    assert!(!found, "gitignored file appeared in index: build/output.txt");
+    assert!(
+        !found,
+        "gitignored file appeared in index: build/output.txt"
+    );
 }
 
 #[test]
@@ -86,7 +87,11 @@ fn binary_file_skipped() {
     // Write a minimal corpus with one normal text file and one binary file.
     let src_dir = corpus_dir.path().join("src");
     std::fs::create_dir_all(&src_dir).unwrap();
-    std::fs::write(src_dir.join("hello.rs"), b"fn main() { println!(\"hello\"); }").unwrap();
+    std::fs::write(
+        src_dir.join("hello.rs"),
+        b"fn main() { println!(\"hello\"); }",
+    )
+    .unwrap();
 
     // Binary file: contains null bytes.
     let mut binary = vec![0u8; 100];
@@ -95,10 +100,9 @@ fn binary_file_skipped() {
 
     let index_dir = TempDir::new().unwrap();
     let config = Config {
-        max_file_size: 10 * 1024 * 1024,
-        max_segments: 10,
         index_dir: index_dir.path().to_path_buf(),
         repo_root: corpus_dir.path().to_path_buf(),
+        ..Config::default()
     };
 
     let idx = Index::build(config).unwrap();
@@ -125,13 +129,11 @@ fn open_round_trips_segment_metadata() {
     let stats_opened = idx_opened.stats();
 
     assert_eq!(
-        stats_built.total_documents,
-        stats_opened.total_documents,
+        stats_built.total_documents, stats_opened.total_documents,
         "doc count differs after re-open"
     );
     assert_eq!(
-        stats_built.total_segments,
-        stats_opened.total_segments,
+        stats_built.total_segments, stats_opened.total_segments,
         "segment count differs after re-open"
     );
 }
@@ -144,7 +146,12 @@ fn segment_footer_magic_matches() {
 
     for entry in std::fs::read_dir(index_dir.path()).unwrap() {
         let entry = entry.unwrap();
-        if entry.path().extension().map(|e| e == "seg").unwrap_or(false) {
+        if entry
+            .path()
+            .extension()
+            .map(|e| e == "seg")
+            .unwrap_or(false)
+        {
             let data = std::fs::read(entry.path()).unwrap();
             assert!(data.len() >= FOOTER_SIZE, "segment too small");
             // Footer ends with b"RPLX"

@@ -96,10 +96,17 @@ enum Command {
 /// Run the CLI. Returns the process exit code.
 pub fn run() -> i32 {
     let cli = Cli::parse();
-    let config = resolve_config(&cli);
+    let mut config = resolve_config(&cli);
+    // CLI defaults to verbose unless --quiet is passed per-subcommand (overridden below).
+    // Library consumers get verbose=false (Config::default()).
+    config.verbose = cli.verbose;
 
     match cli.command {
-        Command::Index { force, stats, quiet } => cmd_index(config, force, stats, quiet),
+        Command::Index {
+            force,
+            stats,
+            quiet,
+        } => cmd_index(config, force, stats, quiet),
         Command::Search {
             pattern,
             paths: _,
@@ -113,7 +120,14 @@ pub fn run() -> i32 {
             quiet,
         } => {
             let search_args = SearchArgs {
-                pattern, literal, ignore_case, file_type, max_count, count, json, quiet,
+                pattern,
+                literal,
+                ignore_case,
+                file_type,
+                max_count,
+                count,
+                json,
+                quiet,
             };
             cmd_search(config, &search_args)
         }
@@ -145,6 +159,7 @@ fn resolve_config(cli: &Cli) -> Config {
         max_segments: 10,
         index_dir,
         repo_root,
+        verbose: false,
     }
 }
 
@@ -165,8 +180,15 @@ fn detect_repo_root() -> Option<PathBuf> {
 // Subcommand handlers
 // ---------------------------------------------------------------------------
 
-fn cmd_index(config: Config, force: bool, stats: bool, _quiet: bool) -> i32 {
+fn cmd_index(mut config: Config, force: bool, stats: bool, quiet: bool) -> i32 {
     let _ = force;
+    // --quiet suppresses library progress output; default CLI behavior is verbose.
+    if quiet {
+        config.verbose = false;
+    } else if !config.verbose {
+        // Neither --verbose nor --quiet: default to verbose for CLI users.
+        config.verbose = true;
+    }
     let index = match Index::build(config) {
         Ok(idx) => idx,
         Err(e) => {
@@ -235,9 +257,12 @@ fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
 
     if args.count {
         // Count per file
-        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for m in &results {
-            *counts.entry(m.path.to_string_lossy().into_owned()).or_default() += 1;
+            *counts
+                .entry(m.path.to_string_lossy().into_owned())
+                .or_default() += 1;
         }
         for (path, n) in &counts {
             println!("{path}:{n}");
@@ -245,14 +270,13 @@ fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     } else if args.json {
         for m in &results {
             let path_str = m.path.to_string_lossy();
-            let escaped_path = serde_json::to_string(path_str.as_ref()).unwrap_or_else(|_| "\"\"".to_string());
-            let escaped_content = serde_json::to_string(&m.line_content).unwrap_or_else(|_| "\"\"".to_string());
+            let escaped_path =
+                serde_json::to_string(path_str.as_ref()).unwrap_or_else(|_| "\"\"".to_string());
+            let escaped_content =
+                serde_json::to_string(&m.line_content).unwrap_or_else(|_| "\"\"".to_string());
             println!(
                 "{{\"path\":{},\"line\":{},\"content\":{},\"byte_offset\":{}}}",
-                escaped_path,
-                m.line_number,
-                escaped_content,
-                m.byte_offset,
+                escaped_path, m.line_number, escaped_content, m.byte_offset,
             );
         }
     } else {
@@ -410,6 +434,10 @@ mod tests {
         let second = index.search("second_version", &opts).unwrap();
 
         assert!(first.is_empty(), "old content should be gone after rebuild");
-        assert_eq!(second.len(), 1, "new content should be indexed after rebuild");
+        assert_eq!(
+            second.len(),
+            1,
+            "new content should be indexed after rebuild"
+        );
     }
 }
