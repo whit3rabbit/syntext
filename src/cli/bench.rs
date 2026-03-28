@@ -88,24 +88,8 @@ pub(super) fn cmd_bench_search(
     for query in &parsed_queries {
         let args = SearchArgs {
             pattern: query.pattern.clone(),
-            paths: Vec::new(),
             fixed_strings: query.mode == BenchQueryMode::Literal,
-            ignore_case: false,
-            word_regexp: false,
-            invert_match: false,
-            files_with_matches: false,
-            count: false,
-            max_count: None,
-            quiet: false,
-            json: false,
-            heading: false,
-            no_line_number: false,
-            no_filename: false,
-            after_context: 0,
-            before_context: 0,
-            file_type: None,
-            type_not: None,
-            glob: None,
+            ..SearchArgs::default()
         };
 
         let count = match run_search(&index, &args) {

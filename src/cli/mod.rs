@@ -394,24 +394,9 @@ mod tests {
 
         let args = super::search::SearchArgs {
             pattern: "target_token".to_string(),
-            paths: vec![],
-            fixed_strings: false,
-            ignore_case: false,
-            word_regexp: false,
-            invert_match: false,
-            files_with_matches: false,
-            count: false,
-            max_count: None,
-            quiet: false,
-            json: false,
-            heading: false,
-            no_line_number: false,
-            no_filename: false,
             after_context: 2,
             before_context: 2,
-            file_type: None,
-            type_not: None,
-            glob: None,
+            ..super::search::SearchArgs::default()
         };
 
         let mut buf = Vec::<u8>::new();
