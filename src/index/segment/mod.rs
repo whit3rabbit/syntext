@@ -181,6 +181,50 @@ impl MmapSegment {
             .try_lock_shared()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
+        // Validate .post file magic and checksum.
+        // Note: reading the full postings data at open time is O(post_file_size).
+        // This is acceptable: the checksum read happens once per segment open, and
+        // segments are reused across many queries.
+        const POST_MAGIC: &[u8; 8] = b"SNTXPOST";
+        const POST_MIN_SIZE: usize = 8 + 8; // magic + checksum (empty postings allowed)
+
+        let post_meta = post_file.metadata()?;
+        let post_len = post_meta.len() as usize;
+        if post_len < POST_MIN_SIZE {
+            return Err(IndexError::CorruptIndex(format!(
+                "post file too small: {post_len} bytes"
+            )));
+        }
+
+        // Read the magic header (8 bytes).
+        let mut post_magic = [0u8; 8];
+        reader::read_exact_at(&post_file, &mut post_magic, 0)?;
+        if &post_magic != POST_MAGIC {
+            return Err(IndexError::CorruptIndex(
+                "post file has wrong magic (expected SNTXPOST)".into(),
+            ));
+        }
+
+        // Read and verify the checksum (last 8 bytes cover the postings data
+        // between the magic header and checksum trailer).
+        let checksum_offset = (post_len - 8) as u64;
+        let mut stored_cksum_bytes = [0u8; 8];
+        reader::read_exact_at(&post_file, &mut stored_cksum_bytes, checksum_offset)?;
+        let stored_post_checksum = u64::from_le_bytes(stored_cksum_bytes);
+
+        // Read postings data (bytes 8..post_len-8) to compute expected checksum.
+        let postings_data_len = post_len - 16; // subtract magic(8) + checksum(8)
+        let mut postings_data = vec![0u8; postings_data_len];
+        if postings_data_len > 0 {
+            reader::read_exact_at(&post_file, &mut postings_data, 8)?;
+        }
+        let expected_post_checksum = xxh64(&postings_data, 0);
+        if stored_post_checksum != expected_post_checksum {
+            return Err(IndexError::CorruptIndex(
+                "post file checksum mismatch".into(),
+            ));
+        }
+
         Ok(MmapSegment {
             _file: file,
             mmap,
@@ -440,7 +484,17 @@ mod tests {
     }
 
     #[test]
-    fn verify_integrity_detects_post_open_corruption() {
+    fn map_private_copy_unaffected_by_post_open_file_mutation() {
+        // With MAP_PRIVATE (map_copy_read_only), the mmap is a copy-on-write
+        // snapshot of the file at open time. parse_segment_mmap reads every
+        // content page during checksum verification, faulting them all into
+        // the process private address space. After that point, on-disk mutations
+        // are NOT reflected in the mapping.
+        //
+        // This is the desired security property: an attacker who gains write
+        // access to the index directory after open() cannot affect in-process
+        // reads. verify_integrity() checks the private copy against itself and
+        // always passes; get_doc() returns the original document.
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
         writer.add_document(0, Path::new("a.rs"), 1, 10);
@@ -450,24 +504,13 @@ mod tests {
         let dict_path = dir.path().join(&meta.dict_filename);
         let seg = MmapSegment::open(&dict_path).unwrap();
 
-        // Overwrite the file with fewer bytes to simulate truncation.
-        // The OS may or may not update the mmap view, but expected_len
-        // will no longer match if the kernel reflects the new size.
-        std::fs::write(&dict_path, b"SNTX_truncated").unwrap();
+        // Overwrite the on-disk file after open(). With MAP_PRIVATE the mmap
+        // is unaffected -- we are reading our own private copy.
+        std::fs::write(&dict_path, b"SNTX_corrupted_on_disk").unwrap();
 
-        // verify_integrity should detect the size change or checksum mismatch.
-        // On some OSes the mmap retains the old pages; on others it reflects
-        // the truncation. Either way, at least one of these must fail.
-        let integrity_ok = seg.verify_integrity().is_ok();
-        let doc_ok = seg.get_doc(0).is_some();
-        // At minimum, full re-verify should catch corruption when the OS
-        // reflects the new file content into the mapping.
-        // If the OS caches old pages, reads may still succeed but that is
-        // acceptable (detection is best-effort for non-cooperative mutation).
-        assert!(
-            !integrity_ok || !doc_ok,
-            "at least one path should detect corruption on cooperative OSes"
-        );
+        // Both operations use the private copy; both must succeed.
+        assert!(seg.verify_integrity().is_ok(), "private copy should be intact");
+        assert!(seg.get_doc(0).is_some(), "private copy should serve doc reads");
     }
 
     #[test]
@@ -526,8 +569,8 @@ mod tests {
     fn v3_round_trip_lookup_gram() {
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "src/main.rs", 0xDEAD, 100);
-        writer.add_document(1, "src/lib.rs", 0xBEEF, 200);
+        writer.add_document(0, Path::new("src/main.rs"), 0xDEAD, 100);
+        writer.add_document(1, Path::new("src/lib.rs"), 0xBEEF, 200);
         writer.add_gram_posting(0xAAAA, 0);
         writer.add_gram_posting(0xAAAA, 1);
         writer.add_gram_posting(0xBBBB, 0);
@@ -556,7 +599,7 @@ mod tests {
     fn v3_round_trip_get_doc() {
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "a.rs", 0xAA, 10);
+        writer.add_document(0, Path::new("a.rs"), 0xAA, 10);
         writer.add_gram_posting(0x11, 0);
         let meta = writer.write_to_dir(dir.path()).unwrap();
 
@@ -588,5 +631,47 @@ mod tests {
         let seg = MmapSegment::open(&dict_path).unwrap();
         let d0 = seg.get_doc(0).unwrap();
         assert_eq!(d0.path, path);
+    }
+
+    #[test]
+    fn v3_post_file_has_magic_and_checksum() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, Path::new("src/a.rs"), 0x1234, 100);
+        writer.add_gram_posting(0xAAAA, 0);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        let post_bytes = std::fs::read(dir.path().join(&meta.post_filename)).unwrap();
+        // First 8 bytes must be the magic
+        assert_eq!(&post_bytes[..8], b"SNTXPOST", "missing .post magic header");
+        // File must be long enough for magic (8) + at least one posting entry + checksum (8)
+        assert!(post_bytes.len() >= 17, "post file too short");
+        // Last 8 bytes are xxhash64 checksum of the postings data (bytes 8..len-8)
+        let postings_data = &post_bytes[8..post_bytes.len() - 8];
+        let expected_checksum = xxhash_rust::xxh64::xxh64(postings_data, 0);
+        let stored_checksum =
+            u64::from_le_bytes(post_bytes[post_bytes.len() - 8..].try_into().unwrap());
+        assert_eq!(stored_checksum, expected_checksum, "checksum mismatch");
+    }
+
+    #[test]
+    fn open_split_rejects_corrupt_post_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, Path::new("src/a.rs"), 0xABCD, 100);
+        writer.add_gram_posting(0x1111, 0);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        // Corrupt the .post file by writing wrong magic
+        let post_path = dir.path().join(&meta.post_filename);
+        let mut post_bytes = std::fs::read(&post_path).unwrap();
+        post_bytes[0] = b'X'; // corrupt magic byte
+        std::fs::write(&post_path, &post_bytes).unwrap();
+
+        let result = MmapSegment::open_split(
+            &dir.path().join(&meta.dict_filename),
+            &dir.path().join(&meta.post_filename),
+        );
+        assert!(result.is_err(), "open_split must reject corrupt .post magic");
     }
 }

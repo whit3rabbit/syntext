@@ -297,6 +297,15 @@ impl SegmentWriter {
         buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes()); // -8
         buf.extend_from_slice(MAGIC); // -4
 
-        Ok((buf, post_buf, doc_count, gram_count))
+        // Wrap post_buf with magic header and xxhash64 checksum.
+        // Layout: [b"SNTXPOST"][postings data][xxh64 checksum (8 bytes)]
+        // Offsets in dict entries are relative to start of postings data (byte 8 in file).
+        let post_checksum = xxh64(&post_buf, 0);
+        let mut post_file_bytes = Vec::with_capacity(8 + post_buf.len() + 8);
+        post_file_bytes.extend_from_slice(b"SNTXPOST");
+        post_file_bytes.extend_from_slice(&post_buf);
+        post_file_bytes.extend_from_slice(&post_checksum.to_le_bytes());
+
+        Ok((buf, post_file_bytes, doc_count, gram_count))
     }
 }

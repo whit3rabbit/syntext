@@ -88,22 +88,25 @@ pub(super) fn parse_segment_mmap(
             .map_err(|_| corrupt("footer gram_count slice"))?,
     );
 
-    // Security: validate that both offsets fall inside the content area of the
-    // file. The checksum above proves content integrity but does NOT constrain
-    // what values the footer's offset fields contain — a crafted segment with a
-    // valid checksum could embed offsets pointing anywhere in the mmap. Without
-    // this check, get_doc() and dict_lookup() would read attacker-chosen mmap
-    // bytes as structured data, enabling information disclosure even though safe
-    // Rust's .get() bounds checks prevent memory-safety violations.
+    // Security: validate that both offsets fall inside (or at the boundary of)
+    // the content area. The checksum above proves content integrity but does NOT
+    // constrain what values the footer's offset fields contain — a crafted segment
+    // with a valid checksum could embed offsets pointing anywhere in the mmap.
+    // Without this check, get_doc() and dict_lookup() would read attacker-chosen
+    // mmap bytes as structured data, enabling information disclosure even though
+    // safe Rust's .get() bounds checks prevent memory-safety violations.
     //
-    // Valid range for both offsets: [HEADER_SIZE, len - FOOTER_SIZE).
-    // The doc table begins immediately after the 40-byte header; the dictionary
-    // section follows the postings area. Both must fit inside the content region.
+    // Valid range: [HEADER_SIZE, content_end] where content_end = len - FOOTER_SIZE.
+    // Upper bound is inclusive (<=, not <) to allow empty sections: for a segment
+    // with 0 documents or 0 grams the corresponding section has zero bytes and its
+    // offset legally equals content_end (pointing just past the content area).
+    // Reads at such offsets are safe because doc_count/gram_count = 0 means the
+    // calling code never issues a .get() at that position.
     let content_end = len - FOOTER_SIZE;
-    if doc_table_offset < HEADER_SIZE || doc_table_offset >= content_end {
+    if doc_table_offset < HEADER_SIZE || doc_table_offset > content_end {
         return Err(corrupt("doc_table_offset out of range"));
     }
-    if dict_offset < HEADER_SIZE || dict_offset >= content_end {
+    if dict_offset < HEADER_SIZE || dict_offset > content_end {
         return Err(corrupt("dict_offset out of range"));
     }
 
