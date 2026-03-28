@@ -64,6 +64,8 @@ pub struct SearchOptions {
     pub path_filter: Option<String>,
     /// File type filter (e.g., "rs", "py").
     pub file_type: Option<String>,
+    /// Exclude files of this type from results.
+    pub exclude_type: Option<String>,
     /// Maximum number of results.
     pub max_results: Option<usize>,
     /// Enable case-insensitive matching.

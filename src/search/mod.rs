@@ -90,7 +90,7 @@ pub fn search(
     let path_filter_bitmap = build_filter(
         &snap.path_index,
         opts.file_type.as_deref(),
-        None, // exclude_type not exposed in SearchOptions yet
+        opts.exclude_type.as_deref(),
         opts.path_filter.as_deref(),
     );
 
@@ -116,7 +116,7 @@ pub fn search(
                 } else if !matches_path_filter(
                     &rel_path,
                     opts.file_type.as_deref(),
-                    None,
+                    opts.exclude_type.as_deref(),
                     opts.path_filter.as_deref(),
                 ) {
                     return None;
@@ -337,6 +337,7 @@ mod tests {
         let opts = SearchOptions {
             path_filter: Some("*.rs".to_string()),
             file_type: None,
+            exclude_type: None,
             max_results: None,
             case_insensitive: false,
         };
@@ -551,5 +552,27 @@ mod tests {
             should_use_index(&grams, &snap).unwrap(),
             "compound identifier should use index when gram intersection is selective"
         );
+    }
+
+    #[test]
+    fn type_not_excludes_file_extension() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("main.rs"), "fn target_fn() {}\n").unwrap();
+        std::fs::write(repo.path().join("main.py"), "def target_fn(): pass\n").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let opts = SearchOptions {
+            exclude_type: Some("py".to_string()),
+            ..SearchOptions::default()
+        };
+        let results = index.search("target_fn", &opts).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.to_string_lossy().ends_with(".rs"));
     }
 }
