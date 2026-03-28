@@ -14,15 +14,28 @@ use crate::Config;
 ///
 /// Using `Command::new("git")` would resolve via `$PATH`, allowing a
 /// malicious `git` binary earlier on PATH to intercept the call.
-/// This function walks PATH explicitly and falls back to `/usr/bin/git`
-/// rather than a bare name.
+/// This function walks PATH explicitly, resolves symlinks via `canonicalize`,
+/// and falls back to `/usr/bin/git` rather than a bare name.
+///
+/// Security note: `canonicalize` + `is_file` narrows but does not eliminate
+/// the TOCTOU window between path resolution and `Command::new` exec. The
+/// resolved canonical path refers to the same inode that was checked, so a
+/// symlink swap after canonicalize cannot redirect the exec. However, the
+/// binary itself could still be replaced between canonicalize and exec if the
+/// directory containing it is writable. Index directories should not be
+/// world-writable; `--repo-root` must not be sourced from untrusted input.
 #[cfg(unix)]
 fn resolve_git_binary() -> PathBuf {
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join("git");
+            // `is_file()` follows symlinks; canonicalize resolves them so the
+            // returned path is the real inode location, not an intermediary
+            // symlink that could be replaced after the is_file() check.
             if candidate.is_file() {
-                return candidate;
+                if let Ok(resolved) = candidate.canonicalize() {
+                    return resolved;
+                }
             }
         }
     }

@@ -53,7 +53,13 @@ impl SymbolIndex {
             return Ok(());
         }
         const SQLITE_MAX_PARAMS: usize = 999;
-        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        // Do not recover from a poisoned mutex: the connection may hold an open
+        // transaction or have inconsistent prepared-statement cache state, and
+        // reusing it risks silent symbol index corruption.
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| IndexError::CorruptIndex("symbol db mutex poisoned".into()))?;
         for chunk in file_ids.chunks(SQLITE_MAX_PARAMS) {
             let placeholders: String =
                 chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -77,9 +83,16 @@ impl SymbolIndex {
         if symbols.is_empty() {
             return Ok(());
         }
-        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        // Do not recover from a poisoned mutex (same rationale as delete_for_files).
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| IndexError::CorruptIndex("symbol db mutex poisoned".into()))?;
+        // Use transaction() rather than unchecked_transaction(): the checked variant
+        // verifies no active transaction exists on the connection, catching cases
+        // where a previous panic left a transaction open.
         let tx = conn
-            .unchecked_transaction()
+            .transaction()
             .map_err(|e| IndexError::CorruptIndex(format!("symbol tx: {e}")))?;
         {
             let mut stmt = tx
@@ -113,15 +126,35 @@ impl SymbolIndex {
         name_query: &str,
         kind_filter: Option<&str>,
     ) -> Result<Vec<SearchMatch>, IndexError> {
-        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let like_pat = format!("{}%", name_query.to_lowercase());
+        // Do not recover from a poisoned mutex (same rationale as delete_for_files).
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| IndexError::CorruptIndex("symbol db mutex poisoned".into()))?;
+
+        // Security: escape SQLite LIKE metacharacters before interpolation.
+        //
+        // SQLite LIKE recognises three metacharacters: '%' (any sequence), '_' (any
+        // single character), and '\' (the escape character when ESCAPE '\' is set).
+        // Without escaping, a user query like "f_o" matches "fXo", "foo", etc., and
+        // a query like "fo%" matches everything starting with "fo" rather than the
+        // literal string "fo%". The broadened result set is a correctness bug and a
+        // potential information disclosure when results are used for access-control
+        // decisions in automated tooling. We pair the escaped pattern with
+        // `ESCAPE '\'` in the SQL so SQLite honours the escape sequences.
+        let escaped = name_query
+            .to_lowercase()
+            .replace('\\', r"\\")
+            .replace('%', r"\%")
+            .replace('_', r"\_");
+        let like_pat = format!("{escaped}%");
 
         let sql = if kind_filter.is_some() {
             "SELECT path, line, name FROM symbols \
-             WHERE lower(name) LIKE ?1 AND kind = ?2 ORDER BY name, path LIMIT 1000"
+             WHERE lower(name) LIKE ?1 ESCAPE '\\' AND kind = ?2 ORDER BY name, path LIMIT 1000"
         } else {
             "SELECT path, line, name FROM symbols \
-             WHERE lower(name) LIKE ?1 ORDER BY name, path LIMIT 1000"
+             WHERE lower(name) LIKE ?1 ESCAPE '\\' ORDER BY name, path LIMIT 1000"
         };
         let mut stmt = conn
             .prepare(sql)

@@ -135,6 +135,17 @@ impl MmapSegment {
         // address space and are immune to external mutations for the mapping's
         // lifetime. The advisory file lock still blocks concurrent writes by other
         // syntext instances.
+        //
+        // Residual SIGBUS risk: the advisory file lock (try_lock_shared above) does
+        // not prevent other processes from truncating the file — advisory locks are
+        // cooperative, not mandatory. If a concurrent truncate(2) races with the
+        // linear page read inside parse_segment_mmap (specifically the xxh64 checksum
+        // pass), accessing a page past the new EOF delivers SIGBUS, which terminates
+        // the process. This is a denial-of-service risk when the index directory is
+        // writable by a second principal. Once parse_segment_mmap completes and all
+        // pages have been faulted into the private mapping, subsequent accesses are
+        // safe. The index directory should be mode 0700 (owner only) in security-
+        // sensitive deployments.
         let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
         let len = mmap.len();
         // open() accepts both v2 and v3 version tags. The single-file layout is
@@ -173,6 +184,13 @@ impl MmapSegment {
         // MAP_PRIVATE mapping (see open() comment), all downstream reads are
         // bounds-checked via .get(). The mmap only covers the `.dict` side;
         // postings are read from `.post` via positional reads.
+        //
+        // Residual SIGBUS risk: same as open() — see that comment. The window here
+        // is narrower because only the .dict file is mmap'd; the .post file is read
+        // via positional reads (read_exact_at) rather than mmap, so a truncation of
+        // .post after open returns an I/O error rather than SIGBUS. The .dict mmap
+        // is still subject to the SIGBUS window during parse_segment_mmap's checksum
+        // read before all pages are faulted into the private mapping.
         let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
         let len = mmap.len();
         let layout = reader::parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3])?;

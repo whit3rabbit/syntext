@@ -272,11 +272,23 @@ fn resolve_config(cli: &Cli) -> Config {
 /// Returns the configured value clamped to [`MAX_FILE_SIZE_CEILING`], or
 /// the 10 MiB default when the variable is absent or unparseable.
 fn parse_max_file_size() -> u64 {
-    std::env::var("SYNTEXT_MAX_FILE_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(10 * 1024 * 1024)
-        .min(MAX_FILE_SIZE_CEILING)
+    clamp_max_file_size(
+        std::env::var("SYNTEXT_MAX_FILE_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok()),
+    )
+}
+
+/// Apply the 10 MiB default and the 1 GiB ceiling to an optional raw value.
+///
+/// Extracted from `parse_max_file_size` so tests can exercise the clamping
+/// logic directly without mutating the process environment via `set_var`.
+/// `std::env::set_var` is not thread-safe: Rust's test harness runs tests in
+/// parallel, and any concurrent test reading `SYNTEXT_MAX_FILE_SIZE` during a
+/// `set_var` / `remove_var` pair would observe the injected value, causing
+/// non-deterministic test behaviour.
+fn clamp_max_file_size(raw: Option<u64>) -> u64 {
+    raw.unwrap_or(10 * 1024 * 1024).min(MAX_FILE_SIZE_CEILING)
 }
 
 /// Walk up from CWD looking for a `.git` directory.
@@ -488,12 +500,13 @@ mod tests {
 
     #[test]
     fn max_file_size_is_clamped_to_1gb() {
-        // Exercise parse_max_file_size() directly so that removing the
-        // .min(MAX_FILE_SIZE_CEILING) in production code causes this test to fail.
-        std::env::set_var("SYNTEXT_MAX_FILE_SIZE", "2147483648"); // 2 GiB
-        let result = super::parse_max_file_size();
-        std::env::remove_var("SYNTEXT_MAX_FILE_SIZE");
-
+        // Use clamp_max_file_size() directly rather than setting the env var.
+        // std::env::set_var is not thread-safe: the test harness runs tests in
+        // parallel, so a set_var / remove_var pair in one test can affect any
+        // concurrent test that reads SYNTEXT_MAX_FILE_SIZE from the environment,
+        // causing non-deterministic failures. Testing the inner function avoids
+        // the global process state entirely.
+        let result = super::clamp_max_file_size(Some(2_147_483_648)); // 2 GiB raw
         assert_eq!(
             result,
             super::MAX_FILE_SIZE_CEILING,

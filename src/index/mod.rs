@@ -36,6 +36,14 @@ use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
 /// Fraction of base docs beyond which the overlay is considered too large.
 const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
 
+/// Hard cap on total indexed documents across all segments in a manifest.
+///
+/// A crafted manifest (e.g., sourced from an untrusted SYNTEXT_INDEX_DIR or
+/// --index-dir) could claim billions of docs to force a multi-GB
+/// `doc_to_file_id` allocation. 50 million is well above any realistic
+/// codebase and bounds the allocation to ~200 MB.
+const MAX_TOTAL_DOCS: u32 = 50_000_000;
+
 /// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
 const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
 
@@ -175,6 +183,26 @@ impl Index {
                 let seg_path = config.index_dir.join(open_filename);
                 MmapSegment::open(&seg_path)?
             };
+            // Security: check the per-segment doc count against MAX_TOTAL_DOCS
+            // BEFORE iterating the segment's doc entries and inserting them into
+            // base_doc_paths and path_doc_ids.
+            //
+            // Without this early check, a crafted segment with doc_count close to
+            // MAX_TOTAL_DOCS and path_len = 65535 per entry could force several
+            // gigabytes of PathBuf allocations into path_doc_ids before the
+            // post-loop guard triggers. The per-segment check caps the allocation
+            // to at most one segment's worth of entries at a time.
+            let new_global_id =
+                next_global_id.checked_add(seg.doc_count).ok_or(IndexError::DocIdOverflow {
+                    base_doc_count: next_global_id,
+                    overlay_docs: 0,
+                })?;
+            if new_global_id > MAX_TOTAL_DOCS {
+                return Err(IndexError::CorruptIndex(format!(
+                    "segment would push total docs to {new_global_id}, exceeds safety limit of {MAX_TOTAL_DOCS}"
+                )));
+            }
+
             segment_base_ids.push(next_global_id);
             // Iterate using local 0-based indices (0..seg.doc_count).
             for local_id in 0..seg.doc_count {
@@ -185,14 +213,7 @@ impl Index {
                     all_paths.push(doc.path);
                 }
             }
-            // Security: guard against u32 overflow when summing doc_counts
-            // from segments loaded via manifest (which could be crafted).
-            next_global_id = next_global_id.checked_add(seg.doc_count).ok_or(
-                IndexError::DocIdOverflow {
-                    base_doc_count: next_global_id,
-                    overlay_docs: 0,
-                },
-            )?;
+            next_global_id = new_global_id;
             base_segments.push(seg);
         }
 
@@ -207,6 +228,13 @@ impl Index {
             path_doc_ids,
         });
 
+        // Final sanity check: the per-segment guard above should have caught
+        // any overage, but verify the accumulated total before the vec allocation.
+        if next_global_id > MAX_TOTAL_DOCS {
+            return Err(IndexError::CorruptIndex(format!(
+                "manifest claims {next_global_id} total docs, exceeds safety limit of {MAX_TOTAL_DOCS}"
+            )));
+        }
         let mut doc_to_file_id = vec![u32::MAX; next_global_id as usize];
         for (gid, path) in base.base_doc_paths.iter().enumerate() {
             if let Some(fid) = path_index.file_id(path) {
