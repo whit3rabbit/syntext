@@ -528,8 +528,7 @@ impl Index {
             }
         };
 
-        let canonical_root = std::fs::canonicalize(&config.repo_root)
-            .unwrap_or_else(|_| config.repo_root.clone());
+        let canonical_root = std::fs::canonicalize(&config.repo_root)?;
 
         Ok(Index {
             config,
@@ -618,10 +617,17 @@ impl Index {
         let mut excluded_changed = std::collections::HashSet::new();
         for path in &take.newly_changed {
             let abs = self.config.repo_root.join(path);
+            // Canonicalize before opening to detect symlink swaps that occurred
+            // between notify_change() and commit_batch(). If the resolved path
+            // escapes canonical_root, reject it as PathOutsideRepo.
+            let resolved = std::fs::canonicalize(&abs)?;
+            if !resolved.starts_with(&self.canonical_root) {
+                return Err(IndexError::PathOutsideRepo(abs));
+            }
             // Enforce the same max_file_size limit used during full builds.
             // Use bounded read to eliminate TOCTOU race: file can grow between
             // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
-            let file = std::fs::File::open(&abs)?;
+            let file = std::fs::File::open(&resolved)?;
             let mut reader = file.take(self.config.max_file_size + 1);
             let mut content: Vec<u8> = Vec::new();
             reader.read_to_end(&mut content)?;
@@ -793,6 +799,45 @@ mod tests {
         assert!(
             matches!(result, Err(IndexError::FileTooLarge { .. })),
             "commit_batch must reject files that exceed max_file_size at read time: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_batch_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        // Create a legitimate file so the index builds.
+        std::fs::write(repo.path().join("real.rs"), b"fn real() {}").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        // Create a file outside the repo for the symlink to point to.
+        let target_outside = std::env::temp_dir().join("ripline_test_escape_target");
+        std::fs::write(&target_outside, b"sensitive content").unwrap();
+
+        // Create a symlink inside the repo pointing outside.
+        let link_path = repo.path().join("escape.rs");
+        symlink(&target_outside, &link_path).unwrap();
+
+        index.notify_change(&link_path).unwrap();
+        let result = index.commit_batch();
+
+        // Clean up regardless of result.
+        let _ = std::fs::remove_file(&target_outside);
+        let _ = std::fs::remove_file(&link_path);
+
+        assert!(
+            matches!(result, Err(IndexError::PathOutsideRepo(_))),
+            "commit_batch must reject symlinks that escape the repo root, got: {result:?}"
         );
     }
 
