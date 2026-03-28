@@ -139,6 +139,59 @@ fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
     positions
 }
 
+/// Like `boundary_positions` but skips inner `to_ascii_lowercase()` since
+/// the caller guarantees `bytes` is already lowercase.
+fn boundary_positions_lower(bytes: &[u8]) -> Vec<usize> {
+    let n = bytes.len();
+    let mut positions = Vec::with_capacity(n / 4);
+    positions.push(0);
+    for i in 1..n {
+        if is_forced_boundary(bytes[i]) || is_forced_boundary(bytes[i - 1]) {
+            positions.push(i);
+            continue;
+        }
+        // CamelCase tier skipped: already-lowercase input has no uppercase bytes.
+        let idx = (bytes[i - 1] as usize) << 8 | (bytes[i] as usize);
+        if BIGRAM_WEIGHTS[idx] >= BOUNDARY_THRESHOLD {
+            positions.push(i);
+        }
+    }
+    if n > 0 {
+        positions.push(n);
+    }
+    positions.dedup();
+    positions
+}
+
+/// Thread-local buffered variant of `boundary_positions_lower`.
+/// Reuses a Vec allocation across calls to reduce allocator pressure.
+fn boundary_positions_lower_buffered(bytes: &[u8]) -> Vec<usize> {
+    thread_local! {
+        static BUF: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::with_capacity(256));
+    }
+    BUF.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        buf.clear();
+        let n = bytes.len();
+        buf.push(0);
+        for i in 1..n {
+            if is_forced_boundary(bytes[i]) || is_forced_boundary(bytes[i - 1]) {
+                buf.push(i);
+                continue;
+            }
+            let idx = (bytes[i - 1] as usize) << 8 | (bytes[i] as usize);
+            if BIGRAM_WEIGHTS[idx] >= BOUNDARY_THRESHOLD {
+                buf.push(i);
+            }
+        }
+        if n > 0 {
+            buf.push(n);
+        }
+        buf.dedup();
+        buf.clone()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // T012: build_all -- index-time gram extraction
 // ---------------------------------------------------------------------------
@@ -166,7 +219,7 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
     }
 
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
-    let lower_boundaries = boundary_positions(&lower);
+    let lower_boundaries = boundary_positions_lower_buffered(&lower);
     let mut hashes = Vec::new();
     append_grams_for_boundaries(&mut hashes, &lower, &lower_boundaries);
 
@@ -216,7 +269,7 @@ pub fn build_covering(input: &[u8]) -> Option<Vec<u64>> {
     }
 
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
-    let boundaries = boundary_positions(&lower);
+    let boundaries = boundary_positions_lower_buffered(&lower);
 
     let mut hashes = Vec::new();
     for w in boundaries.windows(2) {
@@ -491,6 +544,16 @@ mod tests {
     fn single_byte_does_not_panic() {
         let _ = build_all(b"x");
         assert!(build_covering(b"x").is_none());
+    }
+
+    #[test]
+    fn boundary_positions_lower_matches_standard_for_lowercase_input() {
+        let lower = b"parse_query_and_build";
+        assert_eq!(boundary_positions(lower), boundary_positions_lower(lower));
+        assert_eq!(
+            boundary_positions_lower(lower),
+            boundary_positions_lower_buffered(lower)
+        );
     }
 
     #[test]
