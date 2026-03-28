@@ -52,8 +52,8 @@ fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
     const SCAN_SAMPLE: usize = 100;
     // Entries per bitmap in the posting-cost microbenchmark.
     const BITMAP_ENTRIES: u32 = 10_000;
-    // Repetitions to amortize timer overhead.
-    const BITMAP_REPS: u32 = 20;
+    // Higher reps produce more stable calibrations on loaded systems.
+    const BITMAP_REPS: u32 = 100;
 
     let total = indexed_paths.len();
     if total == 0 {

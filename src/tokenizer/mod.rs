@@ -141,6 +141,7 @@ fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
 
 /// Like `boundary_positions` but skips inner `to_ascii_lowercase()` since
 /// the caller guarantees `bytes` is already lowercase.
+#[cfg(test)]
 fn boundary_positions_lower(bytes: &[u8]) -> Vec<usize> {
     let n = bytes.len();
     let mut positions = Vec::with_capacity(n / 4);
