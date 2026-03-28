@@ -69,6 +69,8 @@ pub struct SegmentWriter {
     docs: Vec<DocEntry>,
     /// Unsorted `(gram_hash, doc_id)` pairs, aggregated at write time.
     postings: Vec<(u64, u32)>,
+    /// Capacity hint recorded at construction for debug overshoot detection.
+    initial_postings_capacity: usize,
 }
 
 impl Default for SegmentWriter {
@@ -83,6 +85,7 @@ impl SegmentWriter {
         SegmentWriter {
             docs: Vec::new(),
             postings: Vec::new(),
+            initial_postings_capacity: 0,
         }
     }
 
@@ -91,9 +94,11 @@ impl SegmentWriter {
     /// `doc_hint`: expected number of documents.
     /// `grams_per_doc_hint`: estimated grams per document (typically 80-150).
     pub fn with_capacity(doc_hint: usize, grams_per_doc_hint: usize) -> Self {
+        let cap = doc_hint * grams_per_doc_hint;
         SegmentWriter {
             docs: Vec::with_capacity(doc_hint),
-            postings: Vec::with_capacity(doc_hint * grams_per_doc_hint),
+            postings: Vec::with_capacity(cap),
+            initial_postings_capacity: cap,
         }
     }
 
@@ -172,6 +177,16 @@ impl SegmentWriter {
         }
 
         self.postings.sort_unstable();
+        #[cfg(debug_assertions)]
+        if self.initial_postings_capacity > 0
+            && self.postings.len() > self.initial_postings_capacity * 3
+        {
+            eprintln!(
+                "ripline: debug: SegmentWriter postings overshoot: hint={}, actual={}",
+                self.initial_postings_capacity,
+                self.postings.len()
+            );
+        }
         self.postings.dedup();
 
         let doc_count = self.docs.len() as u32;
@@ -650,6 +665,17 @@ mod tests {
             !integrity_ok || !doc_ok,
             "at least one path should detect corruption on cooperative OSes"
         );
+    }
+
+    #[test]
+    fn with_capacity_hint_does_not_panic_when_exceeded() {
+        let mut writer = SegmentWriter::with_capacity(1, 2);
+        writer.add_document(0, "a.rs", 1, 10);
+        for i in 0u64..100 {
+            writer.add_gram_posting(i, 0);
+        }
+        let tmp = NamedTempFile::new().unwrap();
+        assert!(writer.write_to_file(tmp.path()).is_ok());
     }
 
     #[test]
