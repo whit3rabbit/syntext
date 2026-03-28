@@ -59,6 +59,10 @@ pub fn varint_decode(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
 
     while pos < bytes.len() {
         let (delta, consumed) = read_varint(&bytes[pos..])?;
+        // For non-first entries, delta must be > 0 to maintain strict ascending order.
+        if !ids.is_empty() && delta == 0 {
+            return Err("delta-varint duplicate: zero delta produces non-ascending sequence");
+        }
         prev = prev.checked_add(delta).ok_or("delta-varint overflow")?;
         ids.push(prev);
         pos += consumed;
@@ -192,5 +196,21 @@ mod tests {
     fn varint_round_trip_large_deltas() {
         let ids = vec![0u32, 1_000_000, 2_000_000, u32::MAX - 1, u32::MAX];
         assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+    }
+
+    #[test]
+    fn varint_decode_rejects_zero_delta_duplicate() {
+        // varint(5) then varint(0) → [5, 0]
+        let bytes = [5u8, 0u8];
+        let result = varint_decode(&bytes);
+        assert!(result.is_err(), "zero delta (duplicate id) must be rejected: {result:?}");
+    }
+
+    #[test]
+    fn varint_decode_first_entry_zero_is_ok() {
+        // First entry with value 0 (delta=0 from prev=0) is valid.
+        let bytes = varint_encode(&[0u32, 1u32, 2u32]);
+        let result = varint_decode(&bytes).unwrap();
+        assert_eq!(result, vec![0, 1, 2]);
     }
 }
