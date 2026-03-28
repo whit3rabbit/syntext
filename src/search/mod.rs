@@ -32,6 +32,7 @@ use verifier::{verify_literal, verify_regex};
 pub fn search(
     snap: Arc<IndexSnapshot>,
     config: &Config,
+    canonical_root: &std::path::Path,
     pattern: &str,
     opts: &SearchOptions,
 ) -> Result<Vec<SearchMatch>, IndexError> {
@@ -91,8 +92,6 @@ pub fn search(
         opts.path_filter.as_deref(),
     );
 
-    let repo_root = &config.repo_root;
-
     // Parallel resolve + filter + verify. Loses serial early-exit on
     // max_results, but parallel I/O vastly outweighs this for typical
     // workloads (NVMe queue depth exploitation, kernel I/O scheduling).
@@ -100,7 +99,7 @@ pub fn search(
         .par_iter()
         .filter_map(|&global_id| {
             let (rel_path, content) =
-                resolve_doc(&snap, global_id, repo_root, config.max_file_size)?;
+                resolve_doc(&snap, global_id, canonical_root, config.max_file_size)?;
 
             if let Some(ref pf) = path_filter_bitmap {
                 let file_id_opt = snap
@@ -330,7 +329,7 @@ fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBit
 fn resolve_doc(
     snap: &IndexSnapshot,
     global_id: u32,
-    repo_root: &Path,
+    canonical_root: &Path,
     max_file_size: u64,
 ) -> Option<(String, Arc<[u8]>)> {
     // Check overlay first (overlay doc_ids are >= base_doc_count).
@@ -358,13 +357,12 @@ fn resolve_doc(
     let local_id = global_id.checked_sub(base)?;
     let doc_entry = snap.base_segments()[seg_idx].get_doc(local_id)?;
 
-    let abs_path = repo_root.join(&doc_entry.path);
+    let abs_path = canonical_root.join(&doc_entry.path);
     // Guard: reject symlinks that resolve outside the repo root.
-    // canonicalize() resolves all symlinks; if the result doesn't start
-    // with repo_root, the file has escaped.
+    // canonicalize() resolves all symlinks on the individual file; if the
+    // result doesn't start with the pre-canonicalized root, the file escaped.
     let canonical = std::fs::canonicalize(&abs_path).ok()?;
-    let canonical_root = std::fs::canonicalize(repo_root).ok()?;
-    if !canonical.starts_with(&canonical_root) {
+    if !canonical.starts_with(canonical_root) {
         return None;
     }
     // Bounded read: cap at max_file_size to prevent unbounded memory growth

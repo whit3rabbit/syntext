@@ -252,6 +252,11 @@ pub struct Index {
     /// Advisory lock on the index directory. Held for the lifetime of the
     /// Index: shared for readers (open), exclusive for builders (build).
     _dir_lock: std::fs::File,
+    /// Canonicalized repo_root, computed once at open time.
+    pub canonical_root: std::path::PathBuf,
+    /// Optional symbol index (requires `symbols` feature).
+    #[cfg(feature = "symbols")]
+    pub symbol_index: Option<std::sync::Arc<crate::symbol::SymbolIndex>>,
 }
 
 impl Index {
@@ -375,6 +380,42 @@ impl Index {
             );
         }
 
+        // Build symbol index (T052) — requires `symbols` feature.
+        #[cfg(feature = "symbols")]
+        {
+            let db_path = config.index_dir.join("symbols.db");
+            // Remove stale DB from previous builds.
+            let _ = fs::remove_file(&db_path);
+            match crate::symbol::SymbolIndex::open(&db_path) {
+                Ok(sym_idx) => {
+                    // Re-enumerate: iterate batches and index each file's symbols.
+                    for batch in &batches {
+                        for (abs_path, rel_path, _size) in batch {
+                            if let Ok(content) = fs::read(abs_path) {
+                                if !is_binary(&content) {
+                                    // file_id from path_index built in open(); use position
+                                    // in indexed_paths as a stable id for build time.
+                                    let file_id = indexed_paths
+                                        .iter()
+                                        .position(|p| p == rel_path)
+                                        .unwrap_or(0) as u32;
+                                    let _ = sym_idx.index_file(file_id, rel_path, &content);
+                                }
+                            }
+                        }
+                    }
+                    if config.verbose {
+                        eprintln!("ripline: symbol index built");
+                    }
+                }
+                Err(e) => {
+                    if config.verbose {
+                        eprintln!("ripline: warning: could not build symbol index: {e}");
+                    }
+                }
+            }
+        }
+
         // Drop exclusive lock before open() acquires shared lock.
         // Another process can grab exclusive in the gap; retry with backoff.
         drop(lock_file);
@@ -471,11 +512,30 @@ impl Index {
             posting_bitmap_cache: OnceLock::new(),
         });
 
+        // Open symbol index if it exists on disk.
+        #[cfg(feature = "symbols")]
+        let symbol_index = {
+            let db_path = config.index_dir.join("symbols.db");
+            if db_path.exists() {
+                crate::symbol::SymbolIndex::open(&db_path)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            } else {
+                None
+            }
+        };
+
+        let canonical_root = std::fs::canonicalize(&config.repo_root)
+            .unwrap_or_else(|_| config.repo_root.clone());
+
         Ok(Index {
             config,
             snapshot: ArcSwap::from(snapshot),
             pending: PendingEdits::new(),
             _dir_lock: dir_lock,
+            canonical_root,
+            #[cfg(feature = "symbols")]
+            symbol_index,
         })
     }
 
@@ -491,7 +551,16 @@ impl Index {
         pattern: &str,
         opts: &SearchOptions,
     ) -> Result<Vec<SearchMatch>, IndexError> {
-        crate::search::search(self.snapshot(), &self.config, pattern, opts)
+        // Route symbol searches to the symbol index when available.
+        #[cfg(feature = "symbols")]
+        if let Some((name, kind)) = crate::symbol::parse_symbol_prefix(pattern) {
+            if let Some(sym_idx) = &self.symbol_index {
+                let kind_str = kind.as_ref().map(|k| k.as_str());
+                return sym_idx.search(&name, kind_str);
+            }
+            // Symbol index not built — fall through to content search.
+        }
+        crate::search::search(self.snapshot(), &self.config, &self.canonical_root, pattern, opts)
     }
 
     /// Expose the current snapshot for use by the search layer.
