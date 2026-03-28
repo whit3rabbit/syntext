@@ -243,4 +243,92 @@ mod tests {
             "old manifests without the field must deserialize as None"
         );
     }
+
+    #[test]
+    fn segment_ref_round_trips_with_post_filename() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let seg_ref = SegmentRef {
+            segment_id: "test-uuid".into(),
+            filename: String::new(),
+            dict_filename: "test-uuid.dict".into(),
+            post_filename: "test-uuid.post".into(),
+            doc_count: 5,
+            gram_count: 10,
+        };
+        let manifest = Manifest::new(vec![seg_ref], 5);
+        manifest.save(dir.path()).unwrap();
+        let loaded = Manifest::load(dir.path()).unwrap();
+        assert_eq!(loaded.segments[0].dict_filename, "test-uuid.dict");
+        assert_eq!(loaded.segments[0].post_filename, "test-uuid.post");
+    }
+
+    #[test]
+    fn gc_removes_orphan_dict_and_post_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Create orphaned .dict and .post files
+        std::fs::write(dir.path().join("orphan.dict"), b"orphan").unwrap();
+        std::fs::write(dir.path().join("orphan.post"), b"orphan").unwrap();
+        // Also create referenced files
+        std::fs::write(dir.path().join("kept.dict"), b"kept").unwrap();
+        std::fs::write(dir.path().join("kept.post"), b"kept").unwrap();
+
+        let manifest = Manifest::new(
+            vec![SegmentRef {
+                segment_id: "kept".into(),
+                filename: String::new(),
+                dict_filename: "kept.dict".into(),
+                post_filename: "kept.post".into(),
+                doc_count: 0,
+                gram_count: 0,
+            }],
+            0,
+        );
+        manifest.gc_orphan_segments(dir.path()).unwrap();
+
+        assert!(
+            !dir.path().join("orphan.dict").exists(),
+            "orphan .dict must be removed"
+        );
+        assert!(
+            !dir.path().join("orphan.post").exists(),
+            "orphan .post must be removed"
+        );
+        assert!(
+            dir.path().join("kept.dict").exists(),
+            "referenced .dict must be kept"
+        );
+        assert!(
+            dir.path().join("kept.post").exists(),
+            "referenced .post must be kept"
+        );
+    }
+
+    #[test]
+    fn v2_manifest_without_split_filenames_deserializes_cleanly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Simulate a v2 manifest with no dict_filename / post_filename fields
+        let json = r#"{
+        "version": 1,
+        "base_commit": null,
+        "segments": [
+            {
+                "segment_id": "old-uuid",
+                "filename": "old-uuid.seg",
+                "doc_count": 10,
+                "gram_count": 50
+            }
+        ],
+        "overlay_gen": 0,
+        "overlay_file": null,
+        "overlay_deletes_file": null,
+        "total_files_indexed": 10,
+        "created_at": 0,
+        "opstamp": 0
+    }"#;
+        std::fs::write(dir.path().join("manifest.json"), json).unwrap();
+        let loaded = Manifest::load(dir.path()).unwrap();
+        assert_eq!(loaded.segments[0].filename, "old-uuid.seg");
+        assert_eq!(loaded.segments[0].dict_filename, ""); // defaults to empty
+        assert_eq!(loaded.segments[0].post_filename, ""); // defaults to empty
+    }
 }
