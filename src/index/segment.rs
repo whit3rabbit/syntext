@@ -32,7 +32,9 @@ pub const DICT_ENTRY_SIZE: usize = 20;
 /// Maximum segment file size. A 256MB source batch with overhead should never
 /// produce a segment larger than this. Reject oversized files before mmap to
 /// prevent a malicious .seg from exhausting virtual memory.
-pub const MAX_SEGMENT_SIZE: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
+/// Set to 1 GB: 4x the maximum batch size, leaving headroom for worst-case
+/// overhead while preventing runaway virtual-memory consumption.
+pub const MAX_SEGMENT_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
 
 /// Document metadata stored in a segment's document table.
 #[derive(Debug, Clone)]
@@ -330,9 +332,11 @@ impl MmapSegment {
         }
         file.try_lock_shared()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        // SAFETY: file handle is retained in the struct for the lifetime of the
-        // mmap, keeping the inode alive. The file lock ensures no other process
-        // can truncate it. The mmap is read-only.
+        // SAFETY: The file handle is retained in the struct for the lifetime of
+        // the mmap, keeping the inode alive even if the directory entry is removed.
+        // The mmap is read-only. The checksum verified above detects corruption
+        // introduced by non-cooperating processes; the advisory file lock only
+        // prevents concurrent writes by other ripline instances.
         let mmap = unsafe { Mmap::map(&file)? };
         let len = mmap.len();
 
