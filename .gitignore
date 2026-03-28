@@ -30,6 +30,9 @@ fuzz/corpus/
 # Syntext index
 .syntext/
 
+# Distribution artifacts
+dist/
+
 # Python
 __pycache__/
 *.py[cod]
