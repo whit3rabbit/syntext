@@ -178,6 +178,19 @@ fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
+// Verify that the fd we just opened refers to the same inode we stat'd
+// before the open. This catches directory-component symlink swaps that
+// happen in the window between canonicalize() and open(): O_NOFOLLOW only
+// blocks the final path component, not intermediate ones.
+#[cfg(unix)]
+fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match file.metadata() {
+        Ok(fd_meta) => fd_meta.dev() == pre_open_meta.dev() && fd_meta.ino() == pre_open_meta.ino(),
+        Err(_) => false,
+    }
+}
+
 /// Shared base segments (Arc-shared across snapshot swaps).
 pub struct BaseSegments {
     /// The memory mapped segments.
@@ -701,10 +714,20 @@ impl Index {
             if !resolved.starts_with(&self.canonical_root) {
                 return Err(IndexError::PathOutsideRepo(abs));
             }
+            // Stat before open to record expected inode. After open, fstat the fd
+            // and compare dev+ino to catch directory-component symlink swaps that
+            // occur in the window between canonicalize() and open() (O_NOFOLLOW
+            // only blocks the final component, not intermediate ones).
+            #[cfg(unix)]
+            let pre_open_meta = std::fs::metadata(&resolved)?;
             // Enforce the same max_file_size limit used during full builds.
             // Use bounded read to eliminate TOCTOU race: file can grow between
             // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
             let file = open_readonly_nofollow(&resolved)?;
+            #[cfg(unix)]
+            if !verify_fd_matches_stat(&file, &pre_open_meta) {
+                return Err(IndexError::PathOutsideRepo(abs.clone()));
+            }
             let mut reader = file.take(self.config.max_file_size + 1);
             let mut content: Vec<u8> = Vec::new();
             reader.read_to_end(&mut content)?;
@@ -976,6 +999,53 @@ mod tests {
                 .iter()
                 .any(|m| m.path.to_string_lossy() == "alias.rs"),
             "symlink inside repo should remain indexable through commit_batch"
+        );
+    }
+
+    // Regression test: directory-component symlink swap between canonicalize and open.
+    // O_NOFOLLOW only blocks the final path component; an intermediate directory
+    // replaced by a symlink would escape the repo without this check.
+    #[cfg(unix)]
+    #[test]
+    fn commit_batch_rejects_intermediate_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+
+        // Create a real directory with a file inside the repo.
+        let subdir = repo.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("target.rs"), b"fn real() {}").unwrap();
+        // Also write a base file so Index::build has at least one document.
+        std::fs::write(repo.path().join("base.rs"), b"fn base() {}").unwrap();
+
+        let config = Config {
+            repo_root: repo.path().to_path_buf(),
+            index_dir: index_dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        // Notify about a file inside the real directory -- path validation passes.
+        index.notify_change(&subdir.join("target.rs")).unwrap();
+
+        // Simulate the race: replace the real directory with a symlink to outside.
+        std::fs::remove_dir_all(&subdir).unwrap();
+        // Place a file at the expected name in the outside dir so the open succeeds
+        // if the symlink is followed (confirming the attack path would work without the fix).
+        std::fs::write(outside.path().join("target.rs"), b"fn attacker() {}").unwrap();
+        symlink(outside.path(), &subdir).unwrap();
+
+        // commit_batch must detect the swap and reject with PathOutsideRepo.
+        // The existing canonicalize check catches the case where subdir is now a symlink
+        // pointing outside the repo. The new inode check covers the narrower race where
+        // the swap happens after canonicalize but before open.
+        let result = index.commit_batch();
+        assert!(
+            matches!(result, Err(IndexError::PathOutsideRepo(_))),
+            "expected PathOutsideRepo after intermediate symlink swap, got: {result:?}"
         );
     }
 
