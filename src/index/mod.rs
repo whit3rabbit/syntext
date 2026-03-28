@@ -16,6 +16,7 @@ pub mod walk;
 
 pub use snapshot::{BaseSegments, IndexSnapshot};
 
+pub(crate) use encoding::normalize_encoding;
 pub use walk::is_binary;
 
 use std::collections::{HashMap, HashSet};
@@ -377,19 +378,20 @@ impl Index {
                 return Err(IndexError::PathOutsideRepo(abs.clone()));
             }
             let mut reader = file.take(self.config.max_file_size + 1);
-            let mut content: Vec<u8> = Vec::new();
-            reader.read_to_end(&mut content)?;
-            if content.len() as u64 > self.config.max_file_size {
+            let mut raw: Vec<u8> = Vec::new();
+            reader.read_to_end(&mut raw)?;
+            if raw.len() as u64 > self.config.max_file_size {
                 return Err(IndexError::FileTooLarge {
                     path: abs,
-                    size: content.len() as u64,
+                    size: raw.len() as u64,
                 });
             }
+            let content = encoding::normalize_encoding(&raw);
             if is_binary(&content) {
                 excluded_changed.insert(path.clone());
                 continue;
             }
-            new_files.push((path.clone(), Arc::from(content)));
+            new_files.push((path.clone(), Arc::from(content.as_ref())));
         }
 
         let mut visible_changed = take.newly_changed.clone();

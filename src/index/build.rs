@@ -145,12 +145,13 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
         let results: Vec<Option<(u64, Vec<u64>)>> = batch
             .par_iter()
             .map(|(abs_path, _, _)| {
-                let content = fs::read(abs_path).ok()?;
+                let raw = fs::read(abs_path).ok()?;
+                let content = crate::index::normalize_encoding(&raw);
                 if is_binary(&content) {
                     return None;
                 }
-                let hash = xxh64(&content, 0);
-                Some((hash, build_all(&content)))
+                let hash = xxh64(content.as_ref(), 0);
+                Some((hash, build_all(content.as_ref())))
             })
             .collect();
 

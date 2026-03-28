@@ -51,12 +51,13 @@ pub(super) fn resolve_doc(
     // If more than max_file_size bytes were read, the file grew since indexing;
     // skip it rather than silently verify only the truncated portion.
     let mut reader = file.take(max_file_size.saturating_add(1));
-    let mut content = Vec::new();
-    reader.read_to_end(&mut content).ok()?;
-    if content.len() as u64 > max_file_size {
+    let mut raw = Vec::new();
+    reader.read_to_end(&mut raw).ok()?;
+    if raw.len() as u64 > max_file_size {
         return None;
     }
-    Some((doc_entry.path, Arc::from(content)))
+    let content = crate::index::normalize_encoding(&raw);
+    Some((doc_entry.path, Arc::from(content.as_ref())))
 }
 
 #[cfg(test)]

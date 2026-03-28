@@ -16,37 +16,23 @@ use std::borrow::Cow;
 ///
 /// **Must be called before `is_binary()`**: UTF-16 files have null bytes at
 /// every other character position and would be silently skipped without this.
-// Suppress dead-code lint until this module is wired into the build and search
-// pipelines in subsequent tasks.
-#[allow(dead_code)]
 pub(crate) fn normalize_encoding(content: &[u8]) -> Cow<'_, [u8]> {
     if let Some(rest) = content.strip_prefix(b"\xEF\xBB\xBF") {
         return Cow::Borrowed(rest);
     }
     if let Some(rest) = content.strip_prefix(b"\xFF\xFE") {
-        return Cow::Owned(decode_utf16le(rest));
+        return Cow::Owned(decode_utf16(rest, u16::from_le_bytes));
     }
     if let Some(rest) = content.strip_prefix(b"\xFE\xFF") {
-        return Cow::Owned(decode_utf16be(rest));
+        return Cow::Owned(decode_utf16(rest, u16::from_be_bytes));
     }
     Cow::Borrowed(content)
 }
 
-fn decode_utf16le(bytes: &[u8]) -> Vec<u8> {
+fn decode_utf16(bytes: &[u8], from_bytes: fn([u8; 2]) -> u16) -> Vec<u8> {
     let units: Vec<u16> = bytes
         .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    char::decode_utf16(units)
-        .map(|r| r.unwrap_or('\u{FFFD}'))
-        .collect::<String>()
-        .into_bytes()
-}
-
-fn decode_utf16be(bytes: &[u8]) -> Vec<u8> {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .map(|c| from_bytes([c[0], c[1]]))
         .collect();
     char::decode_utf16(units)
         .map(|r| r.unwrap_or('\u{FFFD}'))
