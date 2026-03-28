@@ -136,6 +136,11 @@ impl MmapSegment {
                 .try_into()
                 .map_err(|_| corrupt("footer slice"))?,
         );
+        // Accept both v2 and v3 version tags. Until Task 3 ships the split-file
+        // writer, SegmentWriter still serializes a single-file layout even when
+        // writing FORMAT_VERSION_V3. open() reads both correctly because the
+        // single-file layout is identical for v2 and v3. The split-file read path
+        // (open_split) is added in a later task.
         if version != FORMAT_VERSION_V2 && version != FORMAT_VERSION_V3 {
             return Err(IndexError::CorruptIndex(format!(
                 "unsupported version {version}"
@@ -478,8 +483,8 @@ mod tests {
     }
 
     #[test]
-    fn dict_entry_size_unchanged_in_v3() {
-        // 8 (gram_hash) + 8 (post_offset) + 4 (count) = 20 bytes.
+    fn dict_entry_size_matches_components() {
+        // 8 (gram_hash) + 8 (abs_off/post_offset) + 4 (count) = 20 bytes.
         assert_eq!(DICT_ENTRY_SIZE, 20);
     }
 }
