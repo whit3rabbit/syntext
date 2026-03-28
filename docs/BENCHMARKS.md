@@ -139,6 +139,15 @@ These points summarize current known testing observations against real code envi
 - Exact match preset counts are clean for queries like `useState`, `getDisplayNameForReactElement`, `rustc_middle`, and `mir::Body` on real codebases. Substring and suffix matches (such as `TyCtxt` or `useEffect`) will often undercount in `ripline` on big codebases and therefore serve as poor benchmark choices.
 - **Hot vs cold search**: `--ripline-search-mode both` is useful when measuring real agent loops. On the current Zed preset, `LanguageServerId` measured about `9ms` in fork mode and about `2ms` in persistent mode, with identical counts. Broad queries like `workspace` change much less, because verification still dominates.
 - **Incremental parity**: Benchmark numbers are easier to trust when incremental updates match full builds. Incremental commits now reject lexical path traversal outside `repo_root` and skip binary files the same way full builds do, so “hot index” runs do not quietly benchmark a different visible corpus than fresh builds.
+- **Camel-case indexing tradeoff**: the `c671141` change set added exact-literal expansion for small regex alternations and extra camel-case-aware grams at index time. A direct before/after comparison against `2513d0e` showed modest on-disk growth but a non-trivial build-time bump in single local runs:
+
+| Repo | Build time before | Build time after | Index bytes before | Index bytes after |
+|---|---|---|---|---|
+| `linux` | `6386 ms` | `8753 ms` (`+37.1%`) | `51,538,937` | `52,274,473` (`+1.4%`) |
+| `react` | `521 ms` | `574 ms` (`+10.1%`) | `4,609,794` | `4,989,535` (`+8.2%`) |
+| `zed-research` | `212 ms` | `255 ms` (`+20.3%`) | `2,619,098` | `2,659,654` (`+1.5%`) |
+
+These numbers are useful, but they are not clean enough to call “free”. The index-size increase is small in the corpora above, while build-time cost looks real and somewhat noisy. Keep the feature because it turned the Zed alternation case from scan-like behavior into indexed behavior, but rerun repeated build benchmarks before claiming no build regression.
 
 ## Delta Gram-Index
 
