@@ -9,31 +9,39 @@ use ripline_rs::posting::{varint_decode, varint_encode, PostingList};
 #[test]
 fn varint_empty() {
     let ids: Vec<u32> = vec![];
-    assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+    assert_eq!(varint_decode(&varint_encode(&ids).unwrap()).unwrap(), ids);
 }
 
 #[test]
 fn varint_single_zero() {
-    assert_eq!(varint_decode(&varint_encode(&[0u32])).unwrap(), [0u32]);
+    assert_eq!(varint_decode(&varint_encode(&[0u32]).unwrap()).unwrap(), [0u32]);
 }
 
 #[test]
 fn varint_sequential() {
     let ids: Vec<u32> = (0u32..1000).collect();
-    assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+    assert_eq!(varint_decode(&varint_encode(&ids).unwrap()).unwrap(), ids);
 }
 
 #[test]
 fn varint_large_deltas() {
     let ids = vec![0u32, 1_000_000, 2_000_000, u32::MAX / 2, u32::MAX];
-    assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+    assert_eq!(varint_decode(&varint_encode(&ids).unwrap()).unwrap(), ids);
 }
 
 #[test]
 fn varint_max_value() {
     assert_eq!(
-        varint_decode(&varint_encode(&[u32::MAX])).unwrap(),
+        varint_decode(&varint_encode(&[u32::MAX]).unwrap()).unwrap(),
         [u32::MAX]
+    );
+}
+
+#[test]
+fn varint_unsorted_returns_error() {
+    assert_eq!(
+        varint_encode(&[5, 3, 7]),
+        Err("varint_encode: ids must be sorted")
     );
 }
 
@@ -52,7 +60,7 @@ fn posting_list_is_empty_small() {
     let empty = PostingList::Small(vec![]);
     assert!(empty.is_empty());
 
-    let non_empty = PostingList::Small(varint_encode(&[1, 2, 3]));
+    let non_empty = PostingList::Small(varint_encode(&[1, 2, 3]).unwrap());
     assert!(!non_empty.is_empty());
 }
 

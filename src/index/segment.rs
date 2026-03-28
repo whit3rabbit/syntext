@@ -251,7 +251,12 @@ impl SegmentWriter {
                 buf.extend_from_slice(&(rbytes.len() as u32).to_le_bytes());
                 buf.extend_from_slice(&rbytes);
             } else {
-                let encoded = varint_encode(&doc_ids);
+                let encoded = varint_encode(&doc_ids).map_err(|msg| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("segment postings for gram {gram_hash:#x}: {msg}"),
+                    )
+                })?;
                 buf.push(0u8);
                 buf.extend_from_slice(&entry_count.to_le_bytes());
                 buf.extend_from_slice(&(encoded.len() as u32).to_le_bytes());

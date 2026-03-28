@@ -32,15 +32,11 @@ pub const ROARING_THRESHOLD: usize = 8192;
 ///
 /// Each entry is stored as a variable-length integer (1-5 bytes) encoding the
 /// delta from the previous value. The first entry uses the value directly.
-///
-/// # Panics
-///
-/// Panics if `ids` is not sorted. Callers must guarantee sorted, deduplicated input.
-pub fn varint_encode(ids: &[u32]) -> Vec<u8> {
-    assert!(
-        ids.windows(2).all(|w| w[0] <= w[1]),
-        "varint_encode: ids must be sorted (caller contract violation)"
-    );
+/// Returns an error if `ids` is not sorted.
+pub fn varint_encode(ids: &[u32]) -> Result<Vec<u8>, &'static str> {
+    if !ids.windows(2).all(|w| w[0] <= w[1]) {
+        return Err("varint_encode: ids must be sorted");
+    }
 
     let mut out = Vec::with_capacity(ids.len() * 2);
     let mut prev = 0u32;
@@ -49,7 +45,7 @@ pub fn varint_encode(ids: &[u32]) -> Vec<u8> {
         write_varint(delta, &mut out);
         prev = id;
     }
-    out
+    Ok(out)
 }
 
 /// Decode delta-varint encoded bytes back to a `Vec<u32>` doc IDs.
@@ -180,25 +176,25 @@ mod tests {
     #[test]
     fn varint_round_trip_empty() {
         let ids: Vec<u32> = vec![];
-        assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+        assert_eq!(varint_decode(&varint_encode(&ids).unwrap()).unwrap(), ids);
     }
 
     #[test]
     fn varint_round_trip_single() {
         let ids = vec![42u32];
-        assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+        assert_eq!(varint_decode(&varint_encode(&ids).unwrap()).unwrap(), ids);
     }
 
     #[test]
     fn varint_round_trip_sequential() {
         let ids: Vec<u32> = (0u32..100).collect();
-        assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+        assert_eq!(varint_decode(&varint_encode(&ids).unwrap()).unwrap(), ids);
     }
 
     #[test]
     fn varint_round_trip_large_deltas() {
         let ids = vec![0u32, 1_000_000, 2_000_000, u32::MAX - 1, u32::MAX];
-        assert_eq!(varint_decode(&varint_encode(&ids)).unwrap(), ids);
+        assert_eq!(varint_decode(&varint_encode(&ids).unwrap()).unwrap(), ids);
     }
 
     #[test]
@@ -212,15 +208,14 @@ mod tests {
     #[test]
     fn varint_decode_first_entry_zero_is_ok() {
         // First entry with value 0 (delta=0 from prev=0) is valid.
-        let bytes = varint_encode(&[0u32, 1u32, 2u32]);
+        let bytes = varint_encode(&[0u32, 1u32, 2u32]).unwrap();
         let result = varint_decode(&bytes).unwrap();
         assert_eq!(result, vec![0, 1, 2]);
     }
 
     #[test]
-    #[should_panic(expected = "varint_encode: ids must be sorted")]
-    fn varint_encode_panics_on_unsorted_input_in_release() {
-        // This must panic in both debug and release builds.
-        varint_encode(&[5, 3, 7]);
+    fn varint_encode_rejects_unsorted_input() {
+        let result = varint_encode(&[5, 3, 7]);
+        assert_eq!(result, Err("varint_encode: ids must be sorted"));
     }
 }

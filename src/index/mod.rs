@@ -15,7 +15,7 @@ pub mod walk;
 
 pub use walk::is_binary;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path};
@@ -47,6 +47,21 @@ const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
 
 /// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
 const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
+
+fn projected_overlay_doc_count(
+    old_overlay: &OverlayView,
+    visible_changed: &HashSet<String>,
+    removed_paths: &HashSet<String>,
+) -> usize {
+    old_overlay
+        .docs
+        .iter()
+        .filter(|doc| {
+            !visible_changed.contains(&doc.path) && !removed_paths.contains(&doc.path)
+        })
+        .count()
+        + visible_changed.len()
+}
 
 /// Measure the crossover fraction where index lookup becomes cheaper than a
 /// full scan for this repository.
@@ -700,6 +715,22 @@ impl Index {
         let mut removed_paths = take.newly_deleted.clone();
         removed_paths.extend(excluded_changed.iter().cloned());
 
+        let projected_overlay_docs =
+            projected_overlay_doc_count(&old_snap.overlay, &visible_changed, &removed_paths);
+
+        // Enforce hard overlay size limit before rebuilding the overlay. Once
+        // the overlay grows beyond 50% of base docs, the rebuild cost is
+        // wasted work because callers need a full reindex anyway.
+        if base_doc_count > 0 {
+            let ratio = projected_overlay_docs as f64 / base_doc_count as f64;
+            if ratio > OVERLAY_ENFORCE_THRESHOLD {
+                return Err(IndexError::OverlayFull {
+                    overlay_docs: projected_overlay_docs,
+                    base_docs: base_doc_count as usize,
+                });
+            }
+        }
+
         let overlay = OverlayView::build_incremental(
             base_doc_count,
             &old_snap.overlay,
@@ -708,18 +739,7 @@ impl Index {
             &removed_paths,
         )?;
 
-        // Enforce hard overlay size limit. At > 50% of base docs the clone
-        // cost in build_incremental_delta becomes significant. Return OverlayFull
-        // so callers know to rebuild.
-        if base_doc_count > 0 {
-            let ratio = overlay.docs.len() as f64 / base_doc_count as f64;
-            if ratio > OVERLAY_ENFORCE_THRESHOLD {
-                return Err(IndexError::OverlayFull {
-                    overlay_docs: overlay.docs.len(),
-                    base_docs: base_doc_count as usize,
-                });
-            }
-        }
+        debug_assert_eq!(overlay.docs.len(), projected_overlay_docs);
 
         // Compute delete_set: base doc_ids invalidated by changes.
         let delete_set = compute_delete_set(
@@ -975,6 +995,44 @@ mod tests {
         assert!(
             matches!(result, Err(IndexError::OverlayFull { .. })),
             "commit_batch must return OverlayFull when overlay exceeds 50% of base, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn commit_batch_binary_changes_do_not_count_toward_overlay_limit() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..10 {
+            std::fs::write(
+                repo.path().join(format!("base_{i:03}.rs")),
+                format!("fn base_{i}() {{ let x = {i}; }}\n"),
+            )
+            .unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        for i in 0..6 {
+            let path = repo.path().join(format!("overlay_{i:03}.bin"));
+            std::fs::write(&path, b"\0not indexed\n").unwrap();
+            index.notify_change(&path).unwrap();
+        }
+
+        let result = index.commit_batch();
+        assert!(
+            result.is_ok(),
+            "binary-only changes should be excluded before overlay limit check: {result:?}"
+        );
+        assert_eq!(
+            index.snapshot().overlay.docs.len(),
+            0,
+            "binary-only changes must not create overlay docs"
         );
     }
 
