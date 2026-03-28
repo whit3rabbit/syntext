@@ -9,6 +9,11 @@ pub mod posting;
 pub mod query;
 pub mod search;
 pub mod tokenizer;
+// NOTE: `symbol` module (Tree-sitter + SQLite symbol index) is deferred to Phase 7.
+// When implemented, add: pub mod symbol;
+// See specs/001-hybrid-code-search-index/plan.md for the implementation plan.
+#[cfg(feature = "symbols")]
+pub mod symbol;
 
 use std::path::PathBuf;
 
