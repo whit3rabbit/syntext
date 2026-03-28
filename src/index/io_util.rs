@@ -38,22 +38,20 @@ pub fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-/// Opens a file for reading without following symlinks on the final path component.
-///
-/// On non-Unix systems, `O_NOFOLLOW` is not available. We reject symlinks
-/// explicitly via `symlink_metadata` before opening to block symlink-
-/// substitution attacks on the final path component.
+// Non-Unix platforms (Windows, WASI) have no O_NOFOLLOW equivalent and no
+// verify_fd_matches_stat, making the TOCTOU mitigations in commit_batch
+// and resolver unavailable. Fail the build rather than ship a binary with
+// silent security degradation.
+//
+// To add Windows support: implement CreateFileW with FILE_FLAG_OPEN_REPARSE_POINT
+// + DeviceIoControl(FSCTL_GET_REPARSE_POINT) and a handle-based path check.
 #[cfg(not(unix))]
-pub fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "refusing to open symlink",
-        ));
-    }
-    std::fs::File::open(path)
-}
+compile_error!(
+    "syntext requires a Unix target (Linux, macOS, *BSD). \
+     Non-Unix builds lack O_NOFOLLOW and inode verification, \
+     which are required for TOCTOU-safe file indexing. \
+     See src/index/io_util.rs to add platform support."
+);
 
 /// Verify that the fd we just opened refers to the same inode we stat'd
 /// before the open. This catches directory-component symlink swaps that
