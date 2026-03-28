@@ -552,17 +552,20 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     }
 
     let mut count = 0;
+    let mut notify_errors = 0usize;
     for path in &changed {
         let abs = config.repo_root.join(path);
         if abs.exists() {
             if let Err(e) = index.notify_change(&abs) {
                 eprintln!("ripline update: {path}: {e}");
+                notify_errors += 1;
             } else {
                 count += 1;
             }
         } else {
             if let Err(e) = index.notify_delete(&abs) {
                 eprintln!("ripline update: {path}: {e}");
+                notify_errors += 1;
             } else {
                 count += 1;
             }
@@ -577,7 +580,7 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     if !quiet {
         println!("ripline: updated {} file(s)", count);
     }
-    0
+    if notify_errors > 0 { 1 } else { 0 }
 }
 
 #[cfg(test)]
