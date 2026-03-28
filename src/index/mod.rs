@@ -17,6 +17,7 @@ pub use walk::is_binary;
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -536,14 +537,18 @@ impl Index {
         for path in &take.newly_changed {
             let abs = self.config.repo_root.join(path);
             // Enforce the same max_file_size limit used during full builds.
-            let meta = fs::metadata(&abs)?;
-            if meta.len() > self.config.max_file_size {
+            // Use bounded read to eliminate TOCTOU race: file can grow between
+            // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
+            let file = std::fs::File::open(&abs)?;
+            let mut reader = file.take(self.config.max_file_size + 1);
+            let mut content: Vec<u8> = Vec::new();
+            reader.read_to_end(&mut content)?;
+            if content.len() as u64 > self.config.max_file_size {
                 return Err(IndexError::FileTooLarge {
                     path: abs,
-                    size: meta.len(),
+                    size: content.len() as u64,
                 });
             }
-            let content = fs::read(&abs)?;
             if is_binary(&content) {
                 excluded_changed.insert(path.clone());
                 continue;
@@ -659,6 +664,32 @@ mod tests {
         assert_eq!(
             snap.scan_threshold, threshold,
             "snapshot.scan_threshold must match manifest value"
+        );
+    }
+
+    #[test]
+    fn commit_batch_bounded_read_rejects_file_that_exceeds_limit() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        let path = repo.path().join("big.rs");
+        std::fs::write(&path, b"fn small() {}\n").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            max_file_size: 10, // very small limit
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        // Write content that exceeds the limit.
+        std::fs::write(&path, b"fn small_but_now_too_big() { let x = 1; }\n").unwrap();
+        index.notify_change(&path).unwrap();
+        let result = index.commit_batch();
+        assert!(
+            matches!(result, Err(IndexError::FileTooLarge { .. })),
+            "commit_batch must reject files that exceed max_file_size at read time: {result:?}"
         );
     }
 }
