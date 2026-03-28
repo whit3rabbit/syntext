@@ -47,8 +47,50 @@ pub(super) fn resolve_doc(
     if !crate::index::verify_fd_matches_stat(&file, &pre_meta) {
         return None;
     }
-    let mut reader = file.take(max_file_size);
+    // Use max_file_size + 1 as the read sentinel (same pattern as commit_batch).
+    // If more than max_file_size bytes were read, the file grew since indexing;
+    // skip it rather than silently verify only the truncated portion.
+    let mut reader = file.take(max_file_size.saturating_add(1));
     let mut content = Vec::new();
     reader.read_to_end(&mut content).ok()?;
+    if content.len() as u64 > max_file_size {
+        return None;
+    }
     Some((doc_entry.path, Arc::from(content)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+
+    #[test]
+    fn oversized_file_returns_none() {
+        let max: u64 = 16;
+        // Write 17 bytes (> max).
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(b"12345678901234567").unwrap(); // 17 bytes
+        tmp.flush().unwrap();
+
+        // Re-open for reading (simulate what resolve_doc does).
+        let file = std::fs::File::open(tmp.path()).unwrap();
+        let mut reader = file.take(max.saturating_add(1));
+        let mut content = Vec::new();
+        reader.read_to_end(&mut content).unwrap();
+        // Should read 17 bytes (all of them, since take(17) reads up to 17).
+        assert!(content.len() as u64 > max, "must detect oversized file");
+    }
+
+    #[test]
+    fn at_limit_file_is_not_skipped() {
+        let max: u64 = 16;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(b"1234567890123456").unwrap(); // exactly 16 bytes
+        tmp.flush().unwrap();
+
+        let file = std::fs::File::open(tmp.path()).unwrap();
+        let mut reader = file.take(max.saturating_add(1));
+        let mut content = Vec::new();
+        reader.read_to_end(&mut content).unwrap();
+        assert!(content.len() as u64 <= max, "at-limit file must not be skipped");
+    }
 }

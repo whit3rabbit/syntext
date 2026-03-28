@@ -560,13 +560,16 @@ fn gitignore_excludes_build_dir() {
     }
 }
 
-/// Size guard: a file that grew beyond max_file_size after indexing must still
-/// produce a match when the sentinel is in the first max_file_size bytes.
+/// Size guard: a file that grew beyond max_file_size after indexing must be
+/// skipped entirely rather than verified against truncated content.
 ///
-/// Policy: do NOT skip oversized files (that would be a false negative).
-/// Read up to max_file_size bytes and verify against truncated content.
+/// Policy: skip oversized files. Searching only the first max_file_size bytes
+/// would silently miss matches in the remaining content (false negatives), which
+/// is unacceptable for use cases such as secret scanning. Matches that were in
+/// the original indexed content are an acceptable sacrifice for correctness;
+/// the caller should re-index or increase max_file_size.
 #[test]
-fn search_finds_match_in_file_that_grew_beyond_max_size() {
+fn oversized_file_after_growth_returns_no_results() {
     let _guard = correctness_build_lock().lock().unwrap();
     let repo = tempfile::TempDir::new().unwrap();
     let index_dir = tempfile::TempDir::new().unwrap();
@@ -591,19 +594,19 @@ fn search_finds_match_in_file_that_grew_beyond_max_size() {
         "baseline: must find match in original file"
     );
 
-    // Bloat the file: original content at the start, then padding.
-    // The sentinel is in the first 1024 bytes, so truncated read finds it.
+    // Bloat the file past max_file_size; the sentinel is still near the start
+    // but the file is now oversized so the resolver must skip it entirely.
     let mut bloated = String::from("fn unique_sentinel_xyzzy() {}\n");
     bloated.push_str(&"x".repeat(2048));
     std::fs::write(&file, &bloated).unwrap();
 
-    // Re-open index (fresh snapshot) and search via truncated read.
+    // Re-open index (fresh snapshot); oversized file must be skipped.
     let index2 = syntext::index::Index::open(config).unwrap();
     let results2 = index2.search("unique_sentinel_xyzzy", &opts).unwrap();
     assert_eq!(
         results2.len(),
-        1,
-        "should find match in truncated content of oversized file"
+        0,
+        "oversized file must be skipped entirely, not verified against truncated content"
     );
 }
 
