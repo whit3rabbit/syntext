@@ -40,7 +40,13 @@ pub(super) fn resolve_doc(
     if !canonical.starts_with(canonical_root) {
         return None;
     }
-    let file = std::fs::File::open(&canonical).ok()?;
+    // Mitigate TOCTOU: stat before open, then verify fd matches the same inode.
+    let pre_meta = std::fs::metadata(&canonical).ok()?;
+    let file = crate::index::open_readonly_nofollow(&canonical).ok()?;
+    #[cfg(unix)]
+    if !crate::index::verify_fd_matches_stat(&file, &pre_meta) {
+        return None;
+    }
     let mut reader = file.take(max_file_size);
     let mut content = Vec::new();
     reader.read_to_end(&mut content).ok()?;

@@ -154,7 +154,7 @@ fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
 }
 
 #[cfg(unix)]
-fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(target_os = "linux")]
     const O_NOFOLLOW_FLAG: i32 = 0o400000;
     #[cfg(any(
@@ -174,7 +174,7 @@ fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 #[cfg(not(unix))]
-fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
 
@@ -183,7 +183,7 @@ fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
 // happen in the window between canonicalize() and open(): O_NOFOLLOW only
 // blocks the final path component, not intermediate ones.
 #[cfg(unix)]
-fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Metadata) -> bool {
+pub(crate) fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     match file.metadata() {
         Ok(fd_meta) => fd_meta.dev() == pre_open_meta.dev() && fd_meta.ino() == pre_open_meta.ino(),
@@ -569,6 +569,17 @@ impl Index {
         let mut next_global_id: u32 = 0;
 
         for seg_ref in &manifest.segments {
+            // Reject path traversal in manifest segment filenames
+            if seg_ref.filename.contains('/')
+                || seg_ref.filename.contains('\\')
+                || seg_ref.filename.contains("..")
+                || Path::new(&seg_ref.filename).is_absolute()
+            {
+                return Err(IndexError::CorruptIndex(format!(
+                    "invalid segment filename in manifest: {:?}",
+                    seg_ref.filename
+                )));
+            }
             let seg_path = config.index_dir.join(&seg_ref.filename);
             let seg = MmapSegment::open(&seg_path)?;
             segment_base_ids.push(next_global_id);
@@ -816,11 +827,17 @@ impl Index {
         let mut doc_to_file_id = old_snap.doc_to_file_id.clone();
         doc_to_file_id.resize(total_ids, u32::MAX);
         for gid in delete_set.iter() {
-            doc_to_file_id[gid as usize] = u32::MAX;
+            let idx = gid as usize;
+            if idx < doc_to_file_id.len() {
+                doc_to_file_id[idx] = u32::MAX;
+            }
         }
         for doc in &overlay.docs {
-            if let Some(fid) = path_index.file_id(&doc.path) {
-                doc_to_file_id[doc.doc_id as usize] = fid;
+            let idx = doc.doc_id as usize;
+            if idx < doc_to_file_id.len() {
+                if let Some(fid) = path_index.file_id(&doc.path) {
+                    doc_to_file_id[idx] = fid;
+                }
             }
         }
 
