@@ -1,41 +1,154 @@
-//! CLI entry point: `ripline index`, `ripline search`, `ripline status`, `ripline update`.
+//! CLI entry point: `rl <pattern>`, `rl index`, `rl status`, `rl update`.
 //!
 //! Uses clap derive for argument parsing. Output format is grep-compatible
 //! by default, with `--json` for machine-readable output.
 
+mod bench;
+mod manage;
+mod render;
+mod search;
+
 use std::path::PathBuf;
-use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 
-use crate::index::Index;
-use crate::{Config, SearchOptions};
+use crate::Config;
 
-/// Hybrid code search index for agent workflows.
+use bench::cmd_bench_search;
+use manage::{cmd_index, cmd_status, cmd_update};
+use search::{SearchArgs, cmd_search};
+
+/// Fast code search with index acceleration. rg-compatible interface.
+///
+/// Use `rl index` to build the index first, then `rl <pattern>` to search.
 #[derive(Parser)]
-#[command(name = "ripline", version, about)]
+#[command(name = "rl", version, about, disable_help_subcommand = true)]
 pub struct Cli {
-    /// Override index directory (default: .ripline/ in repo root).
+    /// Pattern to search (regex by default). Use -F for literal, -e to avoid
+    /// subcommand name conflicts (e.g. `rl -e index`).
+    pub pattern: Option<String>,
+
+    /// Paths (files or directories) to restrict the search.
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+
+    // --- Match options ---
+
+    /// Treat PATTERN as a literal string (not a regex). Equivalent to rg -F.
+    #[arg(short = 'F', long = "fixed-strings")]
+    pub fixed_strings: bool,
+
+    /// Case-insensitive search.
+    #[arg(short = 'i', long = "ignore-case")]
+    pub ignore_case: bool,
+
+    /// Only match whole words (wraps pattern in \b...\b).
+    #[arg(short = 'w', long = "word-regexp")]
+    pub word_regexp: bool,
+
+    /// Invert matching: print lines that do NOT match.
+    #[arg(short = 'v', long = "invert-match")]
+    pub invert_match: bool,
+
+    /// Specify pattern explicitly (avoids subcommand name conflicts).
+    #[arg(
+        short = 'e',
+        long = "regexp",
+        value_name = "PATTERN",
+        conflicts_with = "pattern"
+    )]
+    pub regexp: Option<String>,
+
+    // --- Output format ---
+
+    /// Print only paths of files with at least one match.
+    #[arg(short = 'l', long = "files-with-matches")]
+    pub files_with_matches: bool,
+
+    /// Print count of matching lines per file.
+    #[arg(short = 'c', long = "count")]
+    pub count: bool,
+
+    /// Stop after NUM total matches.
+    #[arg(short = 'm', long = "max-count", value_name = "NUM")]
+    pub max_count: Option<usize>,
+
+    /// Suppress output; exit 0 if any match found.
+    #[arg(short = 'q', long = "quiet")]
+    pub quiet: bool,
+
+    /// Output as NDJSON (ripgrep-compatible format).
+    #[arg(long = "json")]
+    pub json: bool,
+
+    /// Group matches under their file name (like rg default on a tty).
+    #[arg(long = "heading", overrides_with = "no_heading")]
+    pub heading: bool,
+
+    /// Print path:line:content on each line (default; overrides --heading).
+    #[arg(long = "no-heading", overrides_with = "heading")]
+    pub no_heading: bool,
+
+    /// Suppress line numbers in output.
+    #[arg(short = 'N', long = "no-line-number")]
+    pub no_line_number: bool,
+
+    /// Suppress file names in output.
+    #[arg(long = "no-filename")]
+    pub no_filename: bool,
+
+    // --- Context lines ---
+
+    /// Show NUM lines after each match.
+    #[arg(short = 'A', long = "after-context", value_name = "NUM")]
+    pub after_context: Option<usize>,
+
+    /// Show NUM lines before each match.
+    #[arg(short = 'B', long = "before-context", value_name = "NUM")]
+    pub before_context: Option<usize>,
+
+    /// Show NUM lines before and after each match (sets -A and -B).
+    #[arg(short = 'C', long = "context", value_name = "NUM")]
+    pub context: Option<usize>,
+
+    // --- Filtering ---
+
+    /// Restrict to file type extension (e.g. rs, py, js).
+    #[arg(short = 't', long = "type", value_name = "TYPE")]
+    pub file_type: Option<String>,
+
+    /// Exclude file type extension.
+    #[arg(short = 'T', long = "type-not", value_name = "TYPE")]
+    pub type_not: Option<String>,
+
+    /// Restrict to paths matching GLOB (e.g. "*.rs" or "src/**").
+    #[arg(short = 'g', long = "glob", value_name = "GLOB")]
+    pub glob: Option<String>,
+
+    // --- Index configuration ---
+
+    /// Override index directory (default: .ripline/ at repo root).
     #[arg(long, global = true, env = "RIPLINE_INDEX_DIR")]
-    index_dir: Option<PathBuf>,
+    pub index_dir: Option<PathBuf>,
 
-    /// Override repository root (default: auto-detect via .git).
+    /// Override repository root (default: nearest .git ancestor).
     #[arg(long, global = true)]
-    repo_root: Option<PathBuf>,
+    pub repo_root: Option<PathBuf>,
 
-    /// Increase verbosity.
-    #[arg(short, long, global = true)]
-    verbose: bool,
+    /// Emit progress and diagnostic messages.
+    #[arg(long, global = true)]
+    pub verbose: bool,
 
+    /// Management subcommands (index, update, status).
     #[command(subcommand)]
-    command: Command,
+    pub command: Option<ManageCommand>,
 }
 
 #[derive(Subcommand)]
-enum Command {
+pub enum ManageCommand {
     /// Build or rebuild the search index.
     Index {
-        /// Rebuild from scratch even if index exists.
+        /// Rebuild from scratch even if an index exists.
         #[arg(long)]
         force: bool,
         /// Print statistics after build.
@@ -45,39 +158,7 @@ enum Command {
         #[arg(short, long)]
         quiet: bool,
     },
-    /// Search for a pattern in the indexed repository.
-    Search {
-        /// Regex pattern to search for.
-        pattern: String,
-        /// Restrict search to these paths.
-        #[arg(trailing_var_arg = true)]
-        paths: Vec<String>,
-        /// Treat pattern as a literal string.
-        #[arg(short = 'l', long = "literal")]
-        literal: bool,
-        /// Case-insensitive search.
-        #[arg(short = 'i', long = "ignore-case")]
-        ignore_case: bool,
-        /// Restrict to file type (e.g. rs, py, js).
-        #[arg(short = 't', long = "type")]
-        file_type: Option<String>,
-        /// Exclude file type.
-        #[arg(short = 'T', long = "type-not")]
-        type_not: Option<String>,
-        /// Maximum results to return.
-        #[arg(short = 'm', long = "max-count")]
-        max_count: Option<usize>,
-        /// Show only match count per file.
-        #[arg(short = 'c', long)]
-        count: bool,
-        /// Output as newline-delimited JSON.
-        #[arg(long)]
-        json: bool,
-        /// Suppress output; exit 0 if match, 1 if not.
-        #[arg(short = 'q', long)]
-        quiet: bool,
-    },
-    /// Show index status and statistics.
+    /// Show index statistics.
     Status {
         /// Output as JSON.
         #[arg(long)]
@@ -92,16 +173,12 @@ enum Command {
         #[arg(short, long)]
         quiet: bool,
     },
-    /// Benchmark multiple queries against one opened index.
     #[command(hide = true)]
     BenchSearch {
-        /// Query spec, for example literal:workspace or regex:foo.*
         #[arg(long = "query", required = true)]
         queries: Vec<String>,
-        /// Timed iterations per query.
         #[arg(long, default_value_t = 1)]
         iterations: usize,
-        /// Warmup iterations per query.
         #[arg(long, default_value_t = 0)]
         warmups: usize,
     },
@@ -111,48 +188,52 @@ enum Command {
 pub fn run() -> i32 {
     let cli = Cli::parse();
     let mut config = resolve_config(&cli);
-    // CLI defaults to verbose unless --quiet is passed per-subcommand (overridden below).
-    // Library consumers get verbose=false (Config::default()).
     config.verbose = cli.verbose;
 
     match cli.command {
-        Command::Index {
-            force,
-            stats,
-            quiet,
-        } => cmd_index(config, force, stats, quiet),
-        Command::Search {
-            pattern,
-            paths: _,
-            literal,
-            ignore_case,
-            file_type,
-            type_not,
-            max_count,
-            count,
-            json,
-            quiet,
-        } => {
-            let search_args = SearchArgs {
-                pattern,
-                literal,
-                ignore_case,
-                file_type,
-                type_not,
-                max_count,
-                count,
-                json,
-                quiet,
-            };
-            cmd_search(config, &search_args)
+        Some(ManageCommand::Index { force, stats, quiet }) => {
+            cmd_index(config, force, stats, quiet)
         }
-        Command::Status { json } => cmd_status(config, json),
-        Command::Update { flush, quiet } => cmd_update(config, flush, quiet),
-        Command::BenchSearch {
+        Some(ManageCommand::Status { json }) => cmd_status(config, json),
+        Some(ManageCommand::Update { flush, quiet }) => cmd_update(config, flush, quiet),
+        Some(ManageCommand::BenchSearch {
             queries,
             iterations,
             warmups,
-        } => cmd_bench_search(config, &queries, iterations, warmups),
+        }) => cmd_bench_search(config, &queries, iterations, warmups),
+        None => {
+            let pattern = match cli.pattern.or(cli.regexp) {
+                Some(p) => p,
+                None => {
+                    eprintln!("rl: a pattern is required (try `rl --help`)");
+                    return 2;
+                }
+            };
+            let ctx = cli.context.unwrap_or(0);
+            // no_heading is the default behavior; this flag exists for rg compatibility.
+            let search_args = SearchArgs {
+                pattern,
+                paths: cli.paths,
+                fixed_strings: cli.fixed_strings,
+                ignore_case: cli.ignore_case,
+                word_regexp: cli.word_regexp,
+                invert_match: cli.invert_match,
+                files_with_matches: cli.files_with_matches,
+                count: cli.count,
+                max_count: cli.max_count,
+                quiet: cli.quiet,
+                json: cli.json,
+                heading: cli.heading,
+                no_line_number: cli.no_line_number,
+                no_filename: cli.no_filename,
+                after_context: cli.after_context.unwrap_or(ctx),
+                before_context: cli.before_context.unwrap_or(ctx),
+                file_type: cli.file_type,
+                type_not: cli.type_not,
+                glob: cli.glob,
+            };
+            cmd_search(config, &search_args)
+        }
     }
 }
 
@@ -196,409 +277,49 @@ fn detect_repo_root() -> Option<PathBuf> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Subcommand handlers
-// ---------------------------------------------------------------------------
-
-fn cmd_index(mut config: Config, force: bool, stats: bool, quiet: bool) -> i32 {
-    let _ = force;
-    // --quiet suppresses library progress output; default CLI behavior is verbose.
-    if quiet {
-        config.verbose = false;
-    } else if !config.verbose {
-        // Neither --verbose nor --quiet: default to verbose for CLI users.
-        config.verbose = true;
-    }
-    let index = match Index::build(config) {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("ripline index: {e}");
-            return 2;
-        }
-    };
-
-    if stats {
-        let s = index.stats();
-        println!("Documents: {}", s.total_documents);
-        println!("Segments:  {}", s.total_segments);
-        println!("Grams:     {}", s.total_grams);
-    }
-    0
-}
-
-struct SearchArgs {
-    pattern: String,
-    literal: bool,
-    ignore_case: bool,
-    file_type: Option<String>,
-    type_not: Option<String>,
-    max_count: Option<usize>,
-    count: bool,
-    json: bool,
-    quiet: bool,
-}
-
-#[derive(Debug, Clone)]
-struct BenchQuerySpec {
-    mode: BenchQueryMode,
-    pattern: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BenchQueryMode {
-    Literal,
-    Regex,
-}
-
-fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
-    let index = match Index::open(config) {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("ripline search: {e}");
-            return 2;
-        }
-    };
-
-    let results = match run_search(&index, args) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("ripline search: {e}");
-            return 2;
-        }
-    };
-
-    if results.is_empty() {
-        return 1;
-    }
-
-    if args.quiet {
-        return 0;
-    }
-
-    if args.count {
-        // Count per file
-        let mut counts: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        for m in &results {
-            *counts
-                .entry(m.path.to_string_lossy().into_owned())
-                .or_default() += 1;
-        }
-        for (path, n) in &counts {
-            println!("{path}:{n}");
-        }
-    } else if args.json {
-        for m in &results {
-            let path_str = m.path.to_string_lossy();
-            let escaped_path =
-                serde_json::to_string(path_str.as_ref()).unwrap_or_else(|_| "\"\"".to_string());
-            let escaped_content =
-                serde_json::to_string(&m.line_content).unwrap_or_else(|_| "\"\"".to_string());
-            println!(
-                "{{\"path\":{},\"line\":{},\"content\":{},\"byte_offset\":{}}}",
-                escaped_path, m.line_number, escaped_content, m.byte_offset,
-            );
-        }
-    } else {
-        for m in &results {
-            println!("{}:{}:{}", m.path.display(), m.line_number, m.line_content);
-        }
-    }
-
-    0
-}
-
-fn cmd_status(config: Config, json: bool) -> i32 {
-    let index = match Index::open(config.clone()) {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("ripline status: {e}");
-            return 2;
-        }
-    };
-
-    let s = index.stats();
-    if json {
-        println!(
-            "{{\"documents\":{},\"segments\":{},\"grams\":{},\"index_dir\":\"{}\"}}",
-            s.total_documents,
-            s.total_segments,
-            s.total_grams,
-            config.index_dir.display(),
-        );
-    } else {
-        println!("Index:     {}", config.index_dir.display());
-        println!("Documents: {}", s.total_documents);
-        println!("Segments:  {}", s.total_segments);
-        println!("Grams:     {}", s.total_grams);
-        if let Some(ref commit) = s.base_commit {
-            println!("Commit:    {commit}");
-        }
-    }
-    0
-}
-
-fn run_search(
-    index: &Index,
-    args: &SearchArgs,
-) -> Result<Vec<crate::SearchMatch>, crate::IndexError> {
-    let effective_pattern = if args.literal {
-        regex::escape(&args.pattern)
-    } else {
-        args.pattern.clone()
-    };
-
-    let opts = SearchOptions {
-        case_insensitive: args.ignore_case,
-        file_type: args.file_type.clone(),
-        exclude_type: args.type_not.clone(),
-        max_results: args.max_count,
-        ..SearchOptions::default()
-    };
-
-    index.search(&effective_pattern, &opts)
-}
-
-fn parse_bench_query(value: &str) -> Result<BenchQuerySpec, String> {
-    let (mode, pattern) = value.split_once(':').ok_or_else(|| {
-        format!("invalid query {value:?}, expected literal:<pattern> or regex:<pattern>")
-    })?;
-    if pattern.is_empty() {
-        return Err("query pattern must not be empty".to_string());
-    }
-
-    let mode = match mode {
-        "literal" => BenchQueryMode::Literal,
-        "regex" => BenchQueryMode::Regex,
-        other => {
-            return Err(format!(
-                "invalid query mode {other:?}, expected literal or regex"
-            ))
-        }
-    };
-
-    Ok(BenchQuerySpec {
-        mode,
-        pattern: pattern.to_string(),
-    })
-}
-
-fn summarize_samples(samples_ms: &[f64]) -> (f64, f64, f64) {
-    let mut ordered = samples_ms.to_vec();
-    ordered.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = ordered.len() / 2;
-    let median = if ordered.len().is_multiple_of(2) {
-        (ordered[mid - 1] + ordered[mid]) / 2.0
-    } else {
-        ordered[mid]
-    };
-    (median, ordered[0], ordered[ordered.len() - 1])
-}
-
-fn cmd_bench_search(config: Config, queries: &[String], iterations: usize, warmups: usize) -> i32 {
-    if iterations == 0 {
-        eprintln!("ripline bench-search: iterations must be >= 1");
-        return 2;
-    }
-
-    let parsed_queries: Result<Vec<_>, _> = queries.iter().map(|q| parse_bench_query(q)).collect();
-    let parsed_queries = match parsed_queries {
-        Ok(qs) => qs,
-        Err(e) => {
-            eprintln!("ripline bench-search: {e}");
-            return 2;
-        }
-    };
-
-    let index = match Index::open(config) {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("ripline bench-search: {e}");
-            return 2;
-        }
-    };
-
-    let mut results = Vec::with_capacity(parsed_queries.len());
-    for query in &parsed_queries {
-        let args = SearchArgs {
-            pattern: query.pattern.clone(),
-            literal: query.mode == BenchQueryMode::Literal,
-            ignore_case: false,
-            file_type: None,
-            type_not: None,
-            max_count: None,
-            count: false,
-            json: false,
-            quiet: false,
-        };
-
-        let count = match run_search(&index, &args) {
-            Ok(r) => r.len(),
-            Err(e) => {
-                eprintln!("ripline bench-search: {e}");
-                return 2;
-            }
-        };
-
-        for _ in 0..warmups {
-            if let Err(e) = run_search(&index, &args) {
-                eprintln!("ripline bench-search: {e}");
-                return 2;
-            }
-        }
-
-        let mut samples = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            let start = Instant::now();
-            if let Err(e) = run_search(&index, &args) {
-                eprintln!("ripline bench-search: {e}");
-                return 2;
-            }
-            samples.push(start.elapsed().as_secs_f64() * 1000.0);
-        }
-
-        let (median, min, max) = summarize_samples(&samples);
-        let mode = match query.mode {
-            BenchQueryMode::Literal => "literal",
-            BenchQueryMode::Regex => "regex",
-        };
-        results.push(serde_json::json!({
-            "query": format!("{mode}:{}", query.pattern),
-            "count": count,
-            "timings_ms": {
-                "median_ms": (median * 1000.0).round() / 1000.0,
-                "min_ms": (min * 1000.0).round() / 1000.0,
-                "max_ms": (max * 1000.0).round() / 1000.0,
-            }
-        }));
-    }
-
-    println!(
-        "{}",
-        serde_json::json!({
-            "queries": results,
-        })
-    );
-    0
-}
-
-fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
-    let index = match Index::open(config.clone()) {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("ripline update: {e}");
-            return 2;
-        }
-    };
-
-    let mut changed: Vec<String> = Vec::new();
-
-    // Detect changed files via git diff against HEAD.
-    // This fails on repos with no commits, which is fine -- we fall through
-    // to untracked file detection below.
-    if let Ok(diff_output) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&config.repo_root)
-        .args(["diff", "--name-only", "HEAD"])
-        .output()
-    {
-        if diff_output.status.success() {
-            let diff_stdout = String::from_utf8_lossy(&diff_output.stdout);
-            changed.extend(
-                diff_stdout
-                    .lines()
-                    .filter(|l| !l.is_empty())
-                    .map(String::from),
-            );
-        }
-    }
-
-    // Pick up staged changes (covers initial commit scenario where HEAD
-    // doesn't exist yet).
-    if let Ok(staged_output) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&config.repo_root)
-        .args(["diff", "--name-only", "--cached"])
-        .output()
-    {
-        if staged_output.status.success() {
-            let staged_stdout = String::from_utf8_lossy(&staged_output.stdout);
-            for line in staged_stdout.lines().filter(|l| !l.is_empty()) {
-                if !changed.iter().any(|c| c == line) {
-                    changed.push(line.to_string());
-                }
-            }
-        }
-    }
-
-    // Pick up new untracked files that git-diff doesn't report.
-    if let Ok(ut_output) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&config.repo_root)
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .output()
-    {
-        if ut_output.status.success() {
-            let ut_stdout = String::from_utf8_lossy(&ut_output.stdout);
-            for line in ut_stdout.lines().filter(|l| !l.is_empty()) {
-                if !changed.iter().any(|c| c == line) {
-                    changed.push(line.to_string());
-                }
-            }
-        }
-    }
-
-    if changed.is_empty() {
-        if !quiet {
-            println!("ripline: no changes detected");
-        }
-        return 0;
-    }
-
-    let mut count = 0;
-    let mut notify_errors = 0usize;
-    for path in &changed {
-        let abs = config.repo_root.join(path);
-        if abs.exists() {
-            if let Err(e) = index.notify_change(&abs) {
-                eprintln!("ripline update: {path}: {e}");
-                notify_errors += 1;
-            } else {
-                count += 1;
-            }
-        } else {
-            if let Err(e) = index.notify_delete(&abs) {
-                eprintln!("ripline update: {path}: {e}");
-                notify_errors += 1;
-            } else {
-                count += 1;
-            }
-        }
-    }
-
-    if let Err(e) = index.commit_batch() {
-        eprintln!("ripline update: commit failed: {e}");
-        return 2;
-    }
-
-    if !quiet {
-        println!("ripline: updated {} file(s)", count);
-    }
-    if notify_errors > 0 {
-        1
-    } else {
-        0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
+    use clap::Parser;
+
     use crate::index::Index;
     use crate::{Config, SearchOptions};
 
-    use super::{cmd_index, cmd_update};
+    use super::{Cli, ManageCommand, manage::cmd_index, manage::cmd_update};
+
+    #[test]
+    fn search_works_without_subcommand() {
+        let cli = Cli::try_parse_from(["rl", "fn_hello"]).expect("parse failed");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.pattern.as_deref(), Some("fn_hello"));
+    }
+
+    #[test]
+    fn fixed_strings_short_flag_is_capital_f() {
+        let cli = Cli::try_parse_from(["rl", "-F", "fn.hello"]).expect("parse failed");
+        assert!(cli.fixed_strings);
+        assert_eq!(cli.pattern.as_deref(), Some("fn.hello"));
+    }
+
+    #[test]
+    fn files_with_matches_short_flag_is_lowercase_l() {
+        let cli = Cli::try_parse_from(["rl", "-l", "pattern"]).expect("parse failed");
+        assert!(cli.files_with_matches);
+    }
+
+    #[test]
+    fn context_flag_sets_both_before_and_after() {
+        let cli = Cli::try_parse_from(["rl", "-C", "3", "pattern"]).expect("parse failed");
+        assert_eq!(cli.context, Some(3));
+    }
+
+    #[test]
+    fn manage_index_subcommand_still_routes_correctly() {
+        let cli = Cli::try_parse_from(["rl", "index"]).expect("parse failed");
+        assert!(cli.pattern.is_none());
+        assert!(matches!(cli.command, Some(ManageCommand::Index { .. })));
+    }
 
     #[test]
     fn cmd_index_rebuilds_existing_index_without_force() {
@@ -634,6 +355,101 @@ mod tests {
     }
 
     #[test]
+    fn render_with_context_emits_separator_between_blocks() {
+        use std::fs;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // 20-line file; matches on lines 3 and 18 (far enough apart that context=2 creates two separate blocks).
+        let content: String = (1..=20)
+            .map(|i| {
+                if i == 3 || i == 18 {
+                    format!("target_token line {i}\n")
+                } else {
+                    format!("other line {i}\n")
+                }
+            })
+            .collect();
+        let path = dir.path().join("sample.rs");
+        fs::write(&path, &content).unwrap();
+
+        let matches = vec![
+            crate::SearchMatch {
+                path: std::path::PathBuf::from("sample.rs"),
+                line_number: 3,
+                line_content: "target_token line 3".to_string(),
+                byte_offset: 0,
+            },
+            crate::SearchMatch {
+                path: std::path::PathBuf::from("sample.rs"),
+                line_number: 18,
+                line_content: "target_token line 18".to_string(),
+                byte_offset: 0,
+            },
+        ];
+
+        let config = Config {
+            repo_root: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let args = super::search::SearchArgs {
+            pattern: "target_token".to_string(),
+            paths: vec![],
+            fixed_strings: false,
+            ignore_case: false,
+            word_regexp: false,
+            invert_match: false,
+            files_with_matches: false,
+            count: false,
+            max_count: None,
+            quiet: false,
+            json: false,
+            heading: false,
+            no_line_number: false,
+            no_filename: false,
+            after_context: 2,
+            before_context: 2,
+            file_type: None,
+            type_not: None,
+            glob: None,
+        };
+
+        let mut buf = Vec::<u8>::new();
+        super::render::render_with_context_to(&config, &matches, &args, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // Should contain a -- separator between the two non-contiguous context blocks.
+        // Block 1: lines 1-5 (around match at line 3)
+        // Block 2: lines 16-20 (around match at line 18)
+        // Gap between: lines 6-15 are not printed.
+        assert!(output.contains("--\n"), "Expected '--' separator between context blocks, got:\n{output}");
+
+        // Match lines should use ':' separator.
+        assert!(output.contains(":target_token line 3"), "Expected ':' for match line");
+        assert!(output.contains(":target_token line 18"), "Expected ':' for match line");
+
+        // Context lines should use '-' separator.
+        assert!(output.contains("-other line 1") || output.contains("-other line 2"),
+            "Expected '-' for context lines before first match");
+    }
+
+    #[test]
+    fn json_output_is_ndjson_with_type_envelope() {
+        let m = crate::SearchMatch {
+            path: std::path::PathBuf::from("src/foo.rs"),
+            line_number: 5,
+            line_content: "fn foo() {}".to_string(),
+            byte_offset: 3,
+        };
+        let line = super::render::format_match_json(&m);
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("must be valid JSON");
+        assert_eq!(parsed["type"], "match");
+        assert_eq!(parsed["data"]["line_number"], 5);
+        assert_eq!(parsed["data"]["lines"]["text"], "fn foo() {}\n");
+        assert_eq!(parsed["data"]["path"]["text"], "src/foo.rs");
+    }
+
+    #[test]
     fn cmd_update_on_repo_with_no_commits() {
         let repo = tempfile::TempDir::new().unwrap();
         let index_dir = tempfile::TempDir::new().unwrap();
@@ -662,44 +478,5 @@ mod tests {
             code, 2,
             "cmd_update should not error on repo with no commits"
         );
-    }
-
-    #[test]
-    fn run_search_honors_type_not() {
-        let repo = tempfile::TempDir::new().unwrap();
-        let index_dir = tempfile::TempDir::new().unwrap();
-
-        fs::write(repo.path().join("match.rs"), "fn parse_query() {}\n").unwrap();
-        fs::write(
-            repo.path().join("match.py"),
-            "def parse_query():\n    pass\n",
-        )
-        .unwrap();
-
-        let config = Config {
-            index_dir: index_dir.path().to_path_buf(),
-            repo_root: repo.path().to_path_buf(),
-            ..Config::default()
-        };
-        let index = Index::build(config).unwrap();
-        let args = super::SearchArgs {
-            pattern: "parse_query".to_string(),
-            literal: false,
-            ignore_case: false,
-            file_type: None,
-            type_not: Some("py".to_string()),
-            max_count: None,
-            count: false,
-            json: false,
-            quiet: false,
-        };
-
-        let results = super::run_search(&index, &args).unwrap();
-        assert_eq!(
-            results.len(),
-            1,
-            "type_not should filter out Python matches"
-        );
-        assert_eq!(results[0].path.to_string_lossy(), "match.rs");
     }
 }

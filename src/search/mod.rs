@@ -9,8 +9,8 @@
 //! 3. Each candidate doc is read from disk (or overlay memory) and passed to the verifier.
 //! 4. Matches are sorted by path, then line number.
 
-mod resolver;
 pub mod verifier;
+mod resolver;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -320,6 +320,7 @@ fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBit
     Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
 }
 
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -344,13 +345,13 @@ mod tests {
         assert!(matches_path_filter(
             "src/main.rs",
             opts.file_type.as_deref(),
-            opts.exclude_type.as_deref(),
+            None,
             opts.path_filter.as_deref(),
         ));
         assert!(!matches_path_filter(
             "src/main.py",
             opts.file_type.as_deref(),
-            opts.exclude_type.as_deref(),
+            None,
             opts.path_filter.as_deref(),
         ));
     }
@@ -551,5 +552,27 @@ mod tests {
             should_use_index(&grams, &snap).unwrap(),
             "compound identifier should use index when gram intersection is selective"
         );
+    }
+
+    #[test]
+    fn type_not_excludes_file_extension() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("main.rs"), "fn target_fn() {}\n").unwrap();
+        std::fs::write(repo.path().join("main.py"), "def target_fn(): pass\n").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let opts = SearchOptions {
+            exclude_type: Some("py".to_string()),
+            ..SearchOptions::default()
+        };
+        let results = index.search("target_fn", &opts).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.to_string_lossy().ends_with(".rs"));
     }
 }
