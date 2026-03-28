@@ -44,7 +44,7 @@ impl PendingEdits {
     /// Buffer a file change. NOT visible to queries until `commit_batch()`.
     /// Only records the path; file content is read at commit time.
     pub fn notify_change(&self, path: &str) {
-        let mut state = self.inner.lock().unwrap();
+        let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         state.dirty_files.insert(path.to_owned(), EditKind::Changed);
         state.uncommitted.push(super::overlay::FileEdit {
             path: path.to_owned(),
@@ -54,7 +54,7 @@ impl PendingEdits {
 
     /// Buffer a file deletion. NOT visible to queries until `commit_batch()`.
     pub fn notify_delete(&self, path: &str) {
-        let mut state = self.inner.lock().unwrap();
+        let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         state.dirty_files.insert(path.to_owned(), EditKind::Deleted);
         state.uncommitted.push(super::overlay::FileEdit {
             path: path.to_owned(),
@@ -68,7 +68,7 @@ impl PendingEdits {
     /// `commit_batch()`. `all_changed`/`all_deleted` are the full
     /// accumulated dirty state (for delete_set computation).
     pub fn take_for_commit(&self) -> TakeResult {
-        let mut state = self.inner.lock().unwrap();
+        let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
 
         // Deduplicate uncommitted into changed/deleted sets.
         // A file changed then deleted counts as deleted only.
@@ -107,20 +107,20 @@ impl PendingEdits {
     /// Clear all accumulated state. Call after a full index rebuild to prevent
     /// dirty_files from growing unboundedly over the lifetime of an Index handle.
     pub fn reset(&self) {
-        let mut state = self.inner.lock().unwrap();
+        let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         state.dirty_files.clear();
         state.uncommitted.clear();
     }
 
     /// Whether there are uncommitted edits pending.
     pub fn has_uncommitted(&self) -> bool {
-        let state = self.inner.lock().unwrap();
+        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         !state.uncommitted.is_empty()
     }
 
     /// Number of uncommitted edits.
     pub fn uncommitted_count(&self) -> usize {
-        let state = self.inner.lock().unwrap();
+        let state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         state.uncommitted.len()
     }
 }
@@ -149,7 +149,7 @@ mod tests {
         pe.take_for_commit();
         // dirty_files still has entries after take_for_commit.
         pe.reset();
-        let state = pe.inner.lock().unwrap();
+        let state = pe.inner.lock().unwrap_or_else(|p| p.into_inner());
         assert!(state.dirty_files.is_empty(), "reset() must clear dirty_files");
         assert!(state.uncommitted.is_empty(), "reset() must clear uncommitted");
     }
