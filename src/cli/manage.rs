@@ -2,17 +2,22 @@
 
 use std::collections::HashSet;
 use std::io::{self, Write};
+use std::path::PathBuf;
 
 use crate::index::Index;
 use crate::Config;
 
 /// Resolves the absolute path to the `git` binary by walking PATH entries.
 ///
+/// Unix-only: the fallback `/usr/bin/git` is a Unix path. This crate
+/// already requires Unix via `compile_error!` in `index/io_util.rs`.
+///
 /// Using `Command::new("git")` would resolve via `$PATH`, allowing a
 /// malicious `git` binary earlier on PATH to intercept the call.
 /// This function walks PATH explicitly and falls back to `/usr/bin/git`
 /// rather than a bare name.
-fn resolve_git_binary() -> std::path::PathBuf {
+#[cfg(unix)]
+fn resolve_git_binary() -> PathBuf {
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join("git");
@@ -21,7 +26,7 @@ fn resolve_git_binary() -> std::path::PathBuf {
             }
         }
     }
-    std::path::PathBuf::from("/usr/bin/git")
+    PathBuf::from("/usr/bin/git")
 }
 
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
@@ -107,6 +112,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         }
     };
 
+    let git = resolve_git_binary();
     let mut changed: HashSet<String> = HashSet::new();
 
     // Security: canonicalize repo_root before passing it to `git -C`.
@@ -131,50 +137,57 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         }
     };
 
+    // Parse NUL-terminated git output into changed paths.
+    //
+    // Using -z / -z causes git to use NUL instead of newline as the record
+    // separator, which is the only safe choice: filenames on Linux/macOS can
+    // contain literal newline bytes. Splitting on '\n' would produce two tokens
+    // from such a name, treating the spurious second token as a changed path
+    // and yielding exit code 1 on every update, masking real errors.
+    let parse_nul_paths = |bytes: &[u8]| -> Vec<String> {
+        bytes
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| std::str::from_utf8(s).ok().map(String::from))
+            .collect()
+    };
+
     // Detect changed files via git diff against HEAD.
     // This fails on repos with no commits, which is fine -- we fall through
     // to untracked file detection below.
-    if let Ok(diff_output) = std::process::Command::new(resolve_git_binary())
+    if let Ok(diff_output) = std::process::Command::new(&git)
         .arg("-C")
         .arg(&canonical_root)
-        .args(["diff", "--name-only", "HEAD"])
+        .args(["diff", "-z", "--name-only", "HEAD"])
         .output()
     {
         if diff_output.status.success() {
-            let diff_stdout = String::from_utf8_lossy(&diff_output.stdout);
-            changed.extend(
-                diff_stdout
-                    .lines()
-                    .filter(|l| !l.is_empty())
-                    .map(String::from),
-            );
+            changed.extend(parse_nul_paths(&diff_output.stdout));
         }
     }
 
     // Pick up staged changes (covers initial commit scenario where HEAD
     // doesn't exist yet).
-    if let Ok(staged_output) = std::process::Command::new(resolve_git_binary())
+    if let Ok(staged_output) = std::process::Command::new(&git)
         .arg("-C")
         .arg(&canonical_root)
-        .args(["diff", "--name-only", "--cached"])
+        .args(["diff", "-z", "--name-only", "--cached"])
         .output()
     {
         if staged_output.status.success() {
-            let staged_stdout = String::from_utf8_lossy(&staged_output.stdout);
-            changed.extend(staged_stdout.lines().filter(|l| !l.is_empty()).map(String::from));
+            changed.extend(parse_nul_paths(&staged_output.stdout));
         }
     }
 
     // Pick up new untracked files that git-diff doesn't report.
-    if let Ok(ut_output) = std::process::Command::new(resolve_git_binary())
+    if let Ok(ut_output) = std::process::Command::new(&git)
         .arg("-C")
         .arg(&canonical_root)
-        .args(["ls-files", "--others", "--exclude-standard"])
+        .args(["ls-files", "-z", "--others", "--exclude-standard"])
         .output()
     {
         if ut_output.status.success() {
-            let ut_stdout = String::from_utf8_lossy(&ut_output.stdout);
-            changed.extend(ut_stdout.lines().filter(|l| !l.is_empty()).map(String::from));
+            changed.extend(parse_nul_paths(&ut_output.stdout));
         }
     }
 
