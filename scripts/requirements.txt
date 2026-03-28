@@ -1,2 +1,2 @@
-numpy
-datasets
+numpy==2.4.3
+datasets==4.8.4
