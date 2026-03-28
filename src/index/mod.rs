@@ -39,6 +39,9 @@ use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
 /// Target batch size (content bytes) before flushing a segment.
 const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Fraction of base docs beyond which the overlay is considered too large.
+const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
+
 /// Measure the crossover fraction where index lookup becomes cheaper than a
 /// full scan for this repository.
 ///
@@ -692,6 +695,23 @@ impl Index {
 
         self.snapshot.store(new_snap);
         // TODO(overlay-backpressure): call self.pending.reset() here when full reindex is triggered.
+        if self.config.verbose {
+            let snap = self.snapshot.load();
+            let base_count: u32 = snap.base_segments().iter().map(|s| s.doc_count).sum();
+            let overlay_count = snap.overlay.docs.len() as u32;
+            if base_count > 0 {
+                let ratio = overlay_count as f64 / base_count as f64;
+                if ratio > OVERLAY_WARN_THRESHOLD {
+                    eprintln!(
+                        "ripline: warning: overlay is {:.0}% of base ({} overlay, {} base docs); \
+                         consider running `ripline index` to rebuild",
+                        ratio * 100.0,
+                        overlay_count,
+                        base_count
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
