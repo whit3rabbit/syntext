@@ -173,6 +173,14 @@ fn boundary_positions_lower_buffered(bytes: &[u8]) -> Vec<usize> {
     BUF.with(|buf| {
         let mut buf = buf.borrow_mut();
         buf.clear();
+        // Shrink the buffer when its capacity far exceeds the current input.
+        // This bounds per-thread memory in rayon workers that process large
+        // files early in a batch and small files afterward.
+        const MIN_CAPACITY: usize = 256;
+        let needed = bytes.len() / 4 + 16;
+        if buf.capacity() > MIN_CAPACITY.max(needed * 4) {
+            buf.shrink_to(MIN_CAPACITY.max(needed));
+        }
         let n = bytes.len();
         buf.push(0);
         for i in 1..n {
@@ -555,6 +563,19 @@ mod tests {
             boundary_positions_lower(lower),
             boundary_positions_lower_buffered(lower)
         );
+    }
+
+    #[test]
+    fn buffered_boundary_same_as_lower_on_shrink_path() {
+        let large_lower: Vec<u8> = (0u8..=127u8).cycle().take(8192)
+            .map(|b| b.to_ascii_lowercase()).collect();
+        let _ = boundary_positions_lower_buffered(&large_lower);
+
+        let small_lower: Vec<u8> = b"fn foo".iter().map(|b| b.to_ascii_lowercase()).collect();
+        let from_lower = boundary_positions_lower(&small_lower);
+        let from_buffered = boundary_positions_lower_buffered(&small_lower);
+        assert_eq!(from_lower, from_buffered,
+            "buffered variant must produce same boundaries as non-buffered after shrink");
     }
 
     #[test]
