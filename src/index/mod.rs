@@ -375,11 +375,19 @@ impl Index {
             );
         }
 
-        // Drop the exclusive lock before open() acquires a shared lock.
-        // (Both operate on the same lock file; holding exclusive while
-        // try_lock_shared is called from open() would deadlock on some
-        // platforms.)
+        // Drop exclusive lock before open() acquires shared lock.
+        // Another process can grab exclusive in the gap; retry with backoff.
         drop(lock_file);
+        let mut delay = std::time::Duration::from_millis(10);
+        for attempt in 0..5u32 {
+            match Self::open(config.clone()) {
+                Err(IndexError::LockConflict(_)) if attempt < 4 => {
+                    std::thread::sleep(delay);
+                    delay = delay.saturating_mul(2);
+                }
+                result => return result,
+            }
+        }
         Self::open(config)
     }
 
@@ -691,5 +699,19 @@ mod tests {
             matches!(result, Err(IndexError::FileTooLarge { .. })),
             "commit_batch must reject files that exceed max_file_size at read time: {result:?}"
         );
+    }
+
+    #[test]
+    fn build_succeeds_and_opens_cleanly() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("lib.rs"), b"fn f() {}").unwrap();
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let result = Index::build(config);
+        assert!(result.is_ok(), "build() must succeed: {:?}", result.err());
     }
 }
