@@ -35,9 +35,12 @@ pub const ROARING_THRESHOLD: usize = 8192;
 ///
 /// # Panics
 ///
-/// Panics if `ids` is not sorted (debug builds only).
+/// Panics if `ids` is not sorted. Callers must guarantee sorted, deduplicated input.
 pub fn varint_encode(ids: &[u32]) -> Vec<u8> {
-    debug_assert!(ids.windows(2).all(|w| w[0] <= w[1]), "ids must be sorted");
+    assert!(
+        ids.windows(2).all(|w| w[0] <= w[1]),
+        "varint_encode: ids must be sorted (caller contract violation)"
+    );
 
     let mut out = Vec::with_capacity(ids.len() * 2);
     let mut prev = 0u32;
@@ -212,5 +215,12 @@ mod tests {
         let bytes = varint_encode(&[0u32, 1u32, 2u32]);
         let result = varint_decode(&bytes).unwrap();
         assert_eq!(result, vec![0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "varint_encode: ids must be sorted")]
+    fn varint_encode_panics_on_unsorted_input_in_release() {
+        // This must panic in both debug and release builds.
+        varint_encode(&[5, 3, 7]);
     }
 }
