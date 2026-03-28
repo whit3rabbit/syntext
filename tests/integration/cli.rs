@@ -377,6 +377,63 @@ fn non_utf8_filenames_work_with_glob_and_type_filters() {
 }
 
 #[test]
+fn utf16_le_file_is_searchable_via_cli_flat_output() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    // "fn utf16_cli_fn() {}\n" encoded as UTF-16 LE with BOM (FF FE)
+    let text = "fn utf16_cli_fn() {}\n";
+    let mut bytes: Vec<u8> = vec![0xFF, 0xFE]; // BOM
+    for ch in text.encode_utf16() {
+        bytes.push((ch & 0xFF) as u8);
+        bytes.push((ch >> 8) as u8);
+    }
+    write_bytes(&repo.path().join("src/utf16.rs"), &bytes);
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["-F", "utf16_cli_fn"]);
+    assert_eq!(output.status.code(), Some(0), "expected match\nstdout: {}\nstderr: {}", stdout_text(&output), stderr_text(&output));
+    assert!(std::str::from_utf8(&output.stdout).is_ok(), "stdout is not valid UTF-8");
+    assert!(stdout_text(&output).contains("utf16_cli_fn"));
+}
+
+#[test]
+fn utf8_bom_file_match_line_has_no_bom_bytes() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    // UTF-8 BOM (EF BB BF) + content
+    let mut bytes = vec![0xEF_u8, 0xBB, 0xBF];
+    bytes.extend_from_slice(b"fn bom_cli_fn() {}\n");
+    write_bytes(&repo.path().join("src/bom.rs"), &bytes);
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["-F", "bom_cli_fn"]);
+    assert_eq!(output.status.code(), Some(0), "expected match\nstdout: {}\nstderr: {}", stdout_text(&output), stderr_text(&output));
+    // BOM bytes must not appear in output
+    assert!(!output.stdout.windows(3).any(|w| w == [0xEF, 0xBB, 0xBF]),
+        "BOM bytes found in output: {:?}", &output.stdout[..output.stdout.len().min(32)]);
+}
+
+#[test]
+fn utf16_le_file_context_output_is_utf8() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    // "// preamble\nfn ctx_utf16_fn() {}\n// postamble\n" encoded as UTF-16 LE with BOM
+    let text = "// preamble\nfn ctx_utf16_fn() {}\n// postamble\n";
+    let mut bytes: Vec<u8> = vec![0xFF, 0xFE]; // BOM
+    for ch in text.encode_utf16() {
+        bytes.push((ch & 0xFF) as u8);
+        bytes.push((ch >> 8) as u8);
+    }
+    write_bytes(&repo.path().join("src/ctx_utf16.rs"), &bytes);
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["-C", "1", "ctx_utf16_fn"]);
+    assert_eq!(output.status.code(), Some(0), "expected match\nstdout: {}\nstderr: {}", stdout_text(&output), stderr_text(&output));
+    assert!(std::str::from_utf8(&output.stdout).is_ok(),
+        "context output contains non-UTF-8 bytes: {:?}", &output.stdout[..output.stdout.len().min(64)]);
+}
+
+#[test]
 fn broken_pipe_exits_cleanly_instead_of_panicking() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
