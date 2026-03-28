@@ -10,10 +10,12 @@
 //! 4. Matches are sorted by path, then line number.
 
 pub mod verifier;
+mod resolver;
 
-use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+
+use resolver::resolve_doc;
 
 use rayon::prelude::*;
 use regex::RegexBuilder;
@@ -318,61 +320,6 @@ fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBit
     Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
 }
 
-/// Resolve a global doc ID to its path and content.
-///
-/// Overlay docs return in-memory content (Arc-shared, no copy).
-/// Base docs read from disk, capped at `max_file_size` bytes. If a file grew
-/// after indexing we still verify against the truncated content rather than
-/// skipping it -- skipping would be a false negative because the file was
-/// already indexed from its smaller version and candidates were generated.
-/// Returns `None` if the doc is deleted, out of range, or unreadable.
-fn resolve_doc(
-    snap: &IndexSnapshot,
-    global_id: u32,
-    canonical_root: &Path,
-    max_file_size: u64,
-) -> Option<(String, Arc<[u8]>)> {
-    // Check overlay first (overlay doc_ids are >= base_doc_count).
-    if let Some(doc) = snap.overlay.get_doc(global_id) {
-        return Some((doc.path.clone(), Arc::clone(&doc.content)));
-    }
-
-    // Deleted base doc.
-    if snap.delete_set.contains(global_id) {
-        return None;
-    }
-
-    // Base segment lookup.
-    if snap.segment_base_ids().is_empty() {
-        return None;
-    }
-    let seg_idx = snap
-        .segment_base_ids()
-        .partition_point(|&b| b <= global_id)
-        .saturating_sub(1);
-    if seg_idx >= snap.base_segments().len() {
-        return None;
-    }
-    let base = snap.segment_base_ids()[seg_idx];
-    let local_id = global_id.checked_sub(base)?;
-    let doc_entry = snap.base_segments()[seg_idx].get_doc(local_id)?;
-
-    let abs_path = canonical_root.join(&doc_entry.path);
-    // Guard: reject symlinks that resolve outside the repo root.
-    // canonicalize() resolves all symlinks on the individual file; if the
-    // result doesn't start with the pre-canonicalized root, the file escaped.
-    let canonical = std::fs::canonicalize(&abs_path).ok()?;
-    if !canonical.starts_with(canonical_root) {
-        return None;
-    }
-    // Bounded read: cap at max_file_size to prevent unbounded memory growth
-    // when a file grows after it was indexed.
-    let file = std::fs::File::open(&canonical).ok()?;
-    let mut reader = file.take(max_file_size);
-    let mut content = Vec::new();
-    reader.read_to_end(&mut content).ok()?;
-    Some((doc_entry.path, Arc::from(content)))
-}
 
 #[cfg(test)]
 mod tests {
