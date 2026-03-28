@@ -18,8 +18,12 @@ use crate::IndexError;
 
 /// Magic bytes identifying an SNTX segment file.
 pub const MAGIC: &[u8; 4] = b"SNTX";
-/// Current segment format version.
-pub const FORMAT_VERSION: u32 = 2;
+/// Segment format version 2: single combined `.seg` file (legacy).
+pub const FORMAT_VERSION_V2: u32 = 2;
+/// Segment format version 3: split `.dict` + `.post` files.
+pub const FORMAT_VERSION_V3: u32 = 3;
+/// Current default format version for new segments.
+pub const FORMAT_VERSION: u32 = FORMAT_VERSION_V3;
 /// Page size for dictionary alignment.
 pub const PAGE_SIZE: usize = 4096;
 pub(super) const HEADER_SIZE: usize = 40;
@@ -132,7 +136,7 @@ impl MmapSegment {
                 .try_into()
                 .map_err(|_| corrupt("footer slice"))?,
         );
-        if version != FORMAT_VERSION {
+        if version != FORMAT_VERSION_V2 && version != FORMAT_VERSION_V3 {
             return Err(IndexError::CorruptIndex(format!(
                 "unsupported version {version}"
             )));
@@ -465,5 +469,17 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let result = writer.write_to_file(tmp.path());
         assert!(result.is_err(), "duplicate doc_id must be rejected");
+    }
+
+    #[test]
+    fn format_version_constants_are_distinct() {
+        assert_ne!(FORMAT_VERSION_V2, FORMAT_VERSION_V3);
+        assert_eq!(FORMAT_VERSION, FORMAT_VERSION_V3);
+    }
+
+    #[test]
+    fn dict_entry_size_unchanged_in_v3() {
+        // 8 (gram_hash) + 8 (post_offset) + 4 (count) = 20 bytes.
+        assert_eq!(DICT_ENTRY_SIZE, 20);
     }
 }
