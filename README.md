@@ -118,6 +118,19 @@ index.commit_batch()?;  // atomic visibility
 let fresh_results = index.search("new_function", &SearchOptions::default())?;
 ```
 
+## Weight table
+
+`src/tokenizer/weights.rs` is a pre-trained `[u16; 65536]` byte-pair frequency table. Rare pairs get high weights (gram boundaries), common pairs get low weights (gram interiors).
+
+Two generation paths:
+
+| Script | Corpus | When to use |
+|---|---|---|
+| `scripts/weights_gen.py` | ~175 MB from `bigcode/the-stack-smol` (default) | Local regeneration, CI |
+| `scripts/weights_gen_colab.ipynb` | 1 GB – 100 GB+ from `bigcode/the-stack-dedup` | Higher quality, run on Colab free tier |
+
+The Colab notebook streams the dataset without a full download, checkpoints every 500 MB (safe against disconnects), and emits a `weights.rs` ready to drop into `src/tokenizer/`. See the notebook for setup instructions (HuggingFace access required for `the-stack-dedup`).
+
 ## Architecture
 
 For the full quantitative analysis (selectivity math, index size estimates, posting list encoding tradeoffs), see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
