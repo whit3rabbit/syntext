@@ -144,6 +144,7 @@ pub struct Cli {
     pub command: Option<ManageCommand>,
 }
 
+/// Management subcommands dispatched from the top-level CLI.
 #[derive(Subcommand)]
 pub enum ManageCommand {
     /// Build or rebuild the search index.
@@ -237,6 +238,11 @@ pub fn run() -> i32 {
     }
 }
 
+/// Hard ceiling for `SYNTEXT_MAX_FILE_SIZE` (1 GiB).
+///
+/// Prevents `take(0)` overflow when the env var is set to a very large value.
+const MAX_FILE_SIZE_CEILING: u64 = 1_073_741_824;
+
 /// Resolve Config from CLI args and environment.
 fn resolve_config(cli: &Cli) -> Config {
     let repo_root = cli
@@ -250,12 +256,7 @@ fn resolve_config(cli: &Cli) -> Config {
         .clone()
         .unwrap_or_else(|| repo_root.join(".syntext"));
 
-    // Clamp to 1 GB: prevents take(0) overflow when SYNTEXT_MAX_FILE_SIZE=u64::MAX.
-    let max_file_size = std::env::var("SYNTEXT_MAX_FILE_SIZE")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(10 * 1024 * 1024)
-        .min(1024 * 1024 * 1024);
+    let max_file_size = parse_max_file_size();
 
     Config {
         max_file_size,
@@ -264,6 +265,18 @@ fn resolve_config(cli: &Cli) -> Config {
         repo_root,
         verbose: false,
     }
+}
+
+/// Read and clamp `SYNTEXT_MAX_FILE_SIZE` from the environment.
+///
+/// Returns the configured value clamped to [`MAX_FILE_SIZE_CEILING`], or
+/// the 10 MiB default when the variable is absent or unparseable.
+fn parse_max_file_size() -> u64 {
+    std::env::var("SYNTEXT_MAX_FILE_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10 * 1024 * 1024)
+        .min(MAX_FILE_SIZE_CEILING)
 }
 
 /// Walk up from CWD looking for a `.git` directory.
@@ -475,10 +488,21 @@ mod tests {
 
     #[test]
     fn max_file_size_is_clamped_to_1gb() {
-        let raw: u64 = u64::MAX;
-        let clamped = raw.min(1024 * 1024 * 1024);
-        assert_eq!(clamped, 1024 * 1024 * 1024);
+        // Exercise parse_max_file_size() directly so that removing the
+        // .min(MAX_FILE_SIZE_CEILING) in production code causes this test to fail.
+        std::env::set_var("SYNTEXT_MAX_FILE_SIZE", "2147483648"); // 2 GiB
+        let result = super::parse_max_file_size();
+        std::env::remove_var("SYNTEXT_MAX_FILE_SIZE");
+
+        assert_eq!(
+            result,
+            super::MAX_FILE_SIZE_CEILING,
+            "value above 1 GiB must be clamped to MAX_FILE_SIZE_CEILING"
+        );
         // The +1 used in commit_batch must not overflow after clamping.
-        assert!(clamped.checked_add(1).is_some(), "clamped value + 1 must not overflow");
+        assert!(
+            result.checked_add(1).is_some(),
+            "clamped value + 1 must not overflow"
+        );
     }
 }
