@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "rl"
-path = "src/main.rs"
+path = "src/rl_main.rs"
 
 [dependencies]
 # Regex and verification
