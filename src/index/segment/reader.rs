@@ -164,6 +164,7 @@ pub(super) fn read_posting_list_pread(
     read_exact_at(post_file, &mut header, abs_off + POST_MAGIC_SIZE)?;
 
     let encoding = header[0];
+    // infallible: header is [u8; 9]; header[5..9] is always exactly 4 bytes
     let byte_len = u32::from_le_bytes(header[5..9].try_into().unwrap()) as usize;
 
     const MAX_POSTING_BYTES: usize = 64 * 1024 * 1024;
