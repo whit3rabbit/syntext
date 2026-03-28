@@ -6,6 +6,9 @@
 //!
 //! All integers are little-endian. The xxhash64 checksum in the footer
 //! covers all bytes before the footer (file_len - 48 bytes).
+//!
+//! V3 format splits into `{uuid}.dict` (header + doc table + dictionary) and
+//! `{uuid}.post` (postings). See `open_split()`.
 
 use std::path::Path;
 

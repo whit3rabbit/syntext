@@ -183,7 +183,7 @@ impl SegmentWriter {
         buf.extend_from_slice(&0u32.to_le_bytes()); // gram_count placeholder
         let hdr_offsets_pos = buf.len();
         buf.extend_from_slice(&0u64.to_le_bytes()); // doc_table_offset placeholder
-        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset (reserved/0 in v3)
+        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset: 0 (reserved in v3; postings are in .post file)
         buf.extend_from_slice(&0u64.to_le_bytes()); // dict_offset placeholder
         debug_assert_eq!(buf.len(), HEADER_SIZE);
 
@@ -278,14 +278,14 @@ impl SegmentWriter {
         // Patch header offsets
         buf[hdr_offsets_pos..hdr_offsets_pos + 8].copy_from_slice(&doc_table_offset.to_le_bytes());
         buf[hdr_offsets_pos + 8..hdr_offsets_pos + 16]
-            .copy_from_slice(&0u64.to_le_bytes()); // postings_offset reserved/0 in v3
+            .copy_from_slice(&0u64.to_le_bytes()); // postings_offset: 0 (reserved in v3; postings are in .post file)
         buf[hdr_offsets_pos + 16..hdr_offsets_pos + 24]
             .copy_from_slice(&dict_offset.to_le_bytes());
 
         // TOC Footer
         let checksum = xxh64(&buf, 0);
         buf.extend_from_slice(&doc_table_offset.to_le_bytes()); // -48
-        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset (0 in v3) -40
+        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset: 0 (reserved in v3; postings are in .post file)
         buf.extend_from_slice(&dict_offset.to_le_bytes()); // -32
         buf.extend_from_slice(&doc_count.to_le_bytes()); // -24
         buf.extend_from_slice(&gram_count.to_le_bytes()); // -20
