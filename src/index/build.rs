@@ -242,7 +242,8 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
                 // Re-enumerate: iterate batches and index each file's symbols.
                 for batch in &batches {
                     for (abs_path, rel_path, _size) in batch {
-                        if let Ok(content) = fs::read(abs_path) {
+                        if let Ok(raw) = fs::read(abs_path) {
+                            let content = crate::index::normalize_encoding(&raw);
                             if !is_binary(&content) {
                                 // file_id from path_index built in open(); use position
                                 // in indexed_paths as a stable id for build time.
@@ -252,7 +253,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
                                     .unwrap_or(0)
                                     as u32;
                                 let rel_path_str = rel_path.to_string_lossy();
-                                if let Err(e) = sym_idx.index_file(file_id, &rel_path_str, &content) {
+                                if let Err(e) = sym_idx.index_file(file_id, &rel_path_str, content.as_ref()) {
                                         if config.verbose {
                                             eprintln!(
                                                 "syntext: warning: symbol index failed for {}: {e}",
