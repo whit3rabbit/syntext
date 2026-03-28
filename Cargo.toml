@@ -121,3 +121,15 @@ harness = false
 [[bench]]
 name = "index_build"
 harness = false
+
+[package.metadata.deb]
+name = "syntext"
+maintainer = "syntext contributors"
+copyright = "2026, syntext contributors"
+license-file = ["LICENSE", "4"]
+extended-description = "Hybrid code search index for agent workflows. Sparse n-gram content index with Roaring bitmap path index and optional Tree-sitter symbol index."
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/st", "usr/bin/st", "755"],
+]
