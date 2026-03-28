@@ -293,8 +293,7 @@ impl Index {
         #[cfg(feature = "symbols")]
         if let Some((name, kind)) = crate::symbol::parse_symbol_prefix(pattern) {
             if let Some(sym_idx) = &self.symbol_index {
-                let kind_str = kind.as_ref().map(|k| k.as_str());
-                return sym_idx.search(&name, kind_str);
+                return sym_idx.search(&name, kind);
             }
             // Symbol index not built — fall through to content search.
         }

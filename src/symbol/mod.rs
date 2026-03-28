@@ -84,7 +84,7 @@ impl SymbolIndex {
             return Ok(());
         }
         // Do not recover from a poisoned mutex (same rationale as delete_for_files).
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| IndexError::CorruptIndex("symbol db mutex poisoned".into()))?;
@@ -124,7 +124,7 @@ impl SymbolIndex {
     pub fn search(
         &self,
         name_query: &str,
-        kind_filter: Option<&str>,
+        kind_filter: Option<SymbolKind>,
     ) -> Result<Vec<SearchMatch>, IndexError> {
         // Do not recover from a poisoned mutex (same rationale as delete_for_files).
         let conn = self
@@ -161,7 +161,7 @@ impl SymbolIndex {
             .map_err(|e| IndexError::CorruptIndex(format!("symbol search: {e}")))?;
 
         let rows: Vec<(String, u32, String)> = if let Some(kind) = kind_filter {
-            stmt.query_map(params![like_pat, kind], |row| {
+            stmt.query_map(params![like_pat, kind.as_str()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))
             })
             .map_err(|e| IndexError::CorruptIndex(format!("symbol query: {e}")))?
@@ -187,6 +187,25 @@ impl SymbolIndex {
                 submatch_end: 0,
             })
             .collect())
+    }
+}
+
+#[cfg(all(test, feature = "symbols"))]
+mod tests {
+    use super::*;
+    use crate::symbol::extractor::SymbolKind;
+
+    #[test]
+    fn search_accepts_symbol_kind_filter() {
+        // Compile-time check: search must accept Option<SymbolKind>.
+        // This test failing to compile means the type regression was reintroduced.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let idx = SymbolIndex::open(tmp.path()).unwrap();
+        let _r1 = idx.search("foo", Some(SymbolKind::Function));
+        let _r2 = idx.search("bar", None);
+        // If neither panics, the type system accepted Option<SymbolKind>.
+        drop(_r1);
+        drop(_r2);
     }
 }
 
