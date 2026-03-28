@@ -161,14 +161,15 @@ These points summarize current known testing observations against real code envi
 
 These numbers are useful, but they are not clean enough to call “free”. The index-size increase is small in the corpora above, while build-time cost looks real and somewhat noisy. Keep the feature because it turned the Zed alternation case from scan-like behavior into indexed behavior, but rerun repeated build benchmarks before claiming no build regression.
 
-Follow-up: a later tokenizer optimization stopped running the second case-aware pass for inputs that have no lowercase-to-uppercase transitions, and stopped re-emitting spans already covered by the lowercase pass. In local single-run checks on the current branch, that recovered much of the build cost without changing index bytes on the measured corpora:
+Follow-up: a later tokenizer optimization stopped running the second case-aware pass for inputs that have no lowercase-to-uppercase transitions, and stopped re-emitting spans already covered by the lowercase pass. Repeated `--build-only` runs on the current branch produced this post-optimization baseline:
 
-| Repo | Before | After | Index bytes |
-|---|---|---|---|
-| `react` | `771 ms` | `631 ms` | unchanged at `4,989,569` |
-| `linux` | `10,370 ms` | `5,825 ms` | unchanged at `52,274,507` |
+| Repo | Build median | Build min | Build max | Index bytes |
+|---|---|---|---|---|
+| `react` | `369.838 ms` | `361.038 ms` | `377.477 ms` | `4,989,569` |
+| `linux` | `5,929.347 ms` | `5,840.757 ms` | `6,973.909 ms` | `52,274,507` |
+| `zed-research` | `206.016 ms` | `198.887 ms` | `237.082 ms` | `2,659,688` |
 
-The Zed search sanity check still returned the same indexed counts for `LanguageServerId` (`430`) and `LanguageServer(Id|InstallationStatus)` (`507`).
+The Zed search sanity check still returned the same indexed counts for `LanguageServerId` (`430`) and `LanguageServer(Id|InstallationStatus)` (`507`), so the build recovery did not come from dropping the indexed regex win.
 
 ## Delta Gram-Index
 

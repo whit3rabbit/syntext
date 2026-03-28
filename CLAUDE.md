@@ -115,10 +115,24 @@ python3 scripts/bench_compare.py \
   --search-iterations 1 \
   --warmups 0 \
   --preset rust_token_aligned
+python3 scripts/bench_compare.py \
+  --preset zed_mixed_app \
+  --ripline-search-mode both
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --build-only \
+  --build-iterations 5 \
+  --json
 ```
 
 For very large repos, start with `--build-iterations 1 --search-iterations 1 --warmups 0`
 and only increase iterations if the runtime is acceptable.
+
+Use `--ripline-search-mode both` when you want one report that shows both
+CLI-style cold searches and hot in-process searches against one already-opened
+index. Use `--build-only` when tokenizer or index-build changes are the thing
+you are measuring, because it records repeated build latency and full on-disk
+index-directory byte totals without mixing in search timings.
 
 Use the preset catalog in [`benchmarks/repo_presets.json`](benchmarks/repo_presets.json)
 and the rationale in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
