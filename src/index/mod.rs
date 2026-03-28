@@ -42,6 +42,9 @@ const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 /// Fraction of base docs beyond which the overlay is considered too large.
 const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
 
+/// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
+const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
+
 /// Measure the crossover fraction where index lookup becomes cheaper than a
 /// full scan for this repository.
 ///
@@ -402,7 +405,13 @@ impl Index {
                                         .iter()
                                         .position(|p| p == rel_path)
                                         .unwrap_or(0) as u32;
-                                    let _ = sym_idx.index_file(file_id, rel_path, &content);
+                                    if let Err(e) = sym_idx.index_file(file_id, rel_path, &content) {
+                                        if config.verbose {
+                                            eprintln!(
+                                                "ripline: warning: symbol index failed for {rel_path}: {e}"
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -528,8 +537,7 @@ impl Index {
             }
         };
 
-        let canonical_root = std::fs::canonicalize(&config.repo_root)
-            .unwrap_or_else(|_| config.repo_root.clone());
+        let canonical_root = std::fs::canonicalize(&config.repo_root)?;
 
         Ok(Index {
             config,
@@ -618,10 +626,17 @@ impl Index {
         let mut excluded_changed = std::collections::HashSet::new();
         for path in &take.newly_changed {
             let abs = self.config.repo_root.join(path);
+            // Canonicalize before opening to detect symlink swaps that occurred
+            // between notify_change() and commit_batch(). If the resolved path
+            // escapes canonical_root, reject it as PathOutsideRepo.
+            let resolved = std::fs::canonicalize(&abs)?;
+            if !resolved.starts_with(&self.canonical_root) {
+                return Err(IndexError::PathOutsideRepo(abs));
+            }
             // Enforce the same max_file_size limit used during full builds.
             // Use bounded read to eliminate TOCTOU race: file can grow between
             // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
-            let file = std::fs::File::open(&abs)?;
+            let file = std::fs::File::open(&resolved)?;
             let mut reader = file.take(self.config.max_file_size + 1);
             let mut content: Vec<u8> = Vec::new();
             reader.read_to_end(&mut content)?;
@@ -653,6 +668,19 @@ impl Index {
             &visible_changed,
             &removed_paths,
         );
+
+        // Enforce hard overlay size limit. At > 50% of base docs the clone
+        // cost in build_incremental_delta becomes significant. Return OverlayFull
+        // so callers know to rebuild.
+        if base_doc_count > 0 {
+            let ratio = overlay.docs.len() as f64 / base_doc_count as f64;
+            if ratio > OVERLAY_ENFORCE_THRESHOLD {
+                return Err(IndexError::OverlayFull {
+                    overlay_docs: overlay.docs.len(),
+                    base_docs: base_doc_count as usize,
+                });
+            }
+        }
 
         // Compute delete_set: base doc_ids invalidated by changes.
         let delete_set = compute_delete_set(
@@ -793,6 +821,78 @@ mod tests {
         assert!(
             matches!(result, Err(IndexError::FileTooLarge { .. })),
             "commit_batch must reject files that exceed max_file_size at read time: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_batch_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        // Create a legitimate file so the index builds.
+        std::fs::write(repo.path().join("real.rs"), b"fn real() {}").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        // Create a file outside the repo for the symlink to point to.
+        let target_outside = std::env::temp_dir().join("ripline_test_escape_target");
+        std::fs::write(&target_outside, b"sensitive content").unwrap();
+
+        // Create a symlink inside the repo pointing outside.
+        let link_path = repo.path().join("escape.rs");
+        symlink(&target_outside, &link_path).unwrap();
+
+        index.notify_change(&link_path).unwrap();
+        let result = index.commit_batch();
+
+        // Clean up regardless of result.
+        let _ = std::fs::remove_file(&target_outside);
+        let _ = std::fs::remove_file(&link_path);
+
+        assert!(
+            matches!(result, Err(IndexError::PathOutsideRepo(_))),
+            "commit_batch must reject symlinks that escape the repo root, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn commit_batch_returns_overlay_full_when_overlay_ratio_exceeded() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..10 {
+            std::fs::write(
+                repo.path().join(format!("base_{i:03}.rs")),
+                format!("fn base_{i}() {{ let x = {i}; }}\n"),
+            )
+            .unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        for i in 0..6 {
+            let path = repo.path().join(format!("overlay_{i:03}.rs"));
+            std::fs::write(&path, format!("fn overlay_{i}() {{}}\n")).unwrap();
+            index.notify_change(&path).unwrap();
+        }
+
+        let result = index.commit_batch();
+        assert!(
+            matches!(result, Err(IndexError::OverlayFull { .. })),
+            "commit_batch must return OverlayFull when overlay exceeds 50% of base, got: {result:?}"
         );
     }
 

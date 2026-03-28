@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.ripline]
 path = ".."
+package = "ripline-rs"
 
 [[bin]]
 name = "fuzz_coverage_invariant"
