@@ -383,6 +383,17 @@ impl Index {
             }
         }
 
+        // Startup GC: remove orphaned segments left by any previously crashed build.
+        // Runs under the exclusive lock, so no readers are active. Safe to ignore a
+        // missing or malformed manifest — first builds have neither.
+        if let Ok(prev_manifest) = Manifest::load(&config.index_dir) {
+            if let Err(e) = prev_manifest.gc_orphan_segments(&config.index_dir) {
+                if config.verbose {
+                    eprintln!("ripline: startup gc: {e}");
+                }
+            }
+        }
+
         // Enumerate all candidate files, sorted by relative path.
         let file_list = enumerate_files(&config)?;
         let total_candidate = file_list.len();
