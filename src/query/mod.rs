@@ -82,14 +82,36 @@ pub enum QueryRoute {
     IndexedRegex(GramQuery),
     /// No grams extractable (e.g. `.*`, single-char patterns). Scan all files.
     FullScan,
+    /// Symbol search via `sym:`, `def:`, or `ref:` prefix. Name to look up.
+    SymbolSearch {
+        /// The name to search for (after stripping the prefix).
+        name: String,
+        /// Optional kind filter (e.g. "function"). `ref:` leaves this None.
+        kind_filter: Option<String>,
+    },
 }
 
 /// Classify a search pattern and return the optimal execution route.
 ///
+/// - SymbolSearch if pattern has `sym:`, `def:`, or `ref:` prefix
 /// - Literal if pattern has no regex metacharacters AND case-sensitive
 /// - FullScan if HIR yields `All` (no useful grams)
 /// - IndexedRegex otherwise
 pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, String> {
+    // Symbol prefix detection: sym:, def:, ref:
+    if let Some(rest) = pattern.strip_prefix("sym:").or_else(|| pattern.strip_prefix("ref:")) {
+        return Ok(QueryRoute::SymbolSearch {
+            name: rest.to_string(),
+            kind_filter: None,
+        });
+    }
+    if let Some(rest) = pattern.strip_prefix("def:") {
+        return Ok(QueryRoute::SymbolSearch {
+            name: rest.to_string(),
+            kind_filter: Some("function".to_string()),
+        });
+    }
+
     if !case_insensitive && is_literal(pattern) {
         return Ok(QueryRoute::Literal);
     }

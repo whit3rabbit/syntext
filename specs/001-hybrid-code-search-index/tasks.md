@@ -116,10 +116,10 @@
 
 - [x] T037 [US2] Implement OverlayView builder in src/index/overlay.rs: given a list of dirty files (path + content), compute sparse grams for each, build HashMap<u64, Vec<u32>> gram index, assign overlay doc_ids (disjoint from base range). Per data-model.md OverlayView.
 - [x] T038 [US2] Implement IndexSnapshot and ArcSwap integration in src/index/overlay.rs: IndexSnapshot struct holding base_segments, merged_overlay, delete_set, path_index. ArcSwap<Arc<IndexSnapshot>> for atomic swap. search() clones Arc at start. Per research.md section 7.
-- [x] T039 [US2] Implement `notify_change()` and `notify_delete()` in src/index/overlay.rs: buffer FileEdit in Mutex<Vec<FileEdit>>. Check .gitignore via ignore crate and silently skip ignored files. Per library-api.md guarantees 6.
+- [x] T039 [US2] Implement `notify_change()` and `notify_delete()` in src/index/overlay.rs: buffer FileEdit in src/index/pending.rs PendingEdits struct. Check .gitignore via ignore crate and silently skip ignored files. Per library-api.md guarantees 6.
 - [x] T040 [US2] Implement `commit_batch()` in src/index/overlay.rs: take pending edits, rebuild full OverlayView from ALL dirty files (not just new batch), compute delete_set (base doc_ids for modified/deleted files), create new IndexSnapshot, ArcSwap::store(). Write on-disk generation file for crash recovery. Per research.md section 7.
 - [x] T041 [US2] Implement `notify_change_immediate()` convenience method in src/index/overlay.rs: notify_change + commit_batch.
-- [ ] T042 [US2] Implement on-startup overlay recovery in src/index/mod.rs: if manifest references overlay file, load it. If missing/corrupt, detect dirty files via `git diff` against base_commit. Per data-model.md Manifest. (DEFERRED: crash recovery is not needed for the core overlay API; implemented as needed in Phase 9.)
+- [ ] T042 [US2] Implement on-startup overlay recovery in src/index/mod.rs: if manifest references overlay file, load it. If missing/corrupt, detect dirty files via `git diff` against base_commit. Per data-model.md Manifest. (DEFERRED: crash recovery is not needed for the core overlay API; implement when post-crash state guarantees are required.)
 - [x] T043 [US2] Write unit tests for overlay in tests/unit/overlay.rs: single file add, single file modify (verify old grams removed, new grams present), file delete, batch atomicity (pending edits invisible until commit), ArcSwap snapshot isolation (in-flight search sees old snapshot).
 - [x] T044 [US2] Write integration test in tests/integration/incremental.rs: build index, modify file, commit_batch, search for new content (must find), search for old content (must not find in modified file), verify interleaved edit+search consistency.
 
@@ -157,7 +157,7 @@
 - [ ] T051 [US4] Implement `search_symbols()` method in src/symbol/mod.rs: query SQLite by name (with LIKE for prefix match), optionally filter by kind and language. Return SearchMatch results.
 - [ ] T052 [US4] Integrate symbol index build into `Index::build()` in src/index/mod.rs: after content index build, run symbol extraction for Tier 1 languages, bulk insert into SQLite.
 - [ ] T053 [US4] Integrate symbol search into query router in src/query/mod.rs: detect `sym:`, `def:`, `ref:` prefixes, route to SymbolSearch path.
-- [ ] T054 [US4] Write integration test for symbol search: index a Rust file with `fn parse_query(...)`, query `sym:parse_query`, verify definition line returned. Query `sym:nonexistent`, verify empty results.
+- [ ] T054 [US4] Write integration test for symbol search in tests/integration/: index a Rust file with `fn parse_query(...)`, query `sym:parse_query`, verify definition line returned. Query `sym:nonexistent`, verify empty results.
 
 **Checkpoint**: Symbol search works as a separate mode for Tier 1 languages with heuristic fallback for others.
 
@@ -248,47 +248,44 @@ Agent 3: T016, T017 (posting list encoding, parallel)
 Agent 4: T018, T019, T020 (posting list ops, sequential after T016/T017)
 ```
 
-## Parallel Example: Phase 4 US1 Search
+## Parallel Example: Phase 7 US4 Symbol
 
 ```
-# Query decomposition components (parallel, different files):
-Agent 1: T029 - GramQuery enum in src/query/mod.rs
-Agent 2: T030 - HIR walker in src/query/regex_decompose.rs
-Agent 3: T033 - Verifier in src/search/verifier.rs
+# Extractor and storage in parallel:
+Agent 1: T048 - Tree-sitter extractor in src/symbol/extractor.rs
+Agent 2: T049 - Heuristic fallback in src/symbol/extractor.rs (depends on T048 structure)
+Agent 3: T050 - SQLite symbol index in src/symbol/mod.rs
 
 # After above converge:
-Agent 1: T031 - Query router (depends on T029, T030)
-Agent 2: T032 - Search executor (depends on T029, T033)
-
-# Integration:
-Agent 1: T034 - Index::search() (depends on T031, T032)
-Agent 1: T035, T036 - Tests
+Agent 1: T051 - search_symbols() in src/symbol/mod.rs
+Agent 1: T052 - Integrate into Index::build() in src/index/mod.rs
+Agent 1: T053 - Query router integration in src/query/mod.rs
+Agent 1: T054 - Integration test
 ```
 
 ---
 
 ## Implementation Strategy
 
-### MVP First (US5 + US1)
+### Remaining Work (MVP already complete)
 
-1. Complete Phase 1: Setup
-2. Complete Phase 2: Foundational (weight table first!)
-3. Complete Phase 3: US5 (Build) -- index exists on disk
-4. Complete Phase 4: US1 (Search) -- queries work, validated against ripgrep
-5. **STOP and VALIDATE**: Run correctness harness. If it passes, you have a working grep replacement.
+Phases 1-6 and Phase 8 are complete. The core `ripline index && ripline search "pattern"` workflow is functional and validated against ripgrep. Remaining work:
+
+1. **Phase 7 (US4 Symbol)**: Full symbol-aware search via Tree-sitter + SQLite (T048-T054)
+2. **Phase 9 deferred**: Larger corpus benchmarks (T061-T063), segment merge (T064), large-scale correctness (T068), crash recovery (T042)
 
 ### Incremental Delivery
 
-1. Setup + Foundational -> foundation ready
-2. US5 (Build) + US1 (Search) -> working indexed search (MVP)
-3. US2 (Incremental) -> agent-friendly freshness
-4. US3 (Path Scoping) -> scoped search
-5. US4 (Symbol) -> definition/reference search
-6. CLI + Polish -> release-ready
+1. Setup + Foundational -> DONE
+2. US5 (Build) + US1 (Search) -> DONE (working indexed search, ripgrep-validated)
+3. US2 (Incremental) -> DONE (agent-friendly freshness with delta updates)
+4. US3 (Path Scoping) -> DONE (scoped search)
+5. US4 (Symbol) -> NEXT: definition/reference search
+6. CLI + Polish -> DONE (benchmarks and merge deferred)
 
-### Suggested MVP Scope
+### Suggested Next Task
 
-**US5 + US1 only.** This gives you a tool that can `ripline index && ripline search "pattern"` and return correct results faster than ripgrep on large repos. Everything else (overlay, path scoping, symbols) is incremental value on top of a working core.
+**T048** (Tree-sitter symbol extractor). US4 is the only remaining user story. The `symbols` feature flag and `rusqlite` + tree-sitter crate additions to Cargo.toml are prerequisites before starting T048.
 
 ---
 
@@ -301,4 +298,7 @@ Agent 1: T035, T036 - Tests
 - `(foo)?bar` correctly produces `Grams("bar")` only in T030/T035. This is NOT a bug. Test it.
 - Post-build assertion (T026) warns if index > 0.5x corpus size. Catches bad weight tables.
 - All gram hashes use lowercased content. Case-sensitive queries still work (verifier filters).
+- src/index/pending.rs holds PendingEdits (extracted from overlay.rs in refactor).
+- src/index/stats.rs holds IndexStats computation (extracted from mod.rs).
+- src/index/walk.rs holds file discovery logic (extracted from mod.rs).
 - Commit after each task or logical group.

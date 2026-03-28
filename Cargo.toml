@@ -52,10 +52,23 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 # Symbol index (optional)
 tree-sitter = { version = "0.26", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
 
 [features]
 default = []
-symbols = ["tree-sitter", "rusqlite"]
+symbols = [
+    "tree-sitter", "rusqlite",
+    "tree-sitter-rust", "tree-sitter-python", "tree-sitter-javascript",
+    "tree-sitter-typescript", "tree-sitter-go", "tree-sitter-java",
+    "tree-sitter-c", "tree-sitter-cpp",
+]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -93,6 +106,11 @@ path = "tests/unit/boundary_fuzz.rs"
 [[test]]
 name = "incremental"
 path = "tests/integration/incremental.rs"
+
+[[test]]
+name = "symbols"
+path = "tests/integration/symbols.rs"
+required-features = ["symbols"]
 
 [[bench]]
 name = "query_latency"

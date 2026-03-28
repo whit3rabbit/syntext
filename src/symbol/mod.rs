@@ -1,0 +1,165 @@
+//! Symbol index: Tree-sitter extraction + SQLite storage and lookup.
+//!
+//! Enabled only with `--features symbols`. Build populates the DB;
+//! `search()` queries it and returns `SearchMatch` results.
+
+pub mod extractor;
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use rusqlite::{params, Connection};
+
+use crate::{IndexError, SearchMatch};
+
+use extractor::{extract_symbols, SymbolKind};
+
+/// SQLite-backed symbol index.
+pub struct SymbolIndex {
+    conn: Mutex<Connection>,
+}
+
+impl SymbolIndex {
+    /// Open or create a symbol index at `db_path`.
+    pub fn open(db_path: &Path) -> Result<Self, IndexError> {
+        let conn = Connection::open(db_path)
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol db: {e}")))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS symbols (
+                 id      INTEGER PRIMARY KEY,
+                 name    TEXT NOT NULL,
+                 kind    TEXT NOT NULL,
+                 file_id INTEGER NOT NULL,
+                 path    TEXT NOT NULL,
+                 line    INTEGER NOT NULL,
+                 col     INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(name);
+             CREATE INDEX IF NOT EXISTS idx_sym_kn      ON symbols(kind, name);
+             CREATE INDEX IF NOT EXISTS idx_sym_file_id ON symbols(file_id);",
+        )
+        .map_err(|e| IndexError::CorruptIndex(format!("symbol db schema: {e}")))?;
+        Ok(SymbolIndex { conn: Mutex::new(conn) })
+    }
+
+    /// Delete all symbols for the given file_ids (used before re-indexing).
+    pub fn delete_for_files(&self, file_ids: &[u32]) -> Result<(), IndexError> {
+        if file_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("DELETE FROM symbols WHERE file_id IN ({placeholders})");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            file_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        conn.execute(&sql, params.as_slice())
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol delete: {e}")))?;
+        Ok(())
+    }
+
+    /// Extract and insert symbols for a single file.
+    pub fn index_file(
+        &self,
+        file_id: u32,
+        path: &str,
+        content: &[u8],
+    ) -> Result<(), IndexError> {
+        let symbols = extract_symbols(path, content);
+        if symbols.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol tx: {e}")))?;
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO symbols(name, kind, file_id, path, line, col)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .map_err(|e| IndexError::CorruptIndex(format!("symbol stmt: {e}")))?;
+            for sym in &symbols {
+                stmt.execute(params![
+                    sym.name,
+                    sym.kind.as_str(),
+                    file_id,
+                    path,
+                    sym.line,
+                    sym.column,
+                ])
+                .map_err(|e| IndexError::CorruptIndex(format!("symbol insert: {e}")))?;
+            }
+        }
+        tx.commit()
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol commit: {e}")))?;
+        Ok(())
+    }
+
+    /// Search for symbols matching `name_query` (prefix match, case-insensitive).
+    ///
+    /// Optionally filter by `kind` (e.g., "function", "struct").
+    pub fn search(
+        &self,
+        name_query: &str,
+        kind_filter: Option<&str>,
+    ) -> Result<Vec<SearchMatch>, IndexError> {
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let like_pat = format!("{}%", name_query.to_lowercase());
+
+        let sql = if kind_filter.is_some() {
+            "SELECT path, line, name FROM symbols \
+             WHERE lower(name) LIKE ?1 AND kind = ?2 ORDER BY name, path LIMIT 1000"
+        } else {
+            "SELECT path, line, name FROM symbols \
+             WHERE lower(name) LIKE ?1 ORDER BY name, path LIMIT 1000"
+        };
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol search: {e}")))?;
+
+        let rows: Vec<(String, u32, String)> = if let Some(kind) = kind_filter {
+            stmt.query_map(params![like_pat, kind], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))
+            })
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol query: {e}")))?
+            .filter_map(|r| r.ok())
+            .collect()
+        } else {
+            stmt.query_map(params![like_pat], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))
+            })
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol query: {e}")))?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|(path, line, name)| SearchMatch {
+                path: PathBuf::from(path),
+                line_number: line,
+                line_content: name,
+                byte_offset: 0,
+            })
+            .collect())
+    }
+}
+
+/// Parse a symbol search prefix (`sym:`, `def:`, `ref:`) from a pattern.
+///
+/// Returns `(name_query, kind_filter)` if the pattern has a symbol prefix, else `None`.
+pub fn parse_symbol_prefix(pattern: &str) -> Option<(String, Option<SymbolKind>)> {
+    if let Some(rest) = pattern.strip_prefix("sym:") {
+        return Some((rest.to_string(), None));
+    }
+    if let Some(rest) = pattern.strip_prefix("def:") {
+        return Some((rest.to_string(), Some(SymbolKind::Function)));
+    }
+    if let Some(rest) = pattern.strip_prefix("ref:") {
+        return Some((rest.to_string(), None));
+    }
+    None
+}
