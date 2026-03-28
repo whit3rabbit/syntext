@@ -10,7 +10,7 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 
 - **Segment format**: immutable single-file segments (RPLX magic, TOC footer, page-aligned dictionary). Postings are delta-varint or Roaring bitmap depending on list size (threshold: 8K entries).
 - **Tokenizer**: two-tier boundary detection (forced boundaries at code delimiters + weight-based within alphanumeric spans). Lowercase normalization at index/query time. Weight table lives in `src/tokenizer/weights.rs`. Forced boundary set in `is_forced_boundary()` in `src/tokenizer/mod.rs`.
-- **Query router**: literal (`build_covering` + memchr::memmem) / indexed regex (`build_covering_inner` + HIR decomposition) / full scan. Cardinality-based fallback skips index when smallest posting list > 10% of total docs. Path filter always first.
+- **Query router**: literal (`build_covering` + memchr::memmem) / indexed regex (`build_covering_inner` + HIR decomposition) / full scan. Cardinality-based intersection ordering in `query/mod.rs`. Fallback skips index when smallest posting list > 10% of total docs. Path filter always first.
 - **Overlay**: single merged in-memory OverlayView, rebuilt from all dirty files on each `commit_batch()`. ArcSwap<IndexSnapshot> for snapshot isolation. On-disk generations for crash recovery only.
 - **Build**: batched-segment construction, 256MB per batch, sort-based aggregation, rayon for parallelism. Peak memory ~1.5GB per batch.
 
@@ -63,6 +63,7 @@ cargo test --test overlay     # unit: overlay/snapshot only
 cargo test --test boundary_fuzz  # unit: boundary fuzzing
 cargo test --test index_build # integration: index construction
 cargo test --test incremental # integration: incremental updates
+cargo test --test symbols     # integration: symbol index
 cargo bench --bench query_latency -- --sample-size 10
 cargo bench --bench index_build -- --sample-size 10
 cargo bench --bench selectivity -- --sample-size 10
@@ -91,48 +92,13 @@ or commit-path performance. Record before/after results in
 Use the Python harness for `ripline` vs `rg` vs `grep` on a real repo:
 
 ```sh
-python3 scripts/bench_compare.py \
-  --repo /path/to/repo \
-  --query literal:token_aligned_symbol \
-  --query literal:another_symbol
+python3 scripts/bench_compare.py --preset react_token_aligned
+python3 scripts/bench_compare.py --repo /path/to/repo --query literal:symbol
 ```
 
-Useful options:
-
-```sh
-python3 scripts/bench_compare.py --help
-python3 scripts/bench_compare.py --list-presets
-python3 scripts/bench_compare.py --json --repo /path/to/repo --query literal:foo
-python3 scripts/bench_compare.py --preset react_token_aligned --markdown-table-only
-python3 scripts/bench_compare.py \
-  --preset react_token_aligned \
-  --markdown-table-only \
-  --output /tmp/react-bench.md
-python3 scripts/bench_compare.py \
-  --preset react_token_aligned
-python3 scripts/bench_compare.py \
-  --build-iterations 1 \
-  --search-iterations 1 \
-  --warmups 0 \
-  --preset rust_token_aligned
-python3 scripts/bench_compare.py \
-  --preset zed_mixed_app \
-  --ripline-search-mode both
-python3 scripts/bench_compare.py \
-  --preset react_token_aligned \
-  --build-only \
-  --build-iterations 5 \
-  --json
-```
-
-For very large repos, start with `--build-iterations 1 --search-iterations 1 --warmups 0`
-and only increase iterations if the runtime is acceptable.
-
-Use `--ripline-search-mode both` when you want one report that shows both
-CLI-style cold searches and hot in-process searches against one already-opened
-index. Use `--build-only` when tokenizer or index-build changes are the thing
-you are measuring, because it records repeated build latency and full on-disk
-index-directory byte totals without mixing in search timings.
+Key flags: `--build-only` (index build timing only), `--ripline-search-mode both` (cold + hot),
+`--build-iterations 1 --search-iterations 1 --warmups 0` (quick pass on large repos),
+`--json`, `--markdown-table-only --output /tmp/out.md`. Full option list: `--help`.
 
 Use the preset catalog in [`benchmarks/repo_presets.json`](benchmarks/repo_presets.json)
 and the rationale in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
@@ -252,6 +218,7 @@ All PRs must pass before merge:
 src/
   lib.rs                      # public API (Index, Config, SearchOptions)
   main.rs                     # binary entry point
+  rl_main.rs                  # alternate entry point (delegates to cli::run)
   tokenizer/
     mod.rs                    # sparse n-gram extraction (build_all, build_covering)
     weights.rs                # pre-trained [u16; 65536] byte-pair frequency table
@@ -260,17 +227,18 @@ src/
     segment.rs                # RPLX segment format (read/write)
     overlay.rs                # OverlayView + ArcSwap<IndexSnapshot>
     manifest.rs               # manifest.json + atomic write-then-rename
-    merge.rs                  # background segment merge
+    pending.rs                # PendingEdits buffer for incremental updates
+    stats.rs                  # index statistics computation
     walk.rs                   # directory walking / file discovery
   posting/
     mod.rs                    # posting list types + adaptive intersection/union
     roaring_util.rs           # Roaring bitmap integration for dense terms
   query/
-    mod.rs                    # query router (literal / indexed regex / full scan)
+    mod.rs                    # query router + cardinality-based intersection ordering
     regex_decompose.rs        # HIR walker -> GramQuery tree
-    planner.rs                # cardinality-based intersection ordering
   search/
     mod.rs                    # search executor
+    resolver.rs               # doc_id -> path + content resolver
     verifier.rs               # tiered: memchr for literals, regex for patterns
   path/
     mod.rs                    # Roaring bitmap component index
@@ -280,6 +248,10 @@ src/
     extractor.rs              # symbol extraction from parse trees
   cli/
     mod.rs                    # clap CLI entry point
+    bench.rs                  # hidden bench-search subcommand (in-process latency)
+    manage.rs                 # index/status/update subcommand handlers
+    render.rs                 # output rendering (flat, context, JSON formats)
+    search.rs                 # search arg parsing, query execution, result dispatch
 
 specs/001-hybrid-code-search-index/
   spec.md                     # feature specification

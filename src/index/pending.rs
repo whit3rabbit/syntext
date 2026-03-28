@@ -15,11 +15,8 @@ pub struct PendingEdits {
     inner: Mutex<PendingState>,
 }
 
-/// Accumulated state of all committed dirty files plus uncommitted pending edits.
+/// Edits buffered since the last `commit_batch()`.
 struct PendingState {
-    /// All edits since the last full build (committed + uncommitted).
-    /// Maps repo-relative path to current state.
-    dirty_files: HashMap<String, EditKind>,
     /// Edits buffered since the last `commit_batch()`.
     uncommitted: Vec<super::overlay::FileEdit>,
 }
@@ -35,7 +32,6 @@ impl PendingEdits {
     pub fn new() -> Self {
         PendingEdits {
             inner: Mutex::new(PendingState {
-                dirty_files: HashMap::new(),
                 uncommitted: Vec::new(),
             }),
         }
@@ -45,7 +41,6 @@ impl PendingEdits {
     /// Only records the path; file content is read at commit time.
     pub fn notify_change(&self, path: &str) {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        state.dirty_files.insert(path.to_owned(), EditKind::Changed);
         state.uncommitted.push(super::overlay::FileEdit {
             path: path.to_owned(),
             kind: EditKind::Changed,
@@ -55,7 +50,6 @@ impl PendingEdits {
     /// Buffer a file deletion. NOT visible to queries until `commit_batch()`.
     pub fn notify_delete(&self, path: &str) {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        state.dirty_files.insert(path.to_owned(), EditKind::Deleted);
         state.uncommitted.push(super::overlay::FileEdit {
             path: path.to_owned(),
             kind: EditKind::Deleted,
@@ -65,8 +59,8 @@ impl PendingEdits {
     /// Drain uncommitted edits and return a summary for the commit.
     ///
     /// `newly_changed`/`newly_deleted` are paths touched since the last
-    /// `commit_batch()`. `all_changed`/`all_deleted` are the full
-    /// accumulated dirty state (for delete_set computation).
+    /// `commit_batch()`. A file changed then deleted in the same batch counts
+    /// as deleted only.
     pub fn take_for_commit(&self) -> TakeResult {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -87,28 +81,15 @@ impl PendingEdits {
             }
         }
 
-        let mut all_changed = Vec::new();
-        let mut all_deleted = Vec::new();
-        for (path, entry) in &state.dirty_files {
-            match entry {
-                EditKind::Changed => all_changed.push(path.clone()),
-                EditKind::Deleted => all_deleted.push(path.clone()),
-            }
-        }
-
         TakeResult {
             newly_changed,
             newly_deleted,
-            all_changed,
-            all_deleted,
         }
     }
 
-    /// Clear all accumulated state. Call after a full index rebuild to prevent
-    /// dirty_files from growing unboundedly over the lifetime of an Index handle.
+    /// Clear all accumulated state. Call after a full index rebuild.
     pub fn reset(&self) {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        state.dirty_files.clear();
         state.uncommitted.clear();
     }
 
@@ -131,22 +112,21 @@ pub struct TakeResult {
     pub newly_changed: HashSet<String>,
     /// Paths deleted since the last `commit_batch()`.
     pub newly_deleted: HashSet<String>,
-    /// All accumulated dirty paths that are present (for delete_set).
-    pub all_changed: Vec<String>,
-    /// All accumulated dirty paths that are deleted (for delete_set).
-    pub all_deleted: Vec<String>,
 }
 
 /// Compute the delete_set: base doc_ids that are invalidated by overlay
 /// changes (modified or deleted files).
 ///
-/// Uses a prebuilt path -> doc_ids map from the immutable base snapshot.
+/// Starts from `prev` (the previous snapshot's delete_set) and adds entries
+/// for the current delta only. The base is immutable between full builds, so
+/// the delete_set is monotonically growing and this is always correct.
 pub fn compute_delete_set(
     base_path_doc_ids: &HashMap<String, Vec<u32>>,
-    modified_paths: &[String],
-    deleted_paths: &[String],
+    modified_paths: &HashSet<String>,
+    deleted_paths: &HashSet<String>,
+    prev: &RoaringBitmap,
 ) -> RoaringBitmap {
-    let mut delete_set = RoaringBitmap::new();
+    let mut delete_set = prev.clone();
 
     for path in modified_paths.iter().chain(deleted_paths.iter()) {
         if let Some(doc_ids) = base_path_doc_ids.get(path) {
@@ -164,21 +144,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dirty_files_is_cleared_by_reset() {
+    fn reset_clears_uncommitted() {
         let pe = PendingEdits::new();
         pe.notify_change("a.rs");
         pe.notify_change("b.rs");
-        pe.take_for_commit();
-        // dirty_files still has entries after take_for_commit.
         pe.reset();
-        let state = pe.inner.lock().unwrap_or_else(|p| p.into_inner());
-        assert!(
-            state.dirty_files.is_empty(),
-            "reset() must clear dirty_files"
-        );
-        assert!(
-            state.uncommitted.is_empty(),
-            "reset() must clear uncommitted"
-        );
+        assert_eq!(pe.uncommitted_count(), 0, "reset() must clear uncommitted");
+    }
+
+    #[test]
+    fn take_for_commit_after_reset_returns_empty() {
+        let pe = PendingEdits::new();
+        pe.notify_change("a.rs");
+        pe.reset();
+        let result = pe.take_for_commit();
+        assert!(result.newly_changed.is_empty());
+        assert!(result.newly_deleted.is_empty());
+    }
+
+    #[test]
+    fn compute_delete_set_is_incremental() {
+        let mut base: HashMap<String, Vec<u32>> = HashMap::new();
+        base.insert("a.rs".to_owned(), vec![1]);
+        base.insert("b.rs".to_owned(), vec![2]);
+        base.insert("c.rs".to_owned(), vec![3]);
+
+        // First commit: only a.rs changed.
+        let prev = RoaringBitmap::new();
+        let changed: HashSet<String> = ["a.rs".to_owned()].into();
+        let deleted: HashSet<String> = HashSet::new();
+        let ds1 = compute_delete_set(&base, &changed, &deleted, &prev);
+        assert!(ds1.contains(1));
+        assert!(!ds1.contains(2));
+
+        // Second commit: b.rs deleted. Previous delete_set carried forward.
+        let changed2: HashSet<String> = HashSet::new();
+        let deleted2: HashSet<String> = ["b.rs".to_owned()].into();
+        let ds2 = compute_delete_set(&base, &changed2, &deleted2, &ds1);
+        assert!(ds2.contains(1), "a.rs entry must persist");
+        assert!(ds2.contains(2), "b.rs entry must be added");
+        assert!(!ds2.contains(3));
     }
 }

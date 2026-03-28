@@ -372,6 +372,17 @@ impl Index {
         // so they must serialize on the same writer lock.
         let write_lock = acquire_writer_lock(&config.index_dir)?;
 
+        // Startup GC: remove orphaned segments left by any previously crashed build.
+        // Runs under the exclusive lock, so no readers are active. Safe to ignore a
+        // missing or malformed manifest — first builds have neither.
+        if let Ok(prev_manifest) = Manifest::load(&config.index_dir) {
+            if let Err(e) = prev_manifest.gc_orphan_segments(&config.index_dir) {
+                if config.verbose {
+                    eprintln!("ripline: startup gc: {e}");
+                }
+            }
+        }
+
         // Enumerate all candidate files, sorted by relative path.
         let file_list = enumerate_files(&config)?;
         let total_candidate = file_list.len();
@@ -452,6 +463,9 @@ impl Index {
         let mut manifest = Manifest::new(seg_refs, total_indexed);
         manifest.scan_threshold_fraction = Some(scan_threshold);
         manifest.save(&config.index_dir)?;
+        // Post-build GC: delete segments from the previous build that are no
+        // longer in the new manifest. Distinct from the startup GC above, which
+        // only removes segments orphaned by a prior crash (not in any manifest).
         manifest.gc_orphan_segments(&config.index_dir)?;
 
         if config.verbose {
@@ -779,10 +793,14 @@ impl Index {
         debug_assert_eq!(overlay.docs.len(), projected_overlay_docs);
 
         // Compute delete_set: base doc_ids invalidated by changes.
+        // Start from the previous snapshot's delete_set and add only the delta.
+        // The base is immutable between full builds, so the delete_set grows
+        // monotonically and incremental accumulation is always correct.
         let delete_set = compute_delete_set(
             &old_snap.base.path_doc_ids,
-            &take.all_changed,
-            &take.all_deleted,
+            &take.newly_changed,
+            &take.newly_deleted,
+            &old_snap.delete_set,
         );
 
         // Update the path index incrementally from the previous snapshot.
@@ -821,7 +839,6 @@ impl Index {
         new_snap.all_doc_ids();
 
         self.snapshot.store(new_snap);
-        // TODO(overlay-backpressure): call self.pending.reset() here when full reindex is triggered.
         if self.config.verbose {
             let snap = self.snapshot.load();
             let base_count: u32 = snap.base_segments().iter().map(|s| s.doc_count).sum();

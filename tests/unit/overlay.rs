@@ -201,10 +201,15 @@ fn compute_delete_set_marks_all_base_docs_for_invalidated_paths() {
     base_path_doc_ids.insert("src/main.rs".to_string(), vec![1, 7]);
     base_path_doc_ids.insert("src/lib.rs".to_string(), vec![3]);
 
+    let modified: std::collections::HashSet<String> =
+        ["src/main.rs".to_string()].into();
+    let deleted: std::collections::HashSet<String> =
+        ["src/missing.rs".to_string()].into();
     let delete_set = compute_delete_set(
         &base_path_doc_ids,
-        &["src/main.rs".to_string()],
-        &["src/missing.rs".to_string()],
+        &modified,
+        &deleted,
+        &roaring::RoaringBitmap::new(),
     );
 
     assert!(delete_set.contains(1));
