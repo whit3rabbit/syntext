@@ -210,6 +210,23 @@ def summarize(samples_ms: list[float]) -> dict[str, float]:
     }
 
 
+def summarize_int(samples: list[int], unit: str) -> dict[str, int]:
+    ordered = sorted(samples)
+    return {
+        f"median_{unit}": statistics.median_low(ordered),
+        f"min_{unit}": ordered[0],
+        f"max_{unit}": ordered[-1],
+    }
+
+
+def dir_size_bytes(root: Path) -> int:
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_file():
+            total += path.stat().st_size
+    return total
+
+
 def ripline_search_cmd(
     ripline_bin: Path, repo_root: Path, index_dir: Path, query: QuerySpec
 ) -> list[str]:
@@ -357,11 +374,16 @@ def render_markdown_report(report: dict[str, object]) -> str:
     lines.append(f"- Grep mode: `{report['grep_mode']}`")
     lines.append(f"- Tools: `{', '.join(report['tools'])}`")
     lines.append(f"- Ripline build iterations: `{report['build_iterations']}`")
-    lines.append(f"- Search iterations per tool/query: `{report['search_iterations']}`")
+    lines.append(
+        f"- Search iterations per tool/query: `{report['search_iterations']}`"
+    )
     lines.append(f"- Ripline search mode: `{report['ripline_search_mode']}`")
+    if report["build_only"]:
+        lines.append("- Mode: `build-only`")
     lines.append("")
 
     build_summary = report["ripline_index_build_ms"]
+    size_summary = report["ripline_index_bytes"]
     lines.append("## Ripline index build")
     lines.append("")
     lines.append(
@@ -369,14 +391,23 @@ def render_markdown_report(report: dict[str, object]) -> str:
         f", min: `{build_summary['min_ms']}` ms"
         f", max: `{build_summary['max_ms']}` ms"
     )
+    lines.append(
+        f"- index bytes: median `{size_summary['median_bytes']}`"
+        f", min `{size_summary['min_bytes']}`"
+        f", max `{size_summary['max_bytes']}`"
+    )
     lines.append("")
 
-    lines.extend(render_markdown_tables(report))
-    lines.append("")
+    if report["queries"]:
+        lines.extend(render_markdown_tables(report))
+        lines.append("")
     lines.append("## Notes")
     lines.append("")
     lines.append(
         "- `ripline` search latency excludes index build time, which is reported separately."
+    )
+    lines.append(
+        "- `ripline` index byte totals measure the full on-disk index directory for each build iteration."
     )
     if report["ripline_search_mode"] == "both":
         lines.append(
@@ -499,6 +530,11 @@ def main() -> int:
         help="Write the rendered output to a file instead of stdout",
     )
     parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Measure repeated ripline index builds and index bytes, skip search benchmarking",
+    )
+    parser.add_argument(
         "--tools",
         type=parse_tools,
         help="Comma-separated tool set, for example ripline,rg or ripline,rg,grep",
@@ -548,7 +584,7 @@ def main() -> int:
     queries = list(args.query)
     if selected_preset and not queries:
         queries = list(selected_preset.queries)
-    if not queries:
+    if not args.build_only and not queries:
         raise SystemExit("at least one --query is required")
 
     build_iterations = args.build_iterations
@@ -587,6 +623,7 @@ def main() -> int:
     tracked_count = sum(1 for part in tracked.split(b"\0") if part) if tracked else 0
 
     build_samples: list[float] = []
+    build_size_samples: list[int] = []
     for _ in range(build_iterations):
         with tempfile.TemporaryDirectory(prefix="ripline-bench-index-") as index_dir:
             cmd = [
@@ -601,124 +638,141 @@ def main() -> int:
             build_samples.append(
                 run_timed(cmd, cwd=repo_root, env=env, allowed_codes=(0,))
             )
+            build_size_samples.append(dir_size_bytes(Path(index_dir)))
 
-    with tempfile.TemporaryDirectory(prefix="ripline-bench-search-") as index_dir:
-        index_path = Path(index_dir)
-        subprocess.run(
-            [
-                str(ripline_bin),
-                "--repo-root",
-                str(repo_root),
-                "--index-dir",
-                str(index_path),
-                "index",
-                "--quiet",
-            ],
-            cwd=repo_root,
-            env=env,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+    query_results: list[dict[str, object]] = []
+    if not args.build_only:
+        with tempfile.TemporaryDirectory(prefix="ripline-bench-search-") as index_dir:
+            index_path = Path(index_dir)
+            subprocess.run(
+                [
+                    str(ripline_bin),
+                    "--repo-root",
+                    str(repo_root),
+                    "--index-dir",
+                    str(index_path),
+                    "index",
+                    "--quiet",
+                ],
+                cwd=repo_root,
+                env=env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
-        with tempfile.NamedTemporaryFile(prefix="ripline-bench-files-", delete=False) as filelist:
-            filelist.write(tracked)
-            tracked_list_path = Path(filelist.name)
+            with tempfile.NamedTemporaryFile(
+                prefix="ripline-bench-files-", delete=False
+            ) as filelist:
+                filelist.write(tracked)
+                tracked_list_path = Path(filelist.name)
 
-        try:
-            query_results: list[dict[str, object]] = []
-            ripline_batch: dict[str, dict[str, object]] | None = None
-            if "ripline" in tools and args.ripline_search_mode in ("persistent", "both"):
-                ripline_batch = ripline_batch_results(
-                    ripline_bench_search_cmd(
-                        ripline_bin,
-                        repo_root,
-                        index_path,
-                        queries,
-                        search_iterations,
-                        warmups,
-                    ),
-                    cwd=repo_root,
-                    env=env,
-                )
-            for query in queries:
-                ripline_cmd = ripline_search_cmd(ripline_bin, repo_root, index_path, query)
-                rg_cmd = rg_search_cmd(repo_root, query)
-                grep_cmd = grep_search_cmd(repo_root, tracked_list_path, query, args.grep_mode)
+            try:
+                ripline_batch: dict[str, dict[str, object]] | None = None
+                if "ripline" in tools and args.ripline_search_mode in (
+                    "persistent",
+                    "both",
+                ):
+                    ripline_batch = ripline_batch_results(
+                        ripline_bench_search_cmd(
+                            ripline_bin,
+                            repo_root,
+                            index_path,
+                            queries,
+                            search_iterations,
+                            warmups,
+                        ),
+                        cwd=repo_root,
+                        env=env,
+                    )
+                for query in queries:
+                    ripline_cmd = ripline_search_cmd(
+                        ripline_bin, repo_root, index_path, query
+                    )
+                    rg_cmd = rg_search_cmd(repo_root, query)
+                    grep_cmd = grep_search_cmd(
+                        repo_root, tracked_list_path, query, args.grep_mode
+                    )
 
-                counts: dict[str, int] = {}
-                timings: dict[str, dict[str, float]] = {}
-                if "ripline" in tools:
-                    if args.ripline_search_mode == "both":
-                        batch_entry = ripline_batch[query.name]
-                        counts["ripline-persistent"] = int(batch_entry["count"])
-                        timings["ripline-persistent"] = batch_entry["timings_ms"]
-                        counts["ripline-fork"] = output_line_count(
-                            ripline_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
+                    counts: dict[str, int] = {}
+                    timings: dict[str, dict[str, float]] = {}
+                    if "ripline" in tools:
+                        if args.ripline_search_mode == "both":
+                            batch_entry = ripline_batch[query.name]
+                            counts["ripline-persistent"] = int(batch_entry["count"])
+                            timings["ripline-persistent"] = batch_entry["timings_ms"]
+                            counts["ripline-fork"] = output_line_count(
+                                ripline_cmd,
+                                cwd=repo_root,
+                                env=env,
+                                allowed_codes=(0, 1),
+                            )
+                            timings["ripline-fork"] = benchmark_command(
+                                ripline_cmd,
+                                cwd=repo_root,
+                                env=env,
+                                warmups=warmups,
+                                iterations=search_iterations,
+                                allowed_codes=(0, 1),
+                            )
+                        elif ripline_batch is not None:
+                            batch_entry = ripline_batch[query.name]
+                            counts["ripline"] = int(batch_entry["count"])
+                            timings["ripline"] = batch_entry["timings_ms"]
+                        else:
+                            counts["ripline"] = output_line_count(
+                                ripline_cmd,
+                                cwd=repo_root,
+                                env=env,
+                                allowed_codes=(0, 1),
+                            )
+                            timings["ripline"] = benchmark_command(
+                                ripline_cmd,
+                                cwd=repo_root,
+                                env=env,
+                                warmups=warmups,
+                                iterations=search_iterations,
+                                allowed_codes=(0, 1),
+                            )
+                    if "rg" in tools:
+                        counts["rg"] = output_line_count(
+                            rg_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
                         )
-                        timings["ripline-fork"] = benchmark_command(
-                            ripline_cmd,
+                        timings["rg"] = benchmark_command(
+                            rg_cmd,
                             cwd=repo_root,
                             env=env,
                             warmups=warmups,
                             iterations=search_iterations,
                             allowed_codes=(0, 1),
                         )
-                    elif ripline_batch is not None:
-                        batch_entry = ripline_batch[query.name]
-                        counts["ripline"] = int(batch_entry["count"])
-                        timings["ripline"] = batch_entry["timings_ms"]
-                    else:
-                        counts["ripline"] = output_line_count(
-                            ripline_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
+                    if "grep" in tools:
+                        counts["grep"] = output_line_count(
+                            grep_cmd,
+                            cwd=repo_root,
+                            env=env,
+                            shell=True,
+                            allowed_codes=(0, 1, 123),
                         )
-                        timings["ripline"] = benchmark_command(
-                            ripline_cmd,
+                        timings["grep"] = benchmark_command(
+                            grep_cmd,
                             cwd=repo_root,
                             env=env,
                             warmups=warmups,
                             iterations=search_iterations,
-                            allowed_codes=(0, 1),
+                            shell=True,
+                            allowed_codes=(0, 1, 123),
                         )
-                if "rg" in tools:
-                    counts["rg"] = output_line_count(
-                        rg_cmd, cwd=repo_root, env=env, allowed_codes=(0, 1)
-                    )
-                    timings["rg"] = benchmark_command(
-                        rg_cmd,
-                        cwd=repo_root,
-                        env=env,
-                        warmups=warmups,
-                        iterations=search_iterations,
-                        allowed_codes=(0, 1),
-                    )
-                if "grep" in tools:
-                    counts["grep"] = output_line_count(
-                        grep_cmd,
-                        cwd=repo_root,
-                        env=env,
-                        shell=True,
-                        allowed_codes=(0, 1, 123),
-                    )
-                    timings["grep"] = benchmark_command(
-                        grep_cmd,
-                        cwd=repo_root,
-                        env=env,
-                        warmups=warmups,
-                        iterations=search_iterations,
-                        shell=True,
-                        allowed_codes=(0, 1, 123),
-                    )
 
-                query_results.append(
-                    {
-                        "query": query.name,
-                        "counts": counts,
-                        "timings_ms": timings,
-                    }
-                )
-        finally:
-            tracked_list_path.unlink(missing_ok=True)
+                    query_results.append(
+                        {
+                            "query": query.name,
+                            "counts": counts,
+                            "timings_ms": timings,
+                        }
+                    )
+            finally:
+                tracked_list_path.unlink(missing_ok=True)
 
     report = {
         "repo": str(repo_root),
@@ -727,15 +781,19 @@ def main() -> int:
         "grep_mode": args.grep_mode,
         "tools": display_tools,
         "ripline_search_mode": args.ripline_search_mode,
+        "build_only": args.build_only,
         "build_iterations": build_iterations,
         "search_iterations": search_iterations,
         "warmups": warmups,
         "ripline_index_build_ms": summarize(build_samples),
+        "ripline_index_bytes": summarize_int(build_size_samples, "bytes"),
         "queries": query_results,
     }
 
     if args.json and args.markdown_table_only:
         raise SystemExit("choose either --json or --markdown-table-only, not both")
+    if args.build_only and args.markdown_table_only:
+        raise SystemExit("--build-only cannot be combined with --markdown-table-only")
 
     if args.json:
         rendered = json.dumps(report, indent=2)

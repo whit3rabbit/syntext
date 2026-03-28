@@ -101,6 +101,18 @@ python3 scripts/bench_compare.py \
   --warmups 0
 ```
 
+Measure repeated build time and on-disk index size without running any search queries:
+
+```sh
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --build-only \
+  --build-iterations 5 \
+  --json
+```
+
+Use `--build-only` when tokenizer, segment layout, or index construction is the thing you changed. The report includes both repeated build latency and repeated full index-directory byte totals, so you can catch cases where build time drops only because the index got smaller, or vice versa.
+
 ## Testing Rules & Query Discipline
 
 - Prefer token-aligned literal queries. Current `ripline` coverage guarantees are strongest there.
