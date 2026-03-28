@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+jobs:
+  build-linux:
+    name: Linux ${{ matrix.deb_arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build binary
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Stage binary and deb
+        env:
+          TARGET: ${{ matrix.target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VER="${VERSION#v}"
+          mkdir -p dist
+          cp "target/${TARGET}/release/st" "dist/st-${VER}-linux-${DEB_ARCH}"
+          cargo deb --no-build --target "${TARGET}"
+          cp "target/${TARGET}/debian/syntext_${VER}_${DEB_ARCH}.deb" dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.deb_arch }}
+          path: dist/
+
+  build-macos:
+    name: macOS ${{ matrix.suffix }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            suffix: macos-arm64
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            suffix: macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage binary
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ matrix.suffix }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VER="${VERSION#v}"
+          mkdir -p dist
+          cp "target/${TARGET}/release/st" "dist/st-${VER}-${SUFFIX}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.suffix }}
+          path: dist/
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
