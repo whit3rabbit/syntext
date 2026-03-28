@@ -1,8 +1,10 @@
 //! Search argument parsing, query execution, and result rendering.
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::index::Index;
+use crate::path_util::path_bytes;
 use crate::{Config, SearchOptions};
 
 #[derive(Default)]
@@ -52,7 +54,9 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     };
 
     if args.invert_match {
-        return super::render::render_invert_match(&config, &results, args);
+        return handle_output_code(super::render::render_invert_match(
+            &config, &results, args,
+        ));
     }
 
     if results.is_empty() {
@@ -64,43 +68,75 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     }
 
     if args.files_with_matches {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
         let mut seen = std::collections::BTreeSet::new();
         for m in &results {
-            seen.insert(m.path.to_string_lossy().into_owned());
+            seen.insert(m.path.clone());
         }
         for path in &seen {
-            println!("{path}");
+            let result = out
+                .write_all(path_bytes(path).as_ref())
+                .and_then(|_| out.write_all(b"\n"));
+            if let Err(err) = result {
+                return handle_output(err);
+            }
         }
         return 0;
     }
 
     if args.count {
-        let mut counts: std::collections::BTreeMap<String, usize> =
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        let mut counts: std::collections::BTreeMap<PathBuf, usize> =
             std::collections::BTreeMap::new();
         for m in &results {
-            *counts
-                .entry(m.path.to_string_lossy().into_owned())
-                .or_default() += 1;
+            *counts.entry(m.path.clone()).or_default() += 1;
         }
         for (path, n) in &counts {
-            println!("{path}:{n}");
+            let result = out
+                .write_all(path_bytes(path).as_ref())
+                .and_then(|_| writeln!(out, ":{n}"));
+            if let Err(err) = result {
+                return handle_output(err);
+            }
         }
         return 0;
     }
 
     let has_context = args.after_context > 0 || args.before_context > 0;
 
-    if args.json {
-        super::render::render_json(&results);
+    let render = if args.json {
+        super::render::render_json(&results)
     } else if has_context {
-        super::render::render_with_context(&config, &results, args);
+        super::render::render_with_context(&config, &results, args)
     } else if args.heading {
-        super::render::render_heading(&results, args);
+        super::render::render_heading(&results, args)
     } else {
-        super::render::render_flat(&results, args);
+        super::render::render_flat(&results, args)
+    };
+
+    if let Err(err) = render {
+        return handle_output(err);
     }
 
     0
+}
+
+fn handle_output_code(result: io::Result<i32>) -> i32 {
+    match result {
+        Ok(code) => code,
+        Err(err) => handle_output(err),
+    }
+}
+
+fn handle_output(err: io::Error) -> i32 {
+    if err.kind() == io::ErrorKind::BrokenPipe {
+        0
+    } else {
+        eprintln!("st: {err}");
+        2
+    }
 }
 
 pub(super) fn build_effective_pattern(args: &SearchArgs) -> String {

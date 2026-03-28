@@ -2,7 +2,7 @@
 
 **Feature Branch**: `001-hybrid-code-search-index`
 **Created**: 2026-03-25
-**Revised**: 2026-03-27 (requirements review pass — all CHK001-CHK050 addressed)
+**Revised**: 2026-03-28 (requirements review pass, plus byte-oriented non-UTF-8 search support)
 **Status**: Draft
 **Input**: PLAN.md research document on building a hybrid code search index in Rust for agent workflows
 
@@ -97,7 +97,7 @@ A user initializes the index for a repository for the first time. The system bui
 - **File deleted between index and query**: The overlay `delete_set` marks the base doc_id as deleted. The verifier skips attempts to open files that no longer exist (returns no results for that doc_id rather than an error).
 - **File deleted then re-created**: Treated as a modify: `notify_change()` on the new path adds the new content to the overlay; `notify_delete()` on the original path (if called) removes old content. If only `notify_change()` is called (file re-created without explicit delete), the overlay doc supersedes the base doc for that path. No stale results.
 - **Very large files (>10MB)**: Configurable `max_file_size` (default 10MB, specified in Config). Files exceeding this limit are skipped with a warning logged at `WARN` level. The default is a hard requirement, not just a note.
-- **Non-UTF-8 files**: Files that fail UTF-8 validation are treated as binary and skipped. The binary detection heuristic (null-byte scan) runs first; if a file passes the binary check but fails UTF-8 decode, it is also skipped. "Limited search support" is not offered — non-UTF-8 files are skipped entirely. This is the measurable behavior.
+- **Non-UTF-8 files**: Files that do not contain null bytes remain searchable even if their contents are not valid UTF-8. Literal verification operates on raw bytes. Regex verification uses byte-oriented matching, so patterns such as `(?-u)\xFF` are valid. CLI text output writes raw line bytes; CLI JSON output emits `{ "text": ... }` for valid UTF-8 and `{ "bytes": "<base64>" }` otherwise. Repository-relative paths are preserved as raw path bytes through segment storage, search results, and path/type filtering. Filtering semantics remain ASCII-based where the CLI itself is ASCII-based (`-t rs`, `-g src/`, `*.rs`). Ripgrep-parity claims remain scoped to UTF-8 files in SC-004 until the correctness harness covers mixed-encoding corpora.
 - **`\r\n` line endings**: Files with Windows-style line endings are indexed normally. The verifier normalizes `\r\n` to `\n` when extracting line content for `SearchMatch.line_content`. Line numbers are counted by `\n` occurrences.
 - **Very long lines (>10K chars)**: Indexed normally. The verifier reads the full line into memory. No truncation. If a line exceeds an internal buffer limit (none imposed in v1), the behavior is full read — memory is bounded by `max_file_size`.
 - **Query during full reindex**: `Index::build()` writes a new manifest atomically at completion. In-flight `search()` calls continue against the pre-reindex snapshot until the ArcSwap is updated. No partial results. Queries issued after `build()` returns use the new index.
@@ -212,7 +212,7 @@ The following error responses are required for all failure modes:
 
 - Target platform is macOS and Linux (desktop/server). Windows support is deferred.
 - The tool runs locally, not as a server. No network protocol needed for v1.
-- Repositories are primarily UTF-8 text. Binary file detection and skipping is sufficient.
+- Repositories may contain mixed text encodings. Files with null bytes are still treated as binary and skipped, but non-UTF-8 text without null bytes remains searchable through the byte-oriented verifier.
 - Git is available on the host for commit-based snapshot tracking (`st update` subcommand). If `git` is not available, `st update` returns an error; `st index` (full build) and `st search` function without git.
 - tree-sitter grammars are available as optional dependencies for symbol indexing. If unavailable, the heuristic fallback is used (FR-015).
 - tree-sitter grammar versions are treated as pinned Cargo dependencies (declared in `Cargo.toml` with exact versions under the `symbols` feature flag). Runtime-dynamic grammar loading is not supported in v1.

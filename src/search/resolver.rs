@@ -14,7 +14,7 @@ pub(super) fn resolve_doc(
     global_id: u32,
     canonical_root: &Path,
     max_file_size: u64,
-) -> Option<(String, Arc<[u8]>)> {
+) -> Option<(std::path::PathBuf, Arc<[u8]>)> {
     if let Some(doc) = snap.overlay.get_doc(global_id) {
         return Some((doc.path.clone(), Arc::clone(&doc.content)));
     }

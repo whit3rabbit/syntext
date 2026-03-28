@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 use crate::{Config, IndexError};
 
 /// A record of a scanned file pending indexing: `(absolute_path, relative_path, size_bytes)`.
-pub type FileRecord = (PathBuf, String, u64);
+pub type FileRecord = (PathBuf, PathBuf, u64);
 
 /// Walk the repository collecting indexable files. Respects `.gitignore`.
 pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
@@ -73,10 +73,9 @@ fn push_file_record(
         return;
     }
     let rel = match display_path.strip_prefix(repo_root) {
-        Ok(r) => r.to_string_lossy().into_owned(),
+        Ok(r) => r.to_path_buf(),
         Err(_) => return,
     };
-    let rel = rel.replace('\\', "/");
     files.push((read_path, rel, size));
 }
 
@@ -215,7 +214,9 @@ mod tests {
 
         let files = enumerate_files(&config).unwrap();
         assert!(
-            files.iter().any(|(_, rel, _)| rel == "alias/nested.rs"),
+            files
+                .iter()
+                .any(|(_, rel, _)| rel == &PathBuf::from("alias/nested.rs")),
             "symlinked directory contents should be indexed via the symlink path"
         );
     }

@@ -1,67 +1,149 @@
 //! Output rendering: flat, heading, invert-match, context, and JSON formats.
 
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
 use crate::Config;
+use crate::path_util::path_bytes;
 
 use super::search::{SearchArgs, build_effective_pattern};
+use crate::search::lines::for_each_line;
 
-/// Format a single output line respecting --no-filename and --no-line-number flags.
-fn format_line(no_path: bool, no_num: bool, path: &str, line_num: usize, sep: char, content: &str) -> String {
+fn write_formatted_line(
+    out: &mut dyn Write,
+    no_path: bool,
+    no_num: bool,
+    path: &Path,
+    line_num: usize,
+    sep: u8,
+    content: &[u8],
+) -> io::Result<()> {
     match (no_path, no_num) {
-        (true, true) => content.to_string(),
-        (true, false) => format!("{line_num}{sep}{content}"),
-        (false, true) => format!("{path}{sep}{content}"),
-        (false, false) => format!("{path}{sep}{line_num}{sep}{content}"),
+        (true, true) => out.write_all(content)?,
+        (true, false) => {
+            write!(out, "{line_num}{}", sep as char)?;
+            out.write_all(content)?;
+        }
+        (false, true) => {
+            out.write_all(&path_bytes(path))?;
+            out.write_all(&[sep])?;
+            out.write_all(content)?;
+        }
+        (false, false) => {
+            out.write_all(&path_bytes(path))?;
+            write!(out, "{}{line_num}{}", sep as char, sep as char)?;
+            out.write_all(content)?;
+        }
+    }
+    out.write_all(b"\n")
+}
+
+fn json_data(bytes: &[u8]) -> serde_json::Value {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        serde_json::json!({ "text": text })
+    } else {
+        serde_json::json!({ "bytes": base64_encode(bytes) })
     }
 }
 
-pub(super) fn render_flat(matches: &[crate::SearchMatch], args: &SearchArgs) {
-    for m in matches {
-        let path = m.path.to_string_lossy();
-        println!("{}", format_line(args.no_filename, args.no_line_number, &path, m.line_number as usize, ':', &m.line_content));
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let chunk = ((bytes[i] as u32) << 16)
+            | ((bytes[i + 1] as u32) << 8)
+            | (bytes[i + 2] as u32);
+        out.push(TABLE[((chunk >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((chunk >> 12) & 0x3F) as usize] as char);
+        out.push(TABLE[((chunk >> 6) & 0x3F) as usize] as char);
+        out.push(TABLE[(chunk & 0x3F) as usize] as char);
+        i += 3;
     }
+
+    match bytes.len() - i {
+        1 => {
+            let chunk = (bytes[i] as u32) << 16;
+            out.push(TABLE[((chunk >> 18) & 0x3F) as usize] as char);
+            out.push(TABLE[((chunk >> 12) & 0x3F) as usize] as char);
+            out.push('=');
+            out.push('=');
+        }
+        2 => {
+            let chunk = ((bytes[i] as u32) << 16) | ((bytes[i + 1] as u32) << 8);
+            out.push(TABLE[((chunk >> 18) & 0x3F) as usize] as char);
+            out.push(TABLE[((chunk >> 12) & 0x3F) as usize] as char);
+            out.push(TABLE[((chunk >> 6) & 0x3F) as usize] as char);
+            out.push('=');
+        }
+        _ => {}
+    }
+    out
 }
 
-pub(super) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) {
-    let mut current_path: Option<String> = None;
+pub(super) fn render_flat(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     for m in matches {
-        let path_str = m.path.to_string_lossy().into_owned();
-        if current_path.as_deref() != Some(&path_str) {
+        write_formatted_line(
+            &mut out,
+            args.no_filename,
+            args.no_line_number,
+            &m.path,
+            m.line_number as usize,
+            b':',
+            &m.line_content,
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut current_path: Option<PathBuf> = None;
+    for m in matches {
+        if current_path.as_ref() != Some(&m.path) {
             if current_path.is_some() {
-                println!();
+                writeln!(out)?;
             }
-            println!("{path_str}");
-            current_path = Some(path_str);
+            out.write_all(path_bytes(&m.path).as_ref())?;
+            out.write_all(b"\n")?;
+            current_path = Some(m.path.clone());
         }
         if args.no_line_number {
-            println!("{}", m.line_content);
+            out.write_all(&m.line_content)?;
+            out.write_all(b"\n")?;
         } else {
-            println!("{}:{}", m.line_number, m.line_content);
+            write!(out, "{}:", m.line_number)?;
+            out.write_all(&m.line_content)?;
+            out.write_all(b"\n")?;
         }
     }
+    Ok(())
 }
 
 pub(super) fn render_invert_match(
     config: &Config,
     candidate_matches: &[crate::SearchMatch],
     args: &SearchArgs,
-) -> i32 {
+) -> io::Result<i32> {
     // NOTE: render_invert_match only inverts within files that the index identifies
     // as candidates (files containing the pattern). When the pattern appears in no
     // files, this returns exit 1 with no output. True corpus-wide invert-match would
     // require walking all indexed files regardless of candidate set, which is a
     // known v1 limitation.
     use std::collections::BTreeSet;
-    use std::io::BufRead;
 
     let pattern = build_effective_pattern(args);
-    let re = match regex::RegexBuilder::new(&pattern)
+    let re = match regex::bytes::RegexBuilder::new(&pattern)
         .case_insensitive(args.ignore_case)
         .build()
     {
         Ok(r) => r,
         Err(e) => {
             eprintln!("st: invalid pattern: {e}");
-            return 2;
+            return Ok(2);
         }
     };
 
@@ -70,6 +152,8 @@ pub(super) fn render_invert_match(
         .map(|m| config.repo_root.join(&m.path))
         .collect();
 
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
     let mut found_any = false;
     for abs_path in &files {
         let rel_path = abs_path
@@ -77,26 +161,32 @@ pub(super) fn render_invert_match(
             .unwrap_or(abs_path);
 
         let file = match std::fs::File::open(abs_path) {
-            Ok(f) => f,
+            Ok(_) => match std::fs::read(abs_path) {
+                Ok(content) => content,
+                Err(_) => continue,
+            },
             Err(_) => continue,
         };
 
-        for (idx, line) in std::io::BufReader::new(file).lines().enumerate() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            if !re.is_match(&line) {
+        for_each_line(&file, |line_num, _line_start, line| {
+            if !re.is_match(line) {
                 found_any = true;
                 if !args.quiet {
-                    let path = rel_path.to_string_lossy();
-                    println!("{}", format_line(args.no_filename, args.no_line_number, &path, idx + 1, ':', &line));
+                    let _ = write_formatted_line(
+                        &mut out,
+                        args.no_filename,
+                        args.no_line_number,
+                        rel_path,
+                        line_num as usize,
+                        b':',
+                        line,
+                    );
                 }
             }
-        }
+        });
     }
 
-    if found_any { 0 } else { 1 }
+    Ok(if found_any { 0 } else { 1 })
 }
 
 /// Print matches with surrounding context lines to stdout.
@@ -107,10 +197,10 @@ pub(super) fn render_with_context(
     config: &Config,
     matches: &[crate::SearchMatch],
     args: &SearchArgs,
-) {
+) -> io::Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    render_with_context_to(config, matches, args, &mut out);
+    render_with_context_to(config, matches, args, &mut out)
 }
 
 /// Write matches with surrounding context lines to any writer (used for testing).
@@ -122,33 +212,28 @@ pub(super) fn render_with_context_to(
     matches: &[crate::SearchMatch],
     args: &SearchArgs,
     out: &mut dyn std::io::Write,
-) {
+) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::io::BufRead;
 
     // Group match line numbers by relative path string.
-    let mut by_file: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    let mut by_file: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
     for m in matches {
-        by_file
-            .entry(m.path.to_string_lossy().into_owned())
-            .or_default()
-            .push(m.line_number);
+        by_file.entry(m.path.clone()).or_default().push(m.line_number);
     }
 
     let before = args.before_context;
     let after = args.after_context;
 
     let mut first_file = true;
-    for (rel_path_str, match_lines) in &by_file {
-        let abs_path = config.repo_root.join(rel_path_str);
+    for (rel_path, match_lines) in &by_file {
+        let abs_path = config.repo_root.join(rel_path);
 
-        let file_lines: Vec<String> = match std::fs::File::open(&abs_path) {
-            Ok(f) => std::io::BufReader::new(f)
-                .lines()
-                .map(|l| l.unwrap_or_default())
-                .collect(),
+        let file_content = match std::fs::read(&abs_path) {
+            Ok(content) => content,
             Err(_) => continue,
         };
+        let mut file_lines: Vec<Vec<u8>> = Vec::new();
+        for_each_line(&file_content, |_, _, line| file_lines.push(line.to_vec()));
 
         // Set of 0-based line indices that are direct matches.
         let match_set: BTreeSet<usize> = match_lines
@@ -168,7 +253,7 @@ pub(super) fn render_with_context_to(
 
         // Print a file-level separator between files (rg behavior: -- between files too).
         if !first_file {
-            let _ = writeln!(out, "--");
+            writeln!(out, "--")?;
         }
         first_file = false;
 
@@ -177,42 +262,49 @@ pub(super) fn render_with_context_to(
             // Gap separator between non-contiguous context blocks.
             if let Some(p) = prev {
                 if idx > p + 1 {
-                    let _ = writeln!(out, "--");
+                    writeln!(out, "--")?;
                 }
             }
 
             let line_num = idx + 1;
-            let content = file_lines.get(idx).map(String::as_str).unwrap_or("");
+            let content = file_lines.get(idx).map(Vec::as_slice).unwrap_or_default();
             let is_match = match_set.contains(&idx);
-            let sep = if is_match { ':' } else { '-' };
+            let sep = if is_match { b':' } else { b'-' };
 
-            let _ = writeln!(out, "{}", format_line(args.no_filename, args.no_line_number, rel_path_str, line_num, sep, content));
+            write_formatted_line(
+                out,
+                args.no_filename,
+                args.no_line_number,
+                rel_path,
+                line_num,
+                sep,
+                content,
+            )?;
 
             prev = Some(idx);
         }
     }
+    Ok(())
 }
 
 /// Format a single SearchMatch as a rg-compatible JSON `match` message.
 /// Returns a single NDJSON line (no trailing newline).
 pub(super) fn format_match_json(m: &crate::SearchMatch) -> String {
-    let path_str = m.path.to_string_lossy();
-    // rg appends \n to lines.text
-    let line_text = format!("{}\n", m.line_content);
-    let start = m.byte_offset as usize;
-    let end = start + m.line_content.len();
+    let mut line_with_newline = m.line_content.clone();
+    line_with_newline.push(b'\n');
+    let submatch = &m.line_content[m.submatch_start..m.submatch_end];
 
     serde_json::json!({
         "type": "match",
         "data": {
-            "path": { "text": path_str },
-            "lines": { "text": line_text },
+            "path": json_data(path_bytes(&m.path).as_ref()),
+            "lines": json_data(&line_with_newline),
             "line_number": m.line_number,
-            "absolute_offset": 0,
+            "absolute_offset": m.byte_offset,
             "submatches": [{
-                "match": { "text": &m.line_content },
-                "start": start,
-                "end": end
+                "match": json_data(submatch),
+                "start": m.submatch_start,
+                "end": m.submatch_end
             }]
         }
     })
@@ -220,15 +312,12 @@ pub(super) fn format_match_json(m: &crate::SearchMatch) -> String {
 }
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
-pub(super) fn render_json(matches: &[crate::SearchMatch]) {
+pub(super) fn render_json(matches: &[crate::SearchMatch]) -> io::Result<()> {
     use std::collections::BTreeMap;
 
-    let mut by_file: BTreeMap<String, Vec<&crate::SearchMatch>> = BTreeMap::new();
+    let mut by_file: BTreeMap<PathBuf, Vec<&crate::SearchMatch>> = BTreeMap::new();
     for m in matches {
-        by_file
-            .entry(m.path.to_string_lossy().into_owned())
-            .or_default()
-            .push(m);
+        by_file.entry(m.path.clone()).or_default().push(m);
     }
 
     let total_matches: usize = matches.len();
@@ -242,32 +331,37 @@ pub(super) fn render_json(matches: &[crate::SearchMatch]) {
         "matches": total_matches
     });
 
-    for (path_str, file_matches) in &by_file {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    for (path, file_matches) in &by_file {
         // begin
-        println!(
+        writeln!(
+            out,
             "{}",
-            serde_json::json!({"type":"begin","data":{"path":{"text": path_str}}})
-        );
+            serde_json::json!({"type":"begin","data":{"path": json_data(path_bytes(path).as_ref())}})
+        )?;
         // match lines
         for m in file_matches {
-            println!("{}", format_match_json(m));
+            writeln!(out, "{}", format_match_json(m))?;
         }
         // end
-        println!(
+        writeln!(
+            out,
             "{}",
             serde_json::json!({
                 "type": "end",
                 "data": {
-                    "path": {"text": path_str},
+                    "path": json_data(path_bytes(path).as_ref()),
                     "binary_offset": null,
                     "stats": zero_stats
                 }
             })
-        );
+        )?;
     }
 
     // summary
-    println!(
+    writeln!(
+        out,
         "{}",
         serde_json::json!({
             "type": "summary",
@@ -276,5 +370,6 @@ pub(super) fn render_json(matches: &[crate::SearchMatch]) {
                 "stats": zero_stats
             }
         })
-    );
+    )?;
+    Ok(())
 }

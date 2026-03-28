@@ -3,16 +3,17 @@
 //! T043: single file add, modify, delete, batch atomicity, snapshot isolation.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use syntext::index::overlay::{compute_delete_set, OverlayView};
 use syntext::IndexError;
 
 /// Helper: build dirty file list with Arc<[u8]> content.
-fn dirty(files: &[(&str, &[u8])]) -> Vec<(String, Arc<[u8]>)> {
+fn dirty(files: &[(&str, &[u8])]) -> Vec<(PathBuf, Arc<[u8]>)> {
     files
         .iter()
-        .map(|(p, c)| (p.to_string(), Arc::from(*c)))
+        .map(|(p, c)| (PathBuf::from(p), Arc::from(*c)))
         .collect()
 }
 
@@ -27,7 +28,7 @@ fn overlay_single_file_add() {
 
     assert_eq!(overlay.docs.len(), 1);
     assert_eq!(overlay.docs[0].doc_id, 10); // starts after base range
-    assert_eq!(overlay.docs[0].path, "src/main.rs");
+    assert_eq!(overlay.docs[0].path, Path::new("src/main.rs"));
     assert!(!overlay.gram_index.is_empty(), "overlay should have grams");
 }
 
@@ -65,9 +66,9 @@ fn overlay_doc_lookup_by_id() {
 fn overlay_doc_lookup_by_path() {
     let overlay = OverlayView::build(0, dirty(&[("a.rs", b"aaa"), ("b.rs", b"bbb")])).unwrap();
 
-    assert!(overlay.get_doc_by_path("a.rs").is_some());
-    assert!(overlay.get_doc_by_path("b.rs").is_some());
-    assert!(overlay.get_doc_by_path("c.rs").is_none());
+    assert!(overlay.get_doc_by_path(Path::new("a.rs")).is_some());
+    assert!(overlay.get_doc_by_path(Path::new("b.rs")).is_some());
+    assert!(overlay.get_doc_by_path(Path::new("c.rs")).is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -143,11 +144,17 @@ fn incremental_reuses_unchanged_content() {
         dirty(&[("a.rs", b"aaa content"), ("b.rs", b"bbb content")]),
     )
     .unwrap();
-    let old_a_ptr = Arc::as_ptr(&old.docs.iter().find(|d| d.path == "a.rs").unwrap().content);
+    let old_a_ptr = Arc::as_ptr(
+        &old.docs
+            .iter()
+            .find(|d| d.path == Path::new("a.rs"))
+            .unwrap()
+            .content,
+    );
 
     // Only b.rs changed; a.rs should be reused via Arc::clone.
-    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
-    let removed: HashSet<String> = HashSet::new();
+    let newly_changed: HashSet<PathBuf> = [PathBuf::from("b.rs")].into();
+    let removed: HashSet<PathBuf> = HashSet::new();
     let new_files = dirty(&[("b.rs", b"bbb updated")]);
 
     let inc =
@@ -156,14 +163,22 @@ fn incremental_reuses_unchanged_content() {
     assert_eq!(inc.docs.len(), 2);
 
     // a.rs content should be the same Arc (pointer equality).
-    let inc_a = inc.docs.iter().find(|d| d.path == "a.rs").unwrap();
+    let inc_a = inc
+        .docs
+        .iter()
+        .find(|d| d.path == Path::new("a.rs"))
+        .unwrap();
     assert!(
         std::ptr::eq(Arc::as_ptr(&inc_a.content), old_a_ptr),
         "unchanged doc should share Arc, not clone"
     );
 
     // b.rs content should be updated.
-    let inc_b = inc.docs.iter().find(|d| d.path == "b.rs").unwrap();
+    let inc_b = inc
+        .docs
+        .iter()
+        .find(|d| d.path == Path::new("b.rs"))
+        .unwrap();
     assert_eq!(std::str::from_utf8(&inc_b.content).unwrap(), "bbb updated");
 }
 
@@ -171,40 +186,38 @@ fn incremental_reuses_unchanged_content() {
 fn incremental_removes_deleted() {
     let old = OverlayView::build(10, dirty(&[("a.rs", b"aaa"), ("b.rs", b"bbb")])).unwrap();
 
-    let newly_changed: HashSet<String> = HashSet::new();
-    let removed: HashSet<String> = ["b.rs".to_string()].into();
+    let newly_changed: HashSet<PathBuf> = HashSet::new();
+    let removed: HashSet<PathBuf> = [PathBuf::from("b.rs")].into();
 
     let inc = OverlayView::build_incremental(10, &old, vec![], &newly_changed, &removed).unwrap();
 
     assert_eq!(inc.docs.len(), 1);
-    assert_eq!(inc.docs[0].path, "a.rs");
-    assert!(inc.get_doc_by_path("b.rs").is_none());
+    assert_eq!(inc.docs[0].path, Path::new("a.rs"));
+    assert!(inc.get_doc_by_path(Path::new("b.rs")).is_none());
 }
 
 #[test]
 fn incremental_from_empty_old_overlay() {
     let old = OverlayView::empty();
-    let newly_changed: HashSet<String> = ["new.rs".to_string()].into();
-    let removed: HashSet<String> = HashSet::new();
+    let newly_changed: HashSet<PathBuf> = [PathBuf::from("new.rs")].into();
+    let removed: HashSet<PathBuf> = HashSet::new();
     let new_files = dirty(&[("new.rs", b"fn new() {}")]);
 
     let inc = OverlayView::build_incremental(5, &old, new_files, &newly_changed, &removed).unwrap();
 
     assert_eq!(inc.docs.len(), 1);
-    assert_eq!(inc.docs[0].path, "new.rs");
+    assert_eq!(inc.docs[0].path, Path::new("new.rs"));
     assert_eq!(inc.docs[0].doc_id, 5);
 }
 
 #[test]
 fn compute_delete_set_marks_all_base_docs_for_invalidated_paths() {
     let mut base_path_doc_ids = HashMap::new();
-    base_path_doc_ids.insert("src/main.rs".to_string(), vec![1, 7]);
-    base_path_doc_ids.insert("src/lib.rs".to_string(), vec![3]);
+    base_path_doc_ids.insert(PathBuf::from("src/main.rs"), vec![1, 7]);
+    base_path_doc_ids.insert(PathBuf::from("src/lib.rs"), vec![3]);
 
-    let modified: std::collections::HashSet<String> =
-        ["src/main.rs".to_string()].into();
-    let deleted: std::collections::HashSet<String> =
-        ["src/missing.rs".to_string()].into();
+    let modified: std::collections::HashSet<PathBuf> = [PathBuf::from("src/main.rs")].into();
+    let deleted: std::collections::HashSet<PathBuf> = [PathBuf::from("src/missing.rs")].into();
     let delete_set = compute_delete_set(
         &base_path_doc_ids,
         &modified,
@@ -251,20 +264,28 @@ fn incremental_reuses_cached_grams() {
 
     // Capture gram set from old overlay.
     let old_a_grams: Vec<u64> = {
-        let doc = old.docs.iter().find(|d| d.path == "a.rs").unwrap();
+        let doc = old
+            .docs
+            .iter()
+            .find(|d| d.path == Path::new("a.rs"))
+            .unwrap();
         doc.grams.clone()
     };
     assert!(!old_a_grams.is_empty(), "should have grams");
 
     // Incremental: only b.rs is new; a.rs should reuse cached grams.
-    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
-    let removed: HashSet<String> = HashSet::new();
+    let newly_changed: HashSet<PathBuf> = [PathBuf::from("b.rs")].into();
+    let removed: HashSet<PathBuf> = HashSet::new();
     let new_files = dirty(&[("b.rs", b"fn beta() {}")]);
 
     let inc =
         OverlayView::build_incremental(10, &old, new_files, &newly_changed, &removed).unwrap();
 
-    let inc_a = inc.docs.iter().find(|d| d.path == "a.rs").unwrap();
+    let inc_a = inc
+        .docs
+        .iter()
+        .find(|d| d.path == Path::new("a.rs"))
+        .unwrap();
     assert_eq!(
         inc_a.grams, old_a_grams,
         "reused doc should have same cached grams"
@@ -283,17 +304,27 @@ fn delta_unchanged_files_keep_doc_ids() {
         dirty(&[("a.rs", b"fn alpha() {}"), ("b.rs", b"fn beta() {}")]),
     )
     .unwrap();
-    let a_old_id = old.docs.iter().find(|d| d.path == "a.rs").unwrap().doc_id;
+    let a_old_id = old
+        .docs
+        .iter()
+        .find(|d| d.path == Path::new("a.rs"))
+        .unwrap()
+        .doc_id;
 
-    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
-    let removed: HashSet<String> = HashSet::new();
+    let newly_changed: HashSet<PathBuf> = [PathBuf::from("b.rs")].into();
+    let removed: HashSet<PathBuf> = HashSet::new();
     let new_files = dirty(&[("b.rs", b"fn beta_v2() {}")]);
 
     // Same base_doc_count => routes to delta path via build_incremental.
     let inc =
         OverlayView::build_incremental(10, &old, new_files, &newly_changed, &removed).unwrap();
 
-    let a_new_id = inc.docs.iter().find(|d| d.path == "a.rs").unwrap().doc_id;
+    let a_new_id = inc
+        .docs
+        .iter()
+        .find(|d| d.path == Path::new("a.rs"))
+        .unwrap()
+        .doc_id;
     assert_eq!(
         a_new_id, a_old_id,
         "unchanged doc keeps its doc_id on delta path"
@@ -309,8 +340,8 @@ fn delta_gram_index_matches_full_rebuild() {
     )
     .unwrap();
 
-    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
-    let removed: HashSet<String> = HashSet::new();
+    let newly_changed: HashSet<PathBuf> = [PathBuf::from("b.rs")].into();
+    let removed: HashSet<PathBuf> = HashSet::new();
     let new_b = dirty(&[("b.rs", b"fn beta_v2() {}")]);
 
     // Same base_doc_count => routes to delta path via build_incremental.
@@ -338,12 +369,12 @@ fn delta_gram_index_matches_full_rebuild() {
         // Map delta doc_ids back to paths, compare against full's doc_ids for same gram.
         // Since doc_ids differ between delta and full (stable vs. reassigned), compare
         // via the set of paths that contain each gram.
-        let delta_paths: std::collections::BTreeSet<String> = d
+        let delta_paths: std::collections::BTreeSet<PathBuf> = d
             .iter()
             .filter_map(|&id| delta.get_doc(id).map(|doc| doc.path.clone()))
             .collect();
         let full_ids = full.gram_index.get(&hash).cloned().unwrap_or_default();
-        let full_paths: std::collections::BTreeSet<String> = full_ids
+        let full_paths: std::collections::BTreeSet<PathBuf> = full_ids
             .iter()
             .filter_map(|&id| full.get_doc(id).map(|doc| doc.path.clone()))
             .collect();
@@ -377,8 +408,8 @@ fn delta_deletion_removes_grams() {
         .copied();
 
     if let Some(h) = zzzq_hash {
-        let removed: HashSet<String> = ["a.rs".to_string()].into();
-        let newly_changed: HashSet<String> = HashSet::new();
+        let removed: HashSet<PathBuf> = [PathBuf::from("a.rs")].into();
+        let newly_changed: HashSet<PathBuf> = HashSet::new();
         // Same base_doc_count => routes to delta path via build_incremental.
         let inc =
             OverlayView::build_incremental(5, &old, vec![], &newly_changed, &removed).unwrap();
@@ -396,8 +427,8 @@ fn delta_deletion_removes_grams() {
 fn delta_posting_lists_sorted_after_new_doc() {
     let old = OverlayView::build(0, dirty(&[("a.rs", b"fn shared_token() {}")])).unwrap();
 
-    let newly_changed: HashSet<String> = ["b.rs".to_string()].into();
-    let removed: HashSet<String> = HashSet::new();
+    let newly_changed: HashSet<PathBuf> = [PathBuf::from("b.rs")].into();
+    let removed: HashSet<PathBuf> = HashSet::new();
     // b.rs shares some grams with a.rs (e.g., "fn").
     let new_files = dirty(&[("b.rs", b"fn shared_token() {}")]);
 
@@ -419,8 +450,8 @@ fn incremental_base_changed_reassigns_doc_ids() {
     let a_old_id = old.docs[0].doc_id; // == 10
 
     // Simulate a segment flush: base_doc_count grew from 10 to 20.
-    let newly_changed: HashSet<String> = HashSet::new();
-    let removed: HashSet<String> = HashSet::new();
+    let newly_changed: HashSet<PathBuf> = HashSet::new();
+    let removed: HashSet<PathBuf> = HashSet::new();
     let inc = OverlayView::build_incremental(20, &old, vec![], &newly_changed, &removed).unwrap();
 
     let a_new_id = inc.docs[0].doc_id;

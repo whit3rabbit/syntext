@@ -10,15 +10,15 @@
 //! 4. Matches are sorted by path, then line number.
 
 pub mod verifier;
+pub(crate) mod lines;
 mod resolver;
 
-use std::path::Path;
 use std::sync::Arc;
 
 use resolver::resolve_doc;
 
 use rayon::prelude::*;
-use regex::RegexBuilder;
+use regex::bytes::RegexBuilder;
 use roaring::RoaringBitmap;
 
 use crate::index::IndexSnapshot;
@@ -55,14 +55,26 @@ pub fn search(
         QueryRoute::Literal => match literal_grams(pattern) {
             Some(hashes) => {
                 if should_use_index(&hashes, &snap)? {
-                    execute_query(&GramQuery::Grams(hashes), &snap)?
+                    let indexed = execute_query(&GramQuery::Grams(hashes), &snap)?;
+                    if indexed.is_empty() {
+                        all_doc_ids(&snap)
+                    } else {
+                        indexed
+                    }
                 } else {
                     all_doc_ids(&snap)
                 }
             }
             None => all_doc_ids(&snap),
         },
-        QueryRoute::IndexedRegex(query) => execute_query(query, &snap)?,
+        QueryRoute::IndexedRegex(query) => {
+            let indexed = execute_query(query, &snap)?;
+            if indexed.is_empty() {
+                all_doc_ids(&snap)
+            } else {
+                indexed
+            }
+        }
         _ => all_doc_ids(&snap),
     };
 
@@ -113,17 +125,19 @@ pub fn search(
                     if !pf.file_ids.contains(file_id) {
                         return None;
                     }
-                } else if !matches_path_filter(
-                    &rel_path,
-                    opts.file_type.as_deref(),
-                    opts.exclude_type.as_deref(),
-                    opts.path_filter.as_deref(),
-                ) {
-                    return None;
+                } else {
+                    if !matches_path_filter(
+                        &rel_path,
+                        opts.file_type.as_deref(),
+                        opts.exclude_type.as_deref(),
+                        opts.path_filter.as_deref(),
+                    ) {
+                        return None;
+                    }
                 }
             }
 
-            let file_path = Path::new(&rel_path);
+            let file_path = rel_path.as_path();
             let file_matches = match &route {
                 QueryRoute::Literal => verify_literal(pattern, file_path, &content),
                 _ => verify_regex(compiled_re.as_ref().unwrap(), file_path, &content),
@@ -343,13 +357,13 @@ mod tests {
         };
 
         assert!(matches_path_filter(
-            "src/main.rs",
+            std::path::Path::new("src/main.rs"),
             opts.file_type.as_deref(),
             None,
             opts.path_filter.as_deref(),
         ));
         assert!(!matches_path_filter(
-            "src/main.py",
+            std::path::Path::new("src/main.py"),
             opts.file_type.as_deref(),
             None,
             opts.path_filter.as_deref(),

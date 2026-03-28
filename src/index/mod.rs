@@ -55,8 +55,8 @@ fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
 
 fn projected_overlay_doc_count(
     old_overlay: &OverlayView,
-    visible_changed: &HashSet<String>,
-    removed_paths: &HashSet<String>,
+    visible_changed: &HashSet<std::path::PathBuf>,
+    removed_paths: &HashSet<std::path::PathBuf>,
 ) -> usize {
     old_overlay
         .docs
@@ -67,7 +67,6 @@ fn projected_overlay_doc_count(
         .count()
         + visible_changed.len()
 }
-
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
 pub struct Index {
     /// The index configuration.
@@ -85,7 +84,7 @@ pub struct Index {
 }
 
 impl Index {
-    fn repo_relative_path(&self, path: &Path) -> Result<String, IndexError> {
+    fn repo_relative_path(&self, path: &Path) -> Result<std::path::PathBuf, IndexError> {
         let rel = path
             .strip_prefix(&self.config.repo_root)
             .map_err(|_| IndexError::PathOutsideRepo(path.to_path_buf()))?;
@@ -98,7 +97,7 @@ impl Index {
             return Err(IndexError::PathOutsideRepo(path.to_path_buf()));
         }
 
-        Ok(rel.to_string_lossy().replace('\\', "/"))
+        Ok(rel.to_path_buf())
     }
 
     /// Build the index from scratch, writing segments and a manifest.
@@ -132,41 +131,50 @@ impl Index {
 
         let mut base_segments: Vec<MmapSegment> = Vec::new();
         let mut segment_base_ids: Vec<u32> = Vec::new();
-        let mut base_doc_paths: Vec<String> = Vec::new();
-        let mut all_paths: Vec<String> = Vec::new();
-        let mut path_doc_ids: HashMap<String, Vec<u32>> = HashMap::new();
+        let mut base_doc_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut all_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut path_doc_ids: HashMap<std::path::PathBuf, Vec<u32>> = HashMap::new();
         let mut next_global_id: u32 = 0;
 
         for seg_ref in &manifest.segments {
-            // Choose the correct file to open: v3 uses dict_filename, v2 uses filename.
-            let open_filename = if !seg_ref.dict_filename.is_empty() {
-                &seg_ref.dict_filename
+            let seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty() {
+                for filename in [&seg_ref.dict_filename, &seg_ref.post_filename] {
+                    if filename.contains('/')
+                        || filename.contains('\\')
+                        || filename.contains("..")
+                        || Path::new(filename).is_absolute()
+                    {
+                        return Err(IndexError::CorruptIndex(format!(
+                            "invalid segment filename in manifest: {:?}",
+                            filename
+                        )));
+                    }
+                }
+                let dict_path = config.index_dir.join(&seg_ref.dict_filename);
+                let post_path = config.index_dir.join(&seg_ref.post_filename);
+                MmapSegment::open_split(&dict_path, &post_path)?
             } else {
-                &seg_ref.filename
+                let open_filename = &seg_ref.filename;
+                if open_filename.contains('/')
+                    || open_filename.contains('\\')
+                    || open_filename.contains("..")
+                    || Path::new(open_filename).is_absolute()
+                {
+                    return Err(IndexError::CorruptIndex(format!(
+                        "invalid segment filename in manifest: {:?}",
+                        open_filename
+                    )));
+                }
+                let seg_path = config.index_dir.join(open_filename);
+                MmapSegment::open(&seg_path)?
             };
-            // Reject path traversal in manifest segment filenames
-            if open_filename.contains('/')
-                || open_filename.contains('\\')
-                || open_filename.contains("..")
-                || Path::new(open_filename).is_absolute()
-            {
-                return Err(IndexError::CorruptIndex(format!(
-                    "invalid segment filename in manifest: {:?}",
-                    open_filename
-                )));
-            }
-            let seg_path = config.index_dir.join(open_filename);
-            let seg = MmapSegment::open(&seg_path)?;
             segment_base_ids.push(next_global_id);
             // Iterate using local 0-based indices (0..seg.doc_count).
             for local_id in 0..seg.doc_count {
                 if let Some(doc) = seg.get_doc(local_id) {
                     debug_assert_eq!(doc.doc_id as usize, base_doc_paths.len());
                     base_doc_paths.push(doc.path.clone());
-                    path_doc_ids
-                        .entry(doc.path.clone())
-                        .or_default()
-                        .push(doc.doc_id);
+                    path_doc_ids.entry(doc.path.clone()).or_default().push(doc.doc_id);
                     all_paths.push(doc.path);
                 }
             }
@@ -308,7 +316,7 @@ impl Index {
 
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
-        let mut new_files: Vec<(String, Arc<[u8]>)> = Vec::new();
+        let mut new_files: Vec<(std::path::PathBuf, Arc<[u8]>)> = Vec::new();
         let mut excluded_changed = std::collections::HashSet::new();
         for path in &take.newly_changed {
             let abs = self.config.repo_root.join(path);

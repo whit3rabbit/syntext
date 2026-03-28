@@ -106,6 +106,10 @@ name = "incremental"
 path = "tests/integration/incremental.rs"
 
 [[test]]
+name = "cli"
+path = "tests/integration/cli.rs"
+
+[[test]]
 name = "symbols"
 path = "tests/integration/symbols.rs"
 required-features = ["symbols"]

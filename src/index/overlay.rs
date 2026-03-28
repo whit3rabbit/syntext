@@ -9,6 +9,7 @@
 //! from disk.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::tokenizer::build_all;
@@ -27,7 +28,7 @@ pub enum EditKind {
 #[derive(Debug, Clone)]
 pub struct FileEdit {
     /// Repository-relative path of the changed file.
-    pub path: String,
+    pub path: PathBuf,
     /// Nature of the change.
     pub kind: EditKind,
 }
@@ -38,7 +39,7 @@ pub struct OverlayDoc {
     /// Overlay-space doc_id (disjoint from base segment range).
     pub doc_id: u32,
     /// Repository-relative path.
-    pub path: String,
+    pub path: PathBuf,
     /// Current file content (kept for verification during search).
     /// Arc-shared to avoid cloning between snapshot generations.
     pub content: Arc<[u8]>,
@@ -85,7 +86,7 @@ impl OverlayView {
     /// `dirty_files` maps repo-relative path to file content.
     pub fn build(
         base_doc_count: u32,
-        dirty_files: Vec<(String, Arc<[u8]>)>,
+        dirty_files: Vec<(PathBuf, Arc<[u8]>)>,
     ) -> Result<Self, IndexError> {
         let mut gram_index: HashMap<u64, Vec<u32>> = HashMap::new();
         let overlay_docs = dirty_files.len();
@@ -143,9 +144,9 @@ impl OverlayView {
     pub fn build_incremental(
         base_doc_count: u32,
         old_overlay: &OverlayView,
-        new_files: Vec<(String, Arc<[u8]>)>,
-        newly_changed: &HashSet<String>,
-        removed_paths: &HashSet<String>,
+        new_files: Vec<(PathBuf, Arc<[u8]>)>,
+        newly_changed: &HashSet<PathBuf>,
+        removed_paths: &HashSet<PathBuf>,
     ) -> Result<Self, IndexError> {
         // Fast path: base has not grown since the last commit.
         // Overlay doc_ids for unchanged files are stable; use delta update.
@@ -245,9 +246,9 @@ impl OverlayView {
     fn build_incremental_delta(
         base_doc_count: u32,
         old_overlay: &OverlayView,
-        new_files: Vec<(String, Arc<[u8]>)>,
-        newly_changed: &HashSet<String>,
-        removed_paths: &HashSet<String>,
+        new_files: Vec<(PathBuf, Arc<[u8]>)>,
+        newly_changed: &HashSet<PathBuf>,
+        removed_paths: &HashSet<PathBuf>,
     ) -> Result<Self, IndexError> {
         // Clone old gram_index; remove stale entries for changed/deleted files.
         //
@@ -325,7 +326,7 @@ impl OverlayView {
     }
 
     /// Look up an overlay doc by path.
-    pub fn get_doc_by_path(&self, path: &str) -> Option<&OverlayDoc> {
+    pub fn get_doc_by_path(&self, path: &Path) -> Option<&OverlayDoc> {
         self.docs.iter().find(|d| d.path == path)
     }
 }
@@ -345,20 +346,20 @@ mod tests {
         let overlay1 = OverlayView::build(
             0,
             vec![
-                ("a.rs".to_string(), Arc::clone(&content_a)),
-                ("b.rs".to_string(), Arc::clone(&content_b)),
+                (PathBuf::from("a.rs"), Arc::clone(&content_a)),
+                (PathBuf::from("b.rs"), Arc::clone(&content_b)),
             ],
         )
         .unwrap();
 
         let content_a2: Arc<[u8]> = Arc::from(b"fn alpha_changed() {}".as_slice());
-        let newly_changed: HashSet<String> = ["a.rs".to_string()].into();
-        let removed: HashSet<String> = HashSet::new();
+        let newly_changed: HashSet<PathBuf> = [PathBuf::from("a.rs")].into();
+        let removed: HashSet<PathBuf> = HashSet::new();
 
         let overlay2 = OverlayView::build_incremental(
             0,
             &overlay1,
-            vec![("a.rs".to_string(), content_a2)],
+            vec![(PathBuf::from("a.rs"), content_a2)],
             &newly_changed,
             &removed,
         )

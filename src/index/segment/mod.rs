@@ -16,6 +16,7 @@ use memmap2::Mmap;
 use uuid::Uuid;
 use xxhash_rust::xxh64::xxh64;
 
+use crate::path_util::path_from_bytes;
 use crate::posting::{roaring_util, PostingList};
 use crate::IndexError;
 
@@ -51,7 +52,7 @@ pub struct DocEntry {
     /// File size in bytes at index time.
     pub size_bytes: u64,
     /// Repository-relative path with forward-slash separators.
-    pub path: String,
+    pub path: std::path::PathBuf,
 }
 
 /// Metadata returned after writing a segment (used to populate the manifest).
@@ -74,9 +75,16 @@ pub struct SegmentMeta {
 mod segment_writer;
 pub use segment_writer::SegmentWriter;
 
+mod reader;
+
 // ---------------------------------------------------------------------------
 // T022: MmapSegment (reader)
 // ---------------------------------------------------------------------------
+
+enum PostingsBacking {
+    V2Mmap,
+    V3File(std::fs::File),
+}
 
 /// Memory-mapped read-only SNTX segment.
 ///
@@ -93,10 +101,11 @@ pub struct MmapSegment {
     pub gram_count: u32,
     doc_table_offset: usize,
     dict_offset: usize,
+    postings: PostingsBacking,
 }
 
 impl MmapSegment {
-    /// Open a segment file, verify magic, version, and checksum.
+    /// Open a combined (v2) segment file, verify magic, version, and checksum.
     pub fn open(path: &Path) -> Result<Self, IndexError> {
         let file = std::fs::File::open(path)?;
         let file_meta = file.metadata()?;
@@ -123,85 +132,50 @@ impl MmapSegment {
         // Mitigation: the index directory should be writable only by trusted users.
         let mmap = unsafe { Mmap::map(&file)? };
         let len = mmap.len();
-
-        if len < HEADER_SIZE + FOOTER_SIZE {
-            return Err(IndexError::CorruptIndex("file too small".into()));
-        }
-
-        let corrupt = |msg: &str| IndexError::CorruptIndex(msg.into());
-
-        let footer = mmap
-            .get(len - FOOTER_SIZE..)
-            .ok_or_else(|| corrupt("truncated: cannot read footer"))?;
-        if footer.get(44..48) != Some(MAGIC.as_slice()) {
-            return Err(corrupt("bad footer magic"));
-        }
-        let version = u32::from_le_bytes(
-            footer
-                .get(40..44)
-                .ok_or_else(|| corrupt("truncated footer"))?
-                .try_into()
-                .map_err(|_| corrupt("footer slice"))?,
-        );
-        // Accept both v2 and v3 version tags. Until Task 3 ships the split-file
-        // writer, SegmentWriter still serializes a single-file layout even when
-        // writing FORMAT_VERSION_V3. open() reads both correctly because the
-        // single-file layout is identical for v2 and v3. The split-file read path
-        // (open_split) is added in a later task.
-        if version != FORMAT_VERSION_V2 && version != FORMAT_VERSION_V3 {
-            return Err(IndexError::CorruptIndex(format!(
-                "unsupported version {version}"
-            )));
-        }
-        let stored_checksum = u64::from_le_bytes(
-            footer
-                .get(32..40)
-                .ok_or_else(|| corrupt("truncated footer"))?
-                .try_into()
-                .map_err(|_| corrupt("footer slice"))?,
-        );
-        let content = mmap
-            .get(..len - FOOTER_SIZE)
-            .ok_or_else(|| corrupt("truncated: cannot read content"))?;
-        if xxh64(content, 0) != stored_checksum {
-            return Err(corrupt("checksum mismatch"));
-        }
-        if mmap.get(0..4) != Some(MAGIC.as_slice()) {
-            return Err(corrupt("bad header magic"));
-        }
-
-        // Use map_err rather than unwrap() for slice-to-array conversions to
-        // prevent panics (Denial of Service) when reading potentially corrupt or
-        // malformed index segments.
-        let doc_table_offset = u64::from_le_bytes(
-            footer[0..8]
-                .try_into()
-                .map_err(|_| corrupt("footer doc_table_offset slice"))?,
-        ) as usize;
-        let dict_offset = u64::from_le_bytes(
-            footer[16..24]
-                .try_into()
-                .map_err(|_| corrupt("footer dict_offset slice"))?,
-        ) as usize;
-        let doc_count = u32::from_le_bytes(
-            footer[24..28]
-                .try_into()
-                .map_err(|_| corrupt("footer doc_count slice"))?,
-        );
-        let gram_count = u32::from_le_bytes(
-            footer[28..32]
-                .try_into()
-                .map_err(|_| corrupt("footer gram_count slice"))?,
-        );
+        let layout = reader::parse_segment_mmap(&mmap, &[FORMAT_VERSION_V2, FORMAT_VERSION_V3])?;
 
         Ok(MmapSegment {
             _file: file,
             mmap,
             expected_len: len,
-            doc_count,
-            gram_count,
-            doc_table_offset,
-            dict_offset,
+            doc_count: layout.doc_count,
+            gram_count: layout.gram_count,
+            doc_table_offset: layout.doc_table_offset,
+            dict_offset: layout.dict_offset,
+            postings: PostingsBacking::V2Mmap,
+        })
+    }
+
+    /// Open a v3 segment from separate `.dict` and `.post` files.
+    pub fn open_split(dict_path: &Path, post_path: &Path) -> Result<Self, IndexError> {
+        let file = std::fs::File::open(dict_path)?;
+        let file_meta = file.metadata()?;
+        if file_meta.len() > MAX_SEGMENT_SIZE {
+            return Err(IndexError::CorruptIndex(format!(
+                "dict file too large ({} bytes, max {})",
+                file_meta.len(),
+                MAX_SEGMENT_SIZE
+            )));
+        }
+        file.try_lock_shared()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        let len = mmap.len();
+        let layout = reader::parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3])?;
+        let post_file = std::fs::File::open(post_path)?;
+        post_file
+            .try_lock_shared()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+        Ok(MmapSegment {
+            _file: file,
+            mmap,
+            expected_len: len,
+            doc_count: layout.doc_count,
+            gram_count: layout.gram_count,
+            doc_table_offset: layout.doc_table_offset,
+            dict_offset: layout.dict_offset,
+            postings: PostingsBacking::V3File(post_file),
         })
     }
 
@@ -275,7 +249,7 @@ impl MmapSegment {
         let content_hash = u64::from_le_bytes(e.get(4..12)?.try_into().ok()?);
         let size_bytes = u64::from_le_bytes(e.get(12..20)?.try_into().ok()?);
         let path_len = u16::from_le_bytes(e.get(20..22)?.try_into().ok()?) as usize;
-        let path = String::from_utf8(e.get(22..22 + path_len)?.to_vec()).ok()?;
+        let path = path_from_bytes(e.get(22..22 + path_len)?);
         Some(DocEntry {
             doc_id: doc_id_r,
             content_hash,
@@ -310,6 +284,15 @@ impl MmapSegment {
     }
 
     fn read_posting_list(&self, abs_off: usize) -> Option<PostingList> {
+        match &self.postings {
+            PostingsBacking::V2Mmap => self.read_posting_list_mmap(abs_off),
+            PostingsBacking::V3File(post_file) => {
+                reader::read_posting_list_pread(post_file, abs_off as u64).ok()
+            }
+        }
+    }
+
+    fn read_posting_list_mmap(&self, abs_off: usize) -> Option<PostingList> {
         let b = self.mmap.get(abs_off..)?;
         let encoding = *b.first()?;
         let byte_len = u32::from_le_bytes(b.get(5..9)?.try_into().ok()?) as usize;
@@ -351,8 +334,8 @@ mod tests {
     fn round_trip_with_docs_and_grams() {
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "src/main.rs", 0xDEAD, 100);
-        writer.add_document(1, "src/lib.rs", 0xBEEF, 200);
+        writer.add_document(0, Path::new("src/main.rs"), 0xDEAD, 100);
+        writer.add_document(1, Path::new("src/lib.rs"), 0xBEEF, 200);
         writer.add_gram_posting(0xAAAA, 0);
         writer.add_gram_posting(0xAAAA, 1);
         writer.add_gram_posting(0xBBBB, 0);
@@ -368,7 +351,7 @@ mod tests {
         assert_eq!(seg.doc_count, 2);
 
         let d0 = seg.get_doc(0).unwrap();
-        assert_eq!(d0.path, "src/main.rs");
+        assert_eq!(d0.path, Path::new("src/main.rs"));
         assert_eq!(d0.content_hash, 0xDEAD);
 
         // TODO(Task 4): re-enable lookup_gram assertions after open_split is implemented.
@@ -382,8 +365,8 @@ mod tests {
     fn duplicate_postings_are_deduplicated() {
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "src/main.rs", 0xDEAD, 100);
-        writer.add_document(1, "src/lib.rs", 0xBEEF, 200);
+        writer.add_document(0, Path::new("src/main.rs"), 0xDEAD, 100);
+        writer.add_document(1, Path::new("src/lib.rs"), 0xBEEF, 200);
         writer.add_gram_posting(0xAAAA, 0);
         writer.add_gram_posting(0xAAAA, 0);
         writer.add_gram_posting(0xAAAA, 1);
@@ -411,7 +394,7 @@ mod tests {
     fn verify_integrity_passes_on_clean_segment() {
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "a.rs", 1, 10);
+        writer.add_document(0, Path::new("a.rs"), 1, 10);
         writer.add_gram_posting(0xAA, 0);
         let meta = writer.write_to_dir(dir.path()).unwrap();
 
@@ -425,7 +408,7 @@ mod tests {
         // Build a real segment first so we have valid magic/checksum.
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "a.rs", 1, 10);
+        writer.add_document(0, Path::new("a.rs"), 1, 10);
         let meta = writer.write_to_dir(dir.path()).unwrap();
 
         // Verify the constant is wired in and a normal-size segment opens fine.
@@ -441,7 +424,7 @@ mod tests {
     fn verify_integrity_detects_post_open_corruption() {
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "a.rs", 1, 10);
+        writer.add_document(0, Path::new("a.rs"), 1, 10);
         writer.add_gram_posting(0xAA, 0);
         let meta = writer.write_to_dir(dir.path()).unwrap();
 
@@ -471,7 +454,7 @@ mod tests {
     #[test]
     fn with_capacity_hint_does_not_panic_when_exceeded() {
         let mut writer = SegmentWriter::with_capacity(1, 2);
-        writer.add_document(0, "a.rs", 1, 10);
+        writer.add_document(0, Path::new("a.rs"), 1, 10);
         for i in 0u64..100 {
             writer.add_gram_posting(i, 0);
         }
@@ -482,10 +465,10 @@ mod tests {
     #[test]
     fn add_document_rejects_duplicate_doc_ids() {
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "a.rs", 1, 10);
-        writer.add_document(1, "b.rs", 2, 20);
+        writer.add_document(0, Path::new("a.rs"), 1, 10);
+        writer.add_document(1, Path::new("b.rs"), 2, 20);
         // Duplicate id=1 should be caught during serialize.
-        writer.add_document(1, "c.rs", 3, 30);
+        writer.add_document(1, Path::new("c.rs"), 3, 30);
         let dir = TempDir::new().unwrap();
         let result = writer.write_to_dir(dir.path());
         assert!(result.is_err(), "duplicate doc_id must be rejected");
@@ -507,7 +490,7 @@ mod tests {
     fn v3_writer_produces_two_files() {
         let dir = TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
-        writer.add_document(0, "src/lib.rs", 0xABCD, 100);
+        writer.add_document(0, Path::new("src/lib.rs"), 0xABCD, 100);
         writer.add_gram_posting(0x1234, 0);
         let meta = writer.write_to_dir(dir.path()).unwrap();
 
@@ -518,5 +501,23 @@ mod tests {
             .unwrap()
             .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".seg"));
         assert!(!any_seg, "v3 writer must not produce a .seg file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn round_trip_preserves_non_utf8_path_bytes() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        let path = std::path::PathBuf::from(OsString::from_vec(b"src/odd\xff.rs".to_vec()));
+        writer.add_document(0, &path, 0xDEAD, 100);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        let dict_path = dir.path().join(&meta.dict_filename);
+        let seg = MmapSegment::open(&dict_path).unwrap();
+        let d0 = seg.get_doc(0).unwrap();
+        assert_eq!(d0.path, path);
     }
 }

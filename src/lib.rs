@@ -5,6 +5,7 @@
 pub mod cli;
 pub mod index;
 pub mod path;
+pub(crate) mod path_util;
 pub mod posting;
 pub mod query;
 pub mod search;
@@ -51,10 +52,14 @@ pub struct SearchMatch {
     pub path: PathBuf,
     /// 1-based line number of the match within the file.
     pub line_number: u32,
-    /// Full text of the matching line (without trailing newline).
-    pub line_content: String,
+    /// Full bytes of the matching line (without trailing newline).
+    pub line_content: Vec<u8>,
     /// Byte offset of the start of the first match on the line.
     pub byte_offset: u64,
+    /// Byte offset of the first match within `line_content`.
+    pub submatch_start: usize,
+    /// Exclusive end byte offset of the first match within `line_content`.
+    pub submatch_end: usize,
 }
 
 /// Search options.

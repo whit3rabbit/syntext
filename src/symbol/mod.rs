@@ -148,8 +148,10 @@ impl SymbolIndex {
             .map(|(path, line, name)| SearchMatch {
                 path: PathBuf::from(path),
                 line_number: line,
-                line_content: name,
+                line_content: name.into_bytes(),
                 byte_offset: 0,
+                submatch_start: 0,
+                submatch_end: 0,
             })
             .collect())
     }

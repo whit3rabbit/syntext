@@ -5,6 +5,7 @@
 //! during a fresh `st index` build; it is not used by open/search/commit.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 use rayon::prelude::*;
@@ -25,7 +26,7 @@ pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 ///
 /// Returns a value in [0.01, 0.50]. Falls back to 0.10 if measurement fails
 /// (e.g., no files indexed, timing resolution too coarse).
-pub(super) fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
+pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) -> f64 {
     const DEFAULT: f64 = 0.10;
     const SCAN_SAMPLE: usize = 100;
     // Entries per bitmap in the posting-cost microbenchmark.
@@ -42,8 +43,8 @@ pub(super) fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> 
     let sample_count = SCAN_SAMPLE.min(total);
     // Use a stride so we sample evenly across the corpus (sorted by path).
     let stride = (total / sample_count).max(1);
-    let sample_paths: Vec<&str> = (0..sample_count)
-        .map(|i| indexed_paths[(i * stride).min(total - 1)].as_str())
+    let sample_paths: Vec<&Path> = (0..sample_count)
+        .map(|i| indexed_paths[(i * stride).min(total - 1)].as_path())
         .collect();
 
     let mut docs_read = 0usize;
@@ -133,7 +134,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     // Split into ~256MB batches and process each.
     let batches = split_batches(&file_list, BATCH_SIZE_BYTES);
     let mut seg_refs: Vec<SegmentRef> = Vec::new();
-    let mut indexed_paths: Vec<String> = Vec::new();
+    let mut indexed_paths: Vec<PathBuf> = Vec::new();
     let mut next_doc_id: u32 = 0;
 
     for batch in &batches {
@@ -249,13 +250,15 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
                                     .position(|p| p == rel_path)
                                     .unwrap_or(0)
                                     as u32;
-                                if let Err(e) = sym_idx.index_file(file_id, rel_path, &content) {
-                                    if config.verbose {
-                                        eprintln!(
-                                            "syntext: warning: symbol index failed for {rel_path}: {e}"
-                                        );
+                                let rel_path_str = rel_path.to_string_lossy();
+                                if let Err(e) = sym_idx.index_file(file_id, &rel_path_str, &content) {
+                                        if config.verbose {
+                                            eprintln!(
+                                                "syntext: warning: symbol index failed for {}: {e}",
+                                                rel_path.display()
+                                            );
+                                        }
                                     }
-                                }
                             }
                         }
                     }

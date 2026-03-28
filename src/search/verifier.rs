@@ -11,10 +11,12 @@
 use std::path::Path;
 
 use memchr::memmem;
-use regex::Regex;
+use regex::bytes::Regex;
 
 use crate::index::is_binary;
 use crate::SearchMatch;
+
+use super::lines::for_each_line;
 
 /// Verify a literal pattern against raw file bytes using `memchr::memmem`.
 ///
@@ -25,7 +27,11 @@ pub fn verify_literal(pattern: &str, path: &Path, content: &[u8]) -> Vec<SearchM
         return Vec::new(); // skip binary files
     }
     let finder = memmem::Finder::new(pattern.as_bytes());
-    collect_line_matches(path, content, |line| finder.find(line))
+    collect_line_matches(path, content, |line| {
+        finder
+            .find(line)
+            .map(|start| (start, start + pattern.len()))
+    })
 }
 
 /// Verify a compiled regex against raw file bytes.
@@ -36,14 +42,7 @@ pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch>
     if is_binary(content) {
         return Vec::new(); // skip binary files
     }
-    collect_line_matches(path, content, |line| {
-        // Convert bytes to str; skip lines that are not valid UTF-8.
-        if let Ok(s) = std::str::from_utf8(line) {
-            re.find(s).map(|m| m.start())
-        } else {
-            None
-        }
-    })
+    collect_line_matches(path, content, |line| re.find(line).map(|m| (m.start(), m.end())))
 }
 
 /// Iterate `content` line by line, calling `predicate` on each line's bytes.
@@ -52,37 +51,21 @@ pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch>
 fn collect_line_matches(
     path: &Path,
     content: &[u8],
-    mut predicate: impl FnMut(&[u8]) -> Option<usize>,
+    mut predicate: impl FnMut(&[u8]) -> Option<(usize, usize)>,
 ) -> Vec<SearchMatch> {
     let mut matches = Vec::new();
-    let mut line_num: u32 = 1;
-    let mut line_start: usize = 0;
-
-    for i in 0..=content.len() {
-        let is_end = i == content.len();
-        let is_newline = !is_end && content[i] == b'\n';
-
-        if is_newline || is_end {
-            let line_end = if is_newline && i > line_start && content[i - 1] == b'\r' {
-                i - 1 // strip \r from \r\n
-            } else {
-                i
-            };
-            let line = &content[line_start..line_end];
-
-            if let Some(match_start) = predicate(line) {
-                matches.push(SearchMatch {
-                    path: path.to_path_buf(),
-                    line_number: line_num,
-                    line_content: String::from_utf8_lossy(line).into_owned(),
-                    byte_offset: (line_start + match_start) as u64,
-                });
-            }
-
-            line_num += 1;
-            line_start = i + 1;
+    for_each_line(content, |line_num, line_start, line| {
+        if let Some((match_start, match_end)) = predicate(line) {
+            matches.push(SearchMatch {
+                path: path.to_path_buf(),
+                line_number: line_num,
+                line_content: line.to_vec(),
+                byte_offset: (line_start + match_start) as u64,
+                submatch_start: match_start,
+                submatch_end: match_end,
+            });
         }
-    }
+    });
 
     matches
 }
@@ -96,6 +79,8 @@ mod tests {
         let matches = verify_literal("needle", Path::new("file.txt"), b"prefix needle suffix\n");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].byte_offset, 7);
+        assert_eq!(matches[0].submatch_start, 7);
+        assert_eq!(matches[0].submatch_end, 13);
     }
 
     #[test]
@@ -104,6 +89,8 @@ mod tests {
         let matches = verify_regex(&re, Path::new("file.txt"), b"prefix needle suffix\n");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].byte_offset, 7);
+        assert_eq!(matches[0].submatch_start, 7);
+        assert_eq!(matches[0].submatch_end, 13);
     }
 
     #[test]
@@ -112,6 +99,16 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line_number, 2);
         assert_eq!(matches[0].byte_offset, 9);
-        assert_eq!(matches[0].line_content, "two needle");
+        assert_eq!(matches[0].line_content, b"two needle");
+    }
+
+    #[test]
+    fn regex_matches_invalid_utf8_line_bytes() {
+        let re = Regex::new(r"(?-u)\xFF").unwrap();
+        let matches = verify_regex(&re, Path::new("file.bin"), b"prefix\xFFsuffix\n");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_content, b"prefix\xFFsuffix");
+        assert_eq!(matches[0].submatch_start, 6);
+        assert_eq!(matches[0].submatch_end, 7);
     }
 }

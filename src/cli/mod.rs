@@ -377,14 +377,18 @@ mod tests {
             crate::SearchMatch {
                 path: std::path::PathBuf::from("sample.rs"),
                 line_number: 3,
-                line_content: "target_token line 3".to_string(),
+                line_content: b"target_token line 3".to_vec(),
                 byte_offset: 0,
+                submatch_start: 0,
+                submatch_end: "target_token".len(),
             },
             crate::SearchMatch {
                 path: std::path::PathBuf::from("sample.rs"),
                 line_number: 18,
-                line_content: "target_token line 18".to_string(),
+                line_content: b"target_token line 18".to_vec(),
                 byte_offset: 0,
+                submatch_start: 0,
+                submatch_end: "target_token".len(),
             },
         ];
 
@@ -401,7 +405,7 @@ mod tests {
         };
 
         let mut buf = Vec::<u8>::new();
-        super::render::render_with_context_to(&config, &matches, &args, &mut buf);
+        super::render::render_with_context_to(&config, &matches, &args, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
 
         // Should contain a -- separator between the two non-contiguous context blocks.
@@ -424,8 +428,10 @@ mod tests {
         let m = crate::SearchMatch {
             path: std::path::PathBuf::from("src/foo.rs"),
             line_number: 5,
-            line_content: "fn foo() {}".to_string(),
+            line_content: b"fn foo() {}".to_vec(),
             byte_offset: 3,
+            submatch_start: 3,
+            submatch_end: 6,
         };
         let line = super::render::format_match_json(&m);
         let parsed: serde_json::Value = serde_json::from_str(&line).expect("must be valid JSON");

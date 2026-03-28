@@ -4,6 +4,7 @@
 //! Nothing here is visible to queries until `commit_batch()` drains this buffer.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use roaring::RoaringBitmap;
@@ -39,19 +40,19 @@ impl PendingEdits {
 
     /// Buffer a file change. NOT visible to queries until `commit_batch()`.
     /// Only records the path; file content is read at commit time.
-    pub fn notify_change(&self, path: &str) {
+    pub fn notify_change(&self, path: &Path) {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         state.uncommitted.push(super::overlay::FileEdit {
-            path: path.to_owned(),
+            path: path.to_path_buf(),
             kind: EditKind::Changed,
         });
     }
 
     /// Buffer a file deletion. NOT visible to queries until `commit_batch()`.
-    pub fn notify_delete(&self, path: &str) {
+    pub fn notify_delete(&self, path: &Path) {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         state.uncommitted.push(super::overlay::FileEdit {
-            path: path.to_owned(),
+            path: path.to_path_buf(),
             kind: EditKind::Deleted,
         });
     }
@@ -66,8 +67,8 @@ impl PendingEdits {
 
         // Deduplicate uncommitted into changed/deleted sets.
         // A file changed then deleted counts as deleted only.
-        let mut newly_changed: HashSet<String> = HashSet::new();
-        let mut newly_deleted: HashSet<String> = HashSet::new();
+        let mut newly_changed: HashSet<PathBuf> = HashSet::new();
+        let mut newly_deleted: HashSet<PathBuf> = HashSet::new();
         for edit in state.uncommitted.drain(..) {
             match edit.kind {
                 EditKind::Changed => {
@@ -109,9 +110,9 @@ impl PendingEdits {
 /// Result of draining uncommitted edits from `PendingEdits`.
 pub struct TakeResult {
     /// Paths changed since the last `commit_batch()`.
-    pub newly_changed: HashSet<String>,
+    pub newly_changed: HashSet<PathBuf>,
     /// Paths deleted since the last `commit_batch()`.
-    pub newly_deleted: HashSet<String>,
+    pub newly_deleted: HashSet<PathBuf>,
 }
 
 /// Compute the delete_set: base doc_ids that are invalidated by overlay
@@ -121,9 +122,9 @@ pub struct TakeResult {
 /// for the current delta only. The base is immutable between full builds, so
 /// the delete_set is monotonically growing and this is always correct.
 pub fn compute_delete_set(
-    base_path_doc_ids: &HashMap<String, Vec<u32>>,
-    modified_paths: &HashSet<String>,
-    deleted_paths: &HashSet<String>,
+    base_path_doc_ids: &HashMap<PathBuf, Vec<u32>>,
+    modified_paths: &HashSet<PathBuf>,
+    deleted_paths: &HashSet<PathBuf>,
     prev: &RoaringBitmap,
 ) -> RoaringBitmap {
     let mut delete_set = prev.clone();
@@ -146,8 +147,8 @@ mod tests {
     #[test]
     fn reset_clears_uncommitted() {
         let pe = PendingEdits::new();
-        pe.notify_change("a.rs");
-        pe.notify_change("b.rs");
+        pe.notify_change(Path::new("a.rs"));
+        pe.notify_change(Path::new("b.rs"));
         pe.reset();
         assert_eq!(pe.uncommitted_count(), 0, "reset() must clear uncommitted");
     }
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn take_for_commit_after_reset_returns_empty() {
         let pe = PendingEdits::new();
-        pe.notify_change("a.rs");
+        pe.notify_change(Path::new("a.rs"));
         pe.reset();
         let result = pe.take_for_commit();
         assert!(result.newly_changed.is_empty());
@@ -164,22 +165,22 @@ mod tests {
 
     #[test]
     fn compute_delete_set_is_incremental() {
-        let mut base: HashMap<String, Vec<u32>> = HashMap::new();
-        base.insert("a.rs".to_owned(), vec![1]);
-        base.insert("b.rs".to_owned(), vec![2]);
-        base.insert("c.rs".to_owned(), vec![3]);
+        let mut base: HashMap<PathBuf, Vec<u32>> = HashMap::new();
+        base.insert(PathBuf::from("a.rs"), vec![1]);
+        base.insert(PathBuf::from("b.rs"), vec![2]);
+        base.insert(PathBuf::from("c.rs"), vec![3]);
 
         // First commit: only a.rs changed.
         let prev = RoaringBitmap::new();
-        let changed: HashSet<String> = ["a.rs".to_owned()].into();
-        let deleted: HashSet<String> = HashSet::new();
+        let changed: HashSet<PathBuf> = [PathBuf::from("a.rs")].into();
+        let deleted: HashSet<PathBuf> = HashSet::new();
         let ds1 = compute_delete_set(&base, &changed, &deleted, &prev);
         assert!(ds1.contains(1));
         assert!(!ds1.contains(2));
 
         // Second commit: b.rs deleted. Previous delete_set carried forward.
-        let changed2: HashSet<String> = HashSet::new();
-        let deleted2: HashSet<String> = ["b.rs".to_owned()].into();
+        let changed2: HashSet<PathBuf> = HashSet::new();
+        let deleted2: HashSet<PathBuf> = [PathBuf::from("b.rs")].into();
         let ds2 = compute_delete_set(&base, &changed2, &deleted2, &ds1);
         assert!(ds2.contains(1), "a.rs entry must persist");
         assert!(ds2.contains(2), "b.rs entry must be added");

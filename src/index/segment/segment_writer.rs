@@ -13,6 +13,7 @@ use uuid::Uuid;
 use xxhash_rust::xxh64::xxh64;
 
 use super::{DocEntry, SegmentMeta, FORMAT_VERSION, HEADER_SIZE, MAGIC, PAGE_SIZE};
+use crate::path_util::path_bytes;
 use crate::posting::{roaring_util, varint_encode, ROARING_THRESHOLD};
 
 // ---------------------------------------------------------------------------
@@ -64,12 +65,12 @@ impl SegmentWriter {
     }
 
     /// Add a document to the segment.
-    pub fn add_document(&mut self, doc_id: u32, path: &str, content_hash: u64, size_bytes: u64) {
+    pub fn add_document(&mut self, doc_id: u32, path: &Path, content_hash: u64, size_bytes: u64) {
         self.docs.push(DocEntry {
             doc_id,
             content_hash,
             size_bytes,
-            path: path.to_owned(),
+            path: path.to_path_buf(),
         });
     }
 
@@ -197,7 +198,8 @@ impl SegmentWriter {
             buf.extend_from_slice(&doc.doc_id.to_le_bytes());
             buf.extend_from_slice(&doc.content_hash.to_le_bytes());
             buf.extend_from_slice(&doc.size_bytes.to_le_bytes());
-            let pb = doc.path.as_bytes();
+            let path_bytes = path_bytes(&doc.path);
+            let pb = path_bytes.as_ref();
             // Security: reject paths that exceed the u16 length prefix to
             // prevent silent truncation causing wrong-file attribution.
             let path_len = u16::try_from(pb.len()).map_err(|_| {
@@ -206,7 +208,7 @@ impl SegmentWriter {
                     format!(
                         "path exceeds u16::MAX bytes ({}): {}",
                         pb.len(),
-                        doc.path
+                        doc.path.display()
                     ),
                 )
             })?;

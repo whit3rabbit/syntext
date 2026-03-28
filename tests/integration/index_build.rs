@@ -33,18 +33,18 @@ fn build_creates_segment_with_valid_rplx_header() {
     let config = make_config(&index_dir);
     Index::build(config).expect("build should succeed");
 
-    // At least one .seg file must exist.
-    let seg_files: Vec<_> = std::fs::read_dir(index_dir.path())
+    // At least one .dict file must exist for the v3 split segment format.
+    let dict_files: Vec<_> = std::fs::read_dir(index_dir.path())
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|x| x == "seg").unwrap_or(false))
+        .filter(|e| e.path().extension().map(|x| x == "dict").unwrap_or(false))
         .collect();
-    assert!(!seg_files.is_empty(), "no segment files created");
+    assert!(!dict_files.is_empty(), "no dictionary segment files created");
 
     // Every segment must pass integrity checks (magic, version, checksum).
-    for seg_file in &seg_files {
-        MmapSegment::open(&seg_file.path())
-            .unwrap_or_else(|e| panic!("segment {:?} failed to open: {e}", seg_file.path()));
+    for dict_file in &dict_files {
+        MmapSegment::open(&dict_file.path())
+            .unwrap_or_else(|e| panic!("segment {:?} failed to open: {e}", dict_file.path()));
     }
 }
 
@@ -74,7 +74,7 @@ fn gitignored_file_not_indexed() {
         .path_index
         .paths
         .iter()
-        .any(|p| p.contains("build/output.txt") || p.contains("build\\output.txt"));
+        .any(|p| p == std::path::Path::new("build/output.txt"));
     assert!(
         !found,
         "gitignored file appeared in index: build/output.txt"
@@ -109,11 +109,19 @@ fn binary_file_skipped() {
     let snap = idx.snapshot();
 
     // The binary file must not appear in the path index.
-    let has_binary = snap.path_index.paths.iter().any(|p| p.contains("data.bin"));
+    let has_binary = snap
+        .path_index
+        .paths
+        .iter()
+        .any(|p| p == std::path::Path::new("data.bin"));
     assert!(!has_binary, "binary file appeared in index");
 
     // The text file must be indexed.
-    let has_text = snap.path_index.paths.iter().any(|p| p.contains("hello.rs"));
+    let has_text = snap
+        .path_index
+        .paths
+        .iter()
+        .any(|p| p == std::path::Path::new("src/hello.rs"));
     assert!(has_text, "text file not indexed");
 }
 

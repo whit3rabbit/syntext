@@ -216,7 +216,13 @@ fn path_index_tracks_incremental_visible_paths() {
     index.commit_batch().unwrap();
 
     let snap = index.snapshot();
-    assert!(!snap.path_index.paths.iter().any(|p| p == "src/lib.rs"));
+    assert!(
+        !snap
+            .path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("src/lib.rs"))
+    );
 }
 
 /// Adding a new file makes it searchable after commit.
@@ -383,7 +389,11 @@ fn binary_file_added_during_commit_is_not_indexed() {
 
     let snap = index.snapshot();
     assert!(
-        !snap.path_index.paths.iter().any(|p| p == "src/data.bin"),
+        !snap
+            .path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("src/data.bin")),
         "binary file should not appear in the path index after incremental commit"
     );
 }
@@ -403,7 +413,11 @@ fn text_file_changed_to_binary_is_removed_from_visible_index() {
 
     let snap = index.snapshot();
     assert!(
-        !snap.path_index.paths.iter().any(|p| p == "src/main.rs"),
+        !snap
+            .path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("src/main.rs")),
         "binary replacement should remove the path from the visible path index"
     );
 

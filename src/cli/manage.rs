@@ -1,6 +1,7 @@
 //! Management subcommand handlers: index, status, update.
 
 use std::collections::HashSet;
+use std::io::{self, Write};
 
 use crate::index::Index;
 use crate::Config;
@@ -24,9 +25,14 @@ pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bo
 
     if stats {
         let s = index.stats();
-        println!("Documents: {}", s.total_documents);
-        println!("Segments:  {}", s.total_segments);
-        println!("Grams:     {}", s.total_grams);
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        if let Err(err) = writeln!(out, "Documents: {}", s.total_documents)
+            .and_then(|_| writeln!(out, "Segments:  {}", s.total_segments))
+            .and_then(|_| writeln!(out, "Grams:     {}", s.total_grams))
+        {
+            return handle_output(err);
+        }
     }
     0
 }
@@ -50,14 +56,25 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
             "grams": s.total_grams,
             "index_dir": config.index_dir.display().to_string(),
         });
-        println!("{obj}");
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        if let Err(err) = writeln!(out, "{obj}") {
+            return handle_output(err);
+        }
     } else {
-        println!("Index:     {}", config.index_dir.display());
-        println!("Documents: {}", s.total_documents);
-        println!("Segments:  {}", s.total_segments);
-        println!("Grams:     {}", s.total_grams);
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        if let Err(err) = writeln!(out, "Index:     {}", config.index_dir.display())
+            .and_then(|_| writeln!(out, "Documents: {}", s.total_documents))
+            .and_then(|_| writeln!(out, "Segments:  {}", s.total_segments))
+            .and_then(|_| writeln!(out, "Grams:     {}", s.total_grams))
+        {
+            return handle_output(err);
+        }
         if let Some(ref commit) = s.base_commit {
-            println!("Commit:    {commit}");
+            if let Err(err) = writeln!(out, "Commit:    {commit}") {
+                return handle_output(err);
+            }
         }
     }
     0
@@ -123,7 +140,11 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
 
     if changed.is_empty() {
         if !quiet {
-            println!("st: no changes detected");
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            if let Err(err) = writeln!(out, "st: no changes detected") {
+                return handle_output(err);
+            }
         }
         return 0;
     }
@@ -155,7 +176,20 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     }
 
     if !quiet {
-        println!("st: updated {} file(s)", count);
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        if let Err(err) = writeln!(out, "st: updated {} file(s)", count) {
+            return handle_output(err);
+        }
     }
     if notify_errors > 0 { 1 } else { 0 }
+}
+
+fn handle_output(err: io::Error) -> i32 {
+    if err.kind() == io::ErrorKind::BrokenPipe {
+        0
+    } else {
+        eprintln!("st: {err}");
+        2
+    }
 }

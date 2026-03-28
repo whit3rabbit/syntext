@@ -30,6 +30,7 @@ const MAX_LITERAL_VARIANTS: usize = 16;
 pub fn decompose(pattern: &str, case_insensitive: bool) -> Result<GramQuery, String> {
     let hir = regex_syntax::ParserBuilder::new()
         .case_insensitive(case_insensitive)
+        .utf8(false)
         .build()
         .parse(pattern)
         .map_err(|e| e.to_string())?;
@@ -164,4 +165,26 @@ fn concat_variants(left: Vec<Vec<u8>>, right: Vec<Vec<u8>>, limit: usize) -> Opt
         }
     }
     Some(combined)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decompose_accepts_patterns_that_can_match_invalid_utf8() {
+        let query = decompose(r"(?-u)\xFFneedle\x80", false).expect("byte regex should parse");
+        assert!(!matches!(query, GramQuery::None));
+    }
+
+    #[test]
+    fn optional_prefix_does_not_force_required_grams() {
+        let optional = decompose(r"(foo)?needle", false)
+            .expect("regex should parse")
+            .simplify();
+        let plain = decompose(r"needle", false)
+            .expect("regex should parse")
+            .simplify();
+        assert_eq!(format!("{optional:?}"), format!("{plain:?}"));
+    }
 }

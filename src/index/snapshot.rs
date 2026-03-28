@@ -7,6 +7,7 @@
 //! and delete set.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use roaring::RoaringBitmap;
@@ -22,9 +23,9 @@ pub struct BaseSegments {
     /// Global doc_id offsets for each segment.
     pub base_ids: Vec<u32>,
     /// Global base doc_id -> repository-relative path.
-    pub base_doc_paths: Vec<String>,
+    pub base_doc_paths: Vec<PathBuf>,
     /// Repository-relative path -> all base doc_ids for that path.
-    pub path_doc_ids: HashMap<String, Vec<u32>>,
+    pub path_doc_ids: HashMap<PathBuf, Vec<u32>>,
 }
 
 /// A consistent point-in-time view of the index for querying.
