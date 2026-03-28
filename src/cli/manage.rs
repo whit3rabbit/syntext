@@ -4,6 +4,7 @@ use crate::index::Index;
 use crate::Config;
 
 pub(super) fn cmd_index(mut config: Config, force: bool, stats: bool, quiet: bool) -> i32 {
+    // Index::build always rebuilds; --force is redundant but accepted for rg/ug compat.
     let _ = force;
     // --quiet suppresses library progress output; default CLI behavior is verbose.
     if quiet {

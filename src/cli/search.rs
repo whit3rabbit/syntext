@@ -84,7 +84,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let has_context = args.after_context > 0 || args.before_context > 0;
 
     if args.json {
-        super::render::render_json(&config, &results);
+        super::render::render_json(&config, &results, args);
     } else if has_context {
         super::render::render_with_context(&config, &results, args);
     } else if args.heading {

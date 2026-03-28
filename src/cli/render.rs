@@ -47,7 +47,7 @@ pub(super) fn render_invert_match(
     // as candidates (files containing the pattern). When the pattern appears in no
     // files, this returns exit 1 with no output. True corpus-wide invert-match would
     // require walking all indexed files regardless of candidate set, which is a
-    // known v1 limitation. See plan docs/superpowers/plans/2026-03-27-rg-compatible-cli.md.
+    // known v1 limitation.
     use std::collections::BTreeSet;
     use std::io::BufRead;
 
@@ -114,7 +114,7 @@ pub(super) fn render_with_context(
     render_flat(matches, args);
 }
 
-// Stub -- will be filled in Task 5
-pub(super) fn render_json(_config: &Config, _matches: &[crate::SearchMatch]) {
-    // TODO: implement in Task 5
+// Task 5 not yet implemented: fall back to flat output.
+pub(super) fn render_json(_config: &Config, matches: &[crate::SearchMatch], args: &SearchArgs) {
+    render_flat(matches, args);
 }

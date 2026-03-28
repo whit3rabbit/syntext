@@ -210,6 +210,7 @@ pub fn run() -> i32 {
                 }
             };
             let ctx = cli.context.unwrap_or(0);
+            // no_heading is the default behavior; this flag exists for rg compatibility.
             let search_args = SearchArgs {
                 pattern,
                 paths: cli.paths,
