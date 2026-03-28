@@ -158,6 +158,19 @@ impl SegmentWriter {
     /// Build the on-disk byte representation. Returns `(bytes, doc_count, gram_count)`.
     fn serialize(&mut self) -> io::Result<(Vec<u8>, u32, u32)> {
         self.docs.sort_by_key(|d| d.doc_id);
+
+        // Validate that doc_ids are strictly increasing after sort.
+        // Duplicates or gaps would corrupt the positional doc table index used by get_doc().
+        if let Some(w) = self.docs.windows(2).find(|w| w[0].doc_id >= w[1].doc_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "duplicate or non-increasing doc_ids: {} followed by {}",
+                    w[0].doc_id, w[1].doc_id
+                ),
+            ));
+        }
+
         self.postings.sort_unstable();
         self.postings.dedup();
 
@@ -637,5 +650,17 @@ mod tests {
             !integrity_ok || !doc_ok,
             "at least one path should detect corruption on cooperative OSes"
         );
+    }
+
+    #[test]
+    fn add_document_rejects_duplicate_doc_ids() {
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, "a.rs", 1, 10);
+        writer.add_document(1, "b.rs", 2, 20);
+        // Duplicate id=1 should be caught during serialize.
+        writer.add_document(1, "c.rs", 3, 30);
+        let tmp = NamedTempFile::new().unwrap();
+        let result = writer.write_to_file(tmp.path());
+        assert!(result.is_err(), "duplicate doc_id must be rejected");
     }
 }
