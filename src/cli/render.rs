@@ -105,7 +105,7 @@ pub(super) fn render_invert_match(
     if found_any { 0 } else { 1 }
 }
 
-/// Print matches with surrounding context lines.
+/// Print matches with surrounding context lines to stdout.
 ///
 /// Lines from context (not the match itself) use `-` as the separator; match lines use `:`.
 /// Blocks separated by a gap in line numbers emit a `--` context separator.
@@ -113,6 +113,21 @@ pub(super) fn render_with_context(
     config: &Config,
     matches: &[crate::SearchMatch],
     args: &SearchArgs,
+) {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    render_with_context_to(config, matches, args, &mut out);
+}
+
+/// Write matches with surrounding context lines to any writer (used for testing).
+///
+/// Lines from context (not the match itself) use `-` as the separator; match lines use `:`.
+/// Blocks separated by a gap in line numbers emit a `--` context separator.
+pub(super) fn render_with_context_to(
+    config: &Config,
+    matches: &[crate::SearchMatch],
+    args: &SearchArgs,
+    out: &mut dyn std::io::Write,
 ) {
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::BufRead;
@@ -159,7 +174,7 @@ pub(super) fn render_with_context(
 
         // Print a file-level separator between files (rg behavior: -- between files too).
         if !first_file {
-            println!("--");
+            let _ = writeln!(out, "--");
         }
         first_file = false;
 
@@ -168,7 +183,7 @@ pub(super) fn render_with_context(
             // Gap separator between non-contiguous context blocks.
             if let Some(p) = prev {
                 if idx > p + 1 {
-                    println!("--");
+                    let _ = writeln!(out, "--");
                 }
             }
 
@@ -178,13 +193,13 @@ pub(super) fn render_with_context(
             let sep = if is_match { ':' } else { '-' };
 
             if args.no_filename && args.no_line_number {
-                println!("{content}");
+                let _ = writeln!(out, "{content}");
             } else if args.no_filename {
-                println!("{line_num}{sep}{content}");
+                let _ = writeln!(out, "{line_num}{sep}{content}");
             } else if args.no_line_number {
-                println!("{rel_path_str}{sep}{content}");
+                let _ = writeln!(out, "{rel_path_str}{sep}{content}");
             } else {
-                println!("{rel_path_str}{sep}{line_num}{sep}{content}");
+                let _ = writeln!(out, "{rel_path_str}{sep}{line_num}{sep}{content}");
             }
 
             prev = Some(idx);

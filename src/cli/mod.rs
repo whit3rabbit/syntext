@@ -355,11 +355,11 @@ mod tests {
     }
 
     #[test]
-    fn render_with_context_does_not_panic_with_two_matches() {
+    fn render_with_context_emits_separator_between_blocks() {
         use std::fs;
         let dir = tempfile::TempDir::new().unwrap();
 
-        // 20-line file; matches on lines 3 and 18.
+        // 20-line file; matches on lines 3 and 18 (far enough apart that context=2 creates two separate blocks).
         let content: String = (1..=20)
             .map(|i| {
                 if i == 3 || i == 18 {
@@ -413,8 +413,24 @@ mod tests {
             type_not: None,
             glob: None,
         };
-        // Should not panic.
-        super::render::render_with_context(&config, &matches, &args);
+
+        let mut buf = Vec::<u8>::new();
+        super::render::render_with_context_to(&config, &matches, &args, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        // Should contain a -- separator between the two non-contiguous context blocks.
+        // Block 1: lines 1-5 (around match at line 3)
+        // Block 2: lines 16-20 (around match at line 18)
+        // Gap between: lines 6-15 are not printed.
+        assert!(output.contains("--\n"), "Expected '--' separator between context blocks, got:\n{output}");
+
+        // Match lines should use ':' separator.
+        assert!(output.contains(":target_token line 3"), "Expected ':' for match line");
+        assert!(output.contains(":target_token line 18"), "Expected ':' for match line");
+
+        // Context lines should use '-' separator.
+        assert!(output.contains("-other line 1") || output.contains("-other line 2"),
+            "Expected '-' for context lines before first match");
     }
 
     #[test]
