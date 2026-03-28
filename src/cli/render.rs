@@ -105,13 +105,91 @@ pub(super) fn render_invert_match(
     if found_any { 0 } else { 1 }
 }
 
-// Task 4 not yet implemented: fall back to flat output until context rendering is added.
+/// Print matches with surrounding context lines.
+///
+/// Lines from context (not the match itself) use `-` as the separator; match lines use `:`.
+/// Blocks separated by a gap in line numbers emit a `--` context separator.
 pub(super) fn render_with_context(
-    _config: &Config,
+    config: &Config,
     matches: &[crate::SearchMatch],
     args: &SearchArgs,
 ) {
-    render_flat(matches, args);
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::io::BufRead;
+
+    // Group match line numbers by relative path string.
+    let mut by_file: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    for m in matches {
+        by_file
+            .entry(m.path.to_string_lossy().into_owned())
+            .or_default()
+            .push(m.line_number);
+    }
+
+    let before = args.before_context;
+    let after = args.after_context;
+
+    let mut first_file = true;
+    for (rel_path_str, match_lines) in &by_file {
+        let abs_path = config.repo_root.join(rel_path_str);
+
+        let file_lines: Vec<String> = match std::fs::File::open(&abs_path) {
+            Ok(f) => std::io::BufReader::new(f)
+                .lines()
+                .map(|l| l.unwrap_or_default())
+                .collect(),
+            Err(_) => continue,
+        };
+
+        // Set of 0-based line indices that are direct matches.
+        let match_set: BTreeSet<usize> = match_lines
+            .iter()
+            .map(|&n| (n as usize).saturating_sub(1))
+            .collect();
+
+        // Union of all context windows around each match.
+        let mut to_print: BTreeSet<usize> = BTreeSet::new();
+        for &mi in &match_set {
+            let start = mi.saturating_sub(before);
+            let end = (mi + after).min(file_lines.len().saturating_sub(1));
+            for i in start..=end {
+                to_print.insert(i);
+            }
+        }
+
+        // Print a file-level separator between files (rg behavior: -- between files too).
+        if !first_file {
+            println!("--");
+        }
+        first_file = false;
+
+        let mut prev: Option<usize> = None;
+        for &idx in &to_print {
+            // Gap separator between non-contiguous context blocks.
+            if let Some(p) = prev {
+                if idx > p + 1 {
+                    println!("--");
+                }
+            }
+
+            let line_num = idx + 1;
+            let content = file_lines.get(idx).map(String::as_str).unwrap_or("");
+            let is_match = match_set.contains(&idx);
+            let sep = if is_match { ':' } else { '-' };
+
+            if args.no_filename && args.no_line_number {
+                println!("{content}");
+            } else if args.no_filename {
+                println!("{line_num}{sep}{content}");
+            } else if args.no_line_number {
+                println!("{rel_path_str}{sep}{content}");
+            } else {
+                println!("{rel_path_str}{sep}{line_num}{sep}{content}");
+            }
+
+            prev = Some(idx);
+        }
+    }
 }
 
 // Task 5 not yet implemented: fall back to flat output.

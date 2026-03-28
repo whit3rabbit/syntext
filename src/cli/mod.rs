@@ -355,6 +355,69 @@ mod tests {
     }
 
     #[test]
+    fn render_with_context_does_not_panic_with_two_matches() {
+        use std::fs;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // 20-line file; matches on lines 3 and 18.
+        let content: String = (1..=20)
+            .map(|i| {
+                if i == 3 || i == 18 {
+                    format!("target_token line {i}\n")
+                } else {
+                    format!("other line {i}\n")
+                }
+            })
+            .collect();
+        let path = dir.path().join("sample.rs");
+        fs::write(&path, &content).unwrap();
+
+        let matches = vec![
+            crate::SearchMatch {
+                path: std::path::PathBuf::from("sample.rs"),
+                line_number: 3,
+                line_content: "target_token line 3".to_string(),
+                byte_offset: 0,
+            },
+            crate::SearchMatch {
+                path: std::path::PathBuf::from("sample.rs"),
+                line_number: 18,
+                line_content: "target_token line 18".to_string(),
+                byte_offset: 0,
+            },
+        ];
+
+        let config = Config {
+            repo_root: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let args = super::search::SearchArgs {
+            pattern: "target_token".to_string(),
+            paths: vec![],
+            fixed_strings: false,
+            ignore_case: false,
+            word_regexp: false,
+            invert_match: false,
+            files_with_matches: false,
+            count: false,
+            max_count: None,
+            quiet: false,
+            json: false,
+            heading: false,
+            no_line_number: false,
+            no_filename: false,
+            after_context: 2,
+            before_context: 2,
+            file_type: None,
+            type_not: None,
+            glob: None,
+        };
+        // Should not panic.
+        super::render::render_with_context(&config, &matches, &args);
+    }
+
+    #[test]
     fn cmd_update_on_repo_with_no_commits() {
         let repo = tempfile::TempDir::new().unwrap();
         let index_dir = tempfile::TempDir::new().unwrap();
