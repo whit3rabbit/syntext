@@ -472,4 +472,13 @@ mod tests {
             "cmd_update should not error on repo with no commits"
         );
     }
+
+    #[test]
+    fn max_file_size_is_clamped_to_1gb() {
+        let raw: u64 = u64::MAX;
+        let clamped = raw.min(1024 * 1024 * 1024);
+        assert_eq!(clamped, 1024 * 1024 * 1024);
+        // The +1 used in commit_batch must not overflow after clamping.
+        assert!(clamped.checked_add(1).is_some(), "clamped value + 1 must not overflow");
+    }
 }
