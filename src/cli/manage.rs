@@ -6,6 +6,24 @@ use std::io::{self, Write};
 use crate::index::Index;
 use crate::Config;
 
+/// Resolves the absolute path to the `git` binary by walking PATH entries.
+///
+/// Using `Command::new("git")` would resolve via `$PATH`, allowing a
+/// malicious `git` binary earlier on PATH to intercept the call.
+/// This function walks PATH explicitly and falls back to `/usr/bin/git`
+/// rather than a bare name.
+fn resolve_git_binary() -> std::path::PathBuf {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("git");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    std::path::PathBuf::from("/usr/bin/git")
+}
+
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
     // Index::build always rebuilds; --force is accepted for rg/ug compat.
     // --quiet suppresses library progress output; default CLI behavior is verbose.
@@ -116,7 +134,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // Detect changed files via git diff against HEAD.
     // This fails on repos with no commits, which is fine -- we fall through
     // to untracked file detection below.
-    if let Ok(diff_output) = std::process::Command::new("git")
+    if let Ok(diff_output) = std::process::Command::new(resolve_git_binary())
         .arg("-C")
         .arg(&canonical_root)
         .args(["diff", "--name-only", "HEAD"])
@@ -135,7 +153,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
 
     // Pick up staged changes (covers initial commit scenario where HEAD
     // doesn't exist yet).
-    if let Ok(staged_output) = std::process::Command::new("git")
+    if let Ok(staged_output) = std::process::Command::new(resolve_git_binary())
         .arg("-C")
         .arg(&canonical_root)
         .args(["diff", "--name-only", "--cached"])
@@ -148,7 +166,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     }
 
     // Pick up new untracked files that git-diff doesn't report.
-    if let Ok(ut_output) = std::process::Command::new("git")
+    if let Ok(ut_output) = std::process::Command::new(resolve_git_binary())
         .arg("-C")
         .arg(&canonical_root)
         .args(["ls-files", "--others", "--exclude-standard"])
@@ -213,5 +231,16 @@ fn handle_output(err: io::Error) -> i32 {
     } else {
         eprintln!("st: {err}");
         2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_git_binary;
+
+    #[test]
+    fn git_binary_resolves_to_absolute_path() {
+        let path = resolve_git_binary();
+        assert!(path.is_absolute(), "git binary must resolve to absolute path, got: {:?}", path);
     }
 }
