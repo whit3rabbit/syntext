@@ -28,6 +28,9 @@ use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use xxhash_rust::xxh64::xxh64;
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 use crate::index::manifest::{Manifest, SegmentRef};
 use crate::index::overlay::{compute_delete_set, OverlayView, PendingEdits};
 use crate::index::segment::{MmapSegment, SegmentWriter};
@@ -71,12 +74,15 @@ fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
         .map(|i| indexed_paths[(i * stride).min(total - 1)].as_str())
         .collect();
 
-    let t0 = std::time::Instant::now();
-    let docs_read: usize = sample_paths
-        .iter()
-        .filter(|p| std::fs::read(config.repo_root.join(p)).is_ok())
-        .count();
-    let scan_elapsed_ns = t0.elapsed().as_nanos() as u64;
+    let mut docs_read = 0usize;
+    let mut scan_elapsed_ns = 0u64;
+    for path in &sample_paths {
+        let t0 = std::time::Instant::now();
+        if std::fs::read(config.repo_root.join(path)).is_ok() {
+            docs_read += 1;
+            scan_elapsed_ns += t0.elapsed().as_nanos() as u64;
+        }
+    }
 
     if docs_read == 0 || scan_elapsed_ns == 0 {
         return DEFAULT;
@@ -116,6 +122,31 @@ fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
     //   threshold = scan_ns_per_doc / (scan_ns_per_doc + posting_ns_per_entry)
     let threshold = scan_ns_per_doc as f64 / (scan_ns_per_doc + posting_ns_per_entry) as f64;
     threshold.clamp(0.01, 0.50)
+}
+
+#[cfg(unix)]
+fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(target_os = "linux")]
+    const O_NOFOLLOW_FLAG: i32 = 0o400000;
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    const O_NOFOLLOW_FLAG: i32 = 0x100;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW_FLAG)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
 }
 
 /// Shared base segments (Arc-shared across snapshot swaps).
@@ -404,8 +435,10 @@ impl Index {
                                     let file_id = indexed_paths
                                         .iter()
                                         .position(|p| p == rel_path)
-                                        .unwrap_or(0) as u32;
-                                    if let Err(e) = sym_idx.index_file(file_id, rel_path, &content) {
+                                        .unwrap_or(0)
+                                        as u32;
+                                    if let Err(e) = sym_idx.index_file(file_id, rel_path, &content)
+                                    {
                                         if config.verbose {
                                             eprintln!(
                                                 "ripline: warning: symbol index failed for {rel_path}: {e}"
@@ -571,7 +604,13 @@ impl Index {
             }
             // Symbol index not built — fall through to content search.
         }
-        crate::search::search(self.snapshot(), &self.config, &self.canonical_root, pattern, opts)
+        crate::search::search(
+            self.snapshot(),
+            &self.config,
+            &self.canonical_root,
+            pattern,
+            opts,
+        )
     }
 
     /// Expose the current snapshot for use by the search layer.
@@ -636,7 +675,7 @@ impl Index {
             // Enforce the same max_file_size limit used during full builds.
             // Use bounded read to eliminate TOCTOU race: file can grow between
             // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
-            let file = std::fs::File::open(&resolved)?;
+            let file = open_readonly_nofollow(&resolved)?;
             let mut reader = file.take(self.config.max_file_size + 1);
             let mut content: Vec<u8> = Vec::new();
             reader.read_to_end(&mut content)?;
@@ -667,7 +706,7 @@ impl Index {
             new_files,
             &visible_changed,
             &removed_paths,
-        );
+        )?;
 
         // Enforce hard overlay size limit. At > 50% of base docs the clone
         // cost in build_incremental_delta becomes significant. Return OverlayFull
@@ -860,6 +899,49 @@ mod tests {
         assert!(
             matches!(result, Err(IndexError::PathOutsideRepo(_))),
             "commit_batch must reject symlinks that escape the repo root, got: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_batch_accepts_symlink_target_inside_repo() {
+        use std::os::unix::fs::symlink;
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..4 {
+            std::fs::write(
+                repo.path().join(format!("base_{i}.rs")),
+                format!("fn base_{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        let real = repo.path().join("real.rs");
+        std::fs::write(&real, b"fn original() {}\n").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        let link = repo.path().join("alias.rs");
+        symlink(&real, &link).unwrap();
+        std::fs::write(&real, b"fn alias_visible() {}\n").unwrap();
+
+        index.notify_change(&link).unwrap();
+        index.commit_batch().unwrap();
+
+        let matches = index
+            .search("alias_visible", &SearchOptions::default())
+            .unwrap();
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.path.to_string_lossy() == "alias.rs"),
+            "symlink inside repo should remain indexable through commit_batch"
         );
     }
 

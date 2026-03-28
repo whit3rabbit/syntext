@@ -5,7 +5,8 @@
 use std::fs;
 use tempfile::TempDir;
 
-use ripline_rs::{Config, Index, SearchOptions};
+use ripline_rs::index::Index;
+use ripline_rs::{Config, SearchOptions};
 
 fn setup(dir: &TempDir) -> Config {
     let repo = dir.path().join("repo");
@@ -56,17 +57,19 @@ pub struct QueryBuilder {
     assert_eq!(r.line_number, 2, "parse_query is on line 2");
 
     // sym: for a struct
-    let results = idx.search("sym:QueryBuilder", &opts).expect("search failed");
-    assert!(
-        !results.is_empty(),
-        "expected result for sym:QueryBuilder"
-    );
+    let results = idx
+        .search("sym:QueryBuilder", &opts)
+        .expect("search failed");
+    assert!(!results.is_empty(), "expected result for sym:QueryBuilder");
 
     // sym: for a nonexistent symbol returns empty
     let results = idx
         .search("sym:nonexistent_xyz_symbol", &opts)
         .expect("search failed");
-    assert!(results.is_empty(), "expected no results for nonexistent symbol");
+    assert!(
+        results.is_empty(),
+        "expected no results for nonexistent symbol"
+    );
 }
 
 #[test]

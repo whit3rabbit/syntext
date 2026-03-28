@@ -33,19 +33,23 @@ impl SymbolKind {
             SymbolKind::Type => "type",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for SymbolKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "function" => Some(SymbolKind::Function),
-            "method" => Some(SymbolKind::Method),
-            "class" => Some(SymbolKind::Class),
-            "struct" => Some(SymbolKind::Struct),
-            "enum" => Some(SymbolKind::Enum),
-            "trait" => Some(SymbolKind::Trait),
-            "interface" => Some(SymbolKind::Interface),
-            "const" => Some(SymbolKind::Const),
-            "type" => Some(SymbolKind::Type),
-            _ => None,
+            "function" => Ok(SymbolKind::Function),
+            "method" => Ok(SymbolKind::Method),
+            "class" => Ok(SymbolKind::Class),
+            "struct" => Ok(SymbolKind::Struct),
+            "enum" => Ok(SymbolKind::Enum),
+            "trait" => Ok(SymbolKind::Trait),
+            "interface" => Ok(SymbolKind::Interface),
+            "const" => Ok(SymbolKind::Const),
+            "type" => Ok(SymbolKind::Type),
+            _ => Err(()),
         }
     }
 }
@@ -116,13 +120,21 @@ fn ts_extract(content: &[u8], language: Language) -> Vec<ExtractedSymbol> {
 /// Recursively walk tree-sitter nodes, collecting definition sites.
 fn walk_node(node: Node, src: &[u8], in_impl: bool, out: &mut Vec<ExtractedSymbol>) {
     let kind = node.kind();
-    let inside_impl = in_impl || kind == "impl_item" || kind == "class_body"
-        || kind == "class_declaration" || kind == "object_type";
+    let inside_impl = in_impl
+        || kind == "impl_item"
+        || kind == "class_body"
+        || kind == "class_declaration"
+        || kind == "object_type";
 
-    if let Some((sym_kind, name_field)) = definition_rule(kind, in_impl) {
+    if let Some((sym_kind, name_field)) = definition_rule(node, in_impl) {
         if let Some(name_node) = node.child_by_field_name(name_field) {
             let name = name_node.utf8_text(src).unwrap_or("").to_string();
-            if !name.is_empty() && name.chars().next().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
                 let start = node.start_position();
                 out.push(ExtractedSymbol {
                     name,
@@ -144,19 +156,31 @@ fn walk_node(node: Node, src: &[u8], in_impl: bool, out: &mut Vec<ExtractedSymbo
 }
 
 /// Returns (SymbolKind, field_name_for_identifier) for known definition node kinds.
-fn definition_rule(kind: &str, in_impl: bool) -> Option<(SymbolKind, &'static str)> {
-    match kind {
+fn definition_rule(node: Node, in_impl: bool) -> Option<(SymbolKind, &'static str)> {
+    match node.kind() {
         // Rust
-        "function_item" => Some((if in_impl { SymbolKind::Method } else { SymbolKind::Function }, "name")),
+        "function_item" => Some((
+            if in_impl {
+                SymbolKind::Method
+            } else {
+                SymbolKind::Function
+            },
+            "name",
+        )),
         "struct_item" => Some((SymbolKind::Struct, "name")),
         "enum_item" => Some((SymbolKind::Enum, "name")),
         "trait_item" => Some((SymbolKind::Trait, "name")),
         "type_item" => Some((SymbolKind::Type, "name")),
         "const_item" => Some((SymbolKind::Const, "name")),
         // Python
-        "function_definition" | "async_function_definition" => {
-            Some((if in_impl { SymbolKind::Method } else { SymbolKind::Function }, "name"))
-        }
+        "async_function_definition" => Some((
+            if in_impl {
+                SymbolKind::Method
+            } else {
+                SymbolKind::Function
+            },
+            "name",
+        )),
         "class_definition" => Some((SymbolKind::Class, "name")),
         // JavaScript / TypeScript
         "function_declaration" => Some((SymbolKind::Function, "name")),
@@ -166,13 +190,25 @@ fn definition_rule(kind: &str, in_impl: bool) -> Option<(SymbolKind, &'static st
         "type_alias_declaration" => Some((SymbolKind::Type, "name")),
         "enum_declaration" => Some((SymbolKind::Enum, "name")),
         // Go
-        "function_declaration" | "method_declaration" => Some((SymbolKind::Function, "name")),
-        "type_spec" => Some((SymbolKind::Type, "name")),
-        // Java
         "method_declaration" => Some((SymbolKind::Method, "name")),
-        "class_declaration" => Some((SymbolKind::Class, "name")),
+        "type_spec" => Some((SymbolKind::Type, "name")),
         // C / C++
-        "function_definition" => Some((SymbolKind::Function, "declarator")),
+        "function_definition" => {
+            if node.child_by_field_name("name").is_some() {
+                Some((
+                    if in_impl {
+                        SymbolKind::Method
+                    } else {
+                        SymbolKind::Function
+                    },
+                    "name",
+                ))
+            } else if node.child_by_field_name("declarator").is_some() {
+                Some((SymbolKind::Function, "declarator"))
+            } else {
+                None
+            }
+        }
         "struct_specifier" | "class_specifier" => Some((SymbolKind::Struct, "name")),
         _ => None,
     }

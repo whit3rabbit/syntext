@@ -127,7 +127,7 @@ pub fn run() -> i32 {
             literal,
             ignore_case,
             file_type,
-            type_not: _,
+            type_not,
             max_count,
             count,
             json,
@@ -138,6 +138,7 @@ pub fn run() -> i32 {
                 literal,
                 ignore_case,
                 file_type,
+                type_not,
                 max_count,
                 count,
                 json,
@@ -230,6 +231,7 @@ struct SearchArgs {
     literal: bool,
     ignore_case: bool,
     file_type: Option<String>,
+    type_not: Option<String>,
     max_count: Option<usize>,
     count: bool,
     json: bool,
@@ -349,6 +351,7 @@ fn run_search(
     let opts = SearchOptions {
         case_insensitive: args.ignore_case,
         file_type: args.file_type.clone(),
+        exclude_type: args.type_not.clone(),
         max_results: args.max_count,
         ..SearchOptions::default()
     };
@@ -422,6 +425,7 @@ fn cmd_bench_search(config: Config, queries: &[String], iterations: usize, warmu
             literal: query.mode == BenchQueryMode::Literal,
             ignore_case: false,
             file_type: None,
+            type_not: None,
             max_count: None,
             count: false,
             json: false,
@@ -580,7 +584,11 @@ fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     if !quiet {
         println!("ripline: updated {} file(s)", count);
     }
-    if notify_errors > 0 { 1 } else { 0 }
+    if notify_errors > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -654,5 +662,44 @@ mod tests {
             code, 2,
             "cmd_update should not error on repo with no commits"
         );
+    }
+
+    #[test]
+    fn run_search_honors_type_not() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let index_dir = tempfile::TempDir::new().unwrap();
+
+        fs::write(repo.path().join("match.rs"), "fn parse_query() {}\n").unwrap();
+        fs::write(
+            repo.path().join("match.py"),
+            "def parse_query():\n    pass\n",
+        )
+        .unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let args = super::SearchArgs {
+            pattern: "parse_query".to_string(),
+            literal: false,
+            ignore_case: false,
+            file_type: None,
+            type_not: Some("py".to_string()),
+            max_count: None,
+            count: false,
+            json: false,
+            quiet: false,
+        };
+
+        let results = super::run_search(&index, &args).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "type_not should filter out Python matches"
+        );
+        assert_eq!(results[0].path.to_string_lossy(), "match.rs");
     }
 }

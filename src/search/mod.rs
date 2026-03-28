@@ -9,8 +9,8 @@
 //! 3. Each candidate doc is read from disk (or overlay memory) and passed to the verifier.
 //! 4. Matches are sorted by path, then line number.
 
-pub mod verifier;
 mod resolver;
+pub mod verifier;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -90,7 +90,7 @@ pub fn search(
     let path_filter_bitmap = build_filter(
         &snap.path_index,
         opts.file_type.as_deref(),
-        None, // exclude_type not exposed in SearchOptions yet
+        opts.exclude_type.as_deref(),
         opts.path_filter.as_deref(),
     );
 
@@ -116,7 +116,7 @@ pub fn search(
                 } else if !matches_path_filter(
                     &rel_path,
                     opts.file_type.as_deref(),
-                    None,
+                    opts.exclude_type.as_deref(),
                     opts.path_filter.as_deref(),
                 ) {
                     return None;
@@ -320,7 +320,6 @@ fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBit
     Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -337,6 +336,7 @@ mod tests {
         let opts = SearchOptions {
             path_filter: Some("*.rs".to_string()),
             file_type: None,
+            exclude_type: None,
             max_results: None,
             case_insensitive: false,
         };
@@ -344,13 +344,13 @@ mod tests {
         assert!(matches_path_filter(
             "src/main.rs",
             opts.file_type.as_deref(),
-            None,
+            opts.exclude_type.as_deref(),
             opts.path_filter.as_deref(),
         ));
         assert!(!matches_path_filter(
             "src/main.py",
             opts.file_type.as_deref(),
-            None,
+            opts.exclude_type.as_deref(),
             opts.path_filter.as_deref(),
         ));
     }

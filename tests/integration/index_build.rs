@@ -254,3 +254,52 @@ fn search_combined_type_and_path() {
         assert!(p.contains("rust/"), "not under rust/: {}", p);
     }
 }
+
+#[test]
+fn search_exclude_type_omits_matching_extension() {
+    let index_dir = TempDir::new().unwrap();
+    let config = make_config(&index_dir);
+    let idx = Index::build(config).unwrap();
+
+    let opts = SearchOptions {
+        exclude_type: Some("py".to_string()),
+        ..SearchOptions::default()
+    };
+    let results = idx.search("parse_query", &opts).unwrap();
+    assert!(
+        results
+            .iter()
+            .all(|m| !m.path.to_string_lossy().ends_with(".py")),
+        "exclude_type=py should remove Python files from results"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn build_indexes_files_under_symlinked_directory_path() {
+    use std::os::unix::fs::symlink;
+
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+    let real_dir = repo.path().join("real");
+    std::fs::create_dir_all(&real_dir).unwrap();
+    std::fs::write(real_dir.join("nested.rs"), "fn symlink_dir_visible() {}\n").unwrap();
+    symlink(&real_dir, repo.path().join("alias")).unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let idx = Index::build(config).unwrap();
+
+    let results = idx
+        .search("symlink_dir_visible", &SearchOptions::default())
+        .unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|m| m.path.to_string_lossy() == "alias/nested.rs"),
+        "symlinked directory contents should be searchable through the symlink path"
+    );
+}

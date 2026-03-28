@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::tokenizer::build_all;
+use crate::IndexError;
 
 /// Kind of file change buffered by `notify_change` / `notify_delete`.
 #[derive(Debug, Clone)]
@@ -82,13 +83,17 @@ impl OverlayView {
     /// `base_doc_count` is the total doc count across all base segments.
     /// Overlay doc_ids start at `base_doc_count` to stay disjoint.
     /// `dirty_files` maps repo-relative path to file content.
-    pub fn build(base_doc_count: u32, dirty_files: Vec<(String, Arc<[u8]>)>) -> Self {
+    pub fn build(
+        base_doc_count: u32,
+        dirty_files: Vec<(String, Arc<[u8]>)>,
+    ) -> Result<Self, IndexError> {
         let mut gram_index: HashMap<u64, Vec<u32>> = HashMap::new();
+        let overlay_docs = dirty_files.len();
         let mut docs = Vec::with_capacity(dirty_files.len());
         let mut next_id = base_doc_count;
 
         for (path, content) in dirty_files {
-            let doc_id = Self::next_doc_id(&mut next_id);
+            let doc_id = Self::next_doc_id(&mut next_id, base_doc_count, overlay_docs)?;
 
             let grams = build_all(&content);
             for &gram_hash in &grams {
@@ -115,13 +120,13 @@ impl OverlayView {
             .map(|(i, d)| (d.doc_id, i))
             .collect();
 
-        OverlayView {
+        Ok(OverlayView {
             gram_index,
             docs,
             doc_id_map,
             next_doc_id: next_id,
             base_doc_count,
-        }
+        })
     }
 
     /// Build an overlay incrementally, reusing docs from the previous overlay
@@ -141,7 +146,7 @@ impl OverlayView {
         new_files: Vec<(String, Arc<[u8]>)>,
         newly_changed: &HashSet<String>,
         removed_paths: &HashSet<String>,
-    ) -> Self {
+    ) -> Result<Self, IndexError> {
         // Fast path: base has not grown since the last commit.
         // Overlay doc_ids for unchanged files are stable; use delta update.
         if base_doc_count == old_overlay.base_doc_count {
@@ -155,6 +160,7 @@ impl OverlayView {
         }
 
         let mut gram_index: HashMap<u64, Vec<u32>> = HashMap::new();
+        let overlay_docs = old_overlay.docs.len() + new_files.len() - newly_changed.len();
         let mut docs = Vec::new();
         let mut next_id = base_doc_count;
 
@@ -166,7 +172,7 @@ impl OverlayView {
             if newly_changed.contains(&old_doc.path) {
                 continue; // replaced by new version below
             }
-            let doc_id = Self::next_doc_id(&mut next_id);
+            let doc_id = Self::next_doc_id(&mut next_id, base_doc_count, overlay_docs)?;
 
             // Reuse cached grams instead of re-tokenizing.
             for &gram_hash in &old_doc.grams {
@@ -182,7 +188,7 @@ impl OverlayView {
 
         // Add newly changed/added files (freshly read from disk).
         for (path, content) in new_files {
-            let doc_id = Self::next_doc_id(&mut next_id);
+            let doc_id = Self::next_doc_id(&mut next_id, base_doc_count, overlay_docs)?;
 
             let grams = build_all(&content);
             for &gram_hash in &grams {
@@ -207,24 +213,28 @@ impl OverlayView {
             .map(|(i, d)| (d.doc_id, i))
             .collect();
 
-        OverlayView {
+        Ok(OverlayView {
             gram_index,
             docs,
             doc_id_map,
             next_doc_id: next_id,
             base_doc_count,
-        }
+        })
     }
 
     /// Allocate the next overlay doc_id, advancing `next_id` by 1.
-    /// Panics with a clear message if the u32 range is exhausted.
     #[inline]
-    fn next_doc_id(next_id: &mut u32) -> u32 {
+    fn next_doc_id(
+        next_id: &mut u32,
+        base_doc_count: u32,
+        overlay_docs: usize,
+    ) -> Result<u32, IndexError> {
         let id = *next_id;
-        *next_id = next_id
-            .checked_add(1)
-            .expect("doc_id overflow: base_doc_count + overlay size exceeds u32::MAX");
-        id
+        *next_id = next_id.checked_add(1).ok_or(IndexError::DocIdOverflow {
+            base_doc_count,
+            overlay_docs,
+        })?;
+        Ok(id)
     }
 
     /// Delta path: base_doc_count is unchanged, so overlay doc_ids for unchanged
@@ -238,13 +248,14 @@ impl OverlayView {
         new_files: Vec<(String, Arc<[u8]>)>,
         newly_changed: &HashSet<String>,
         removed_paths: &HashSet<String>,
-    ) -> Self {
+    ) -> Result<Self, IndexError> {
         // Clone old gram_index; remove stale entries for changed/deleted files.
         //
         // Cost: O(entries). For overlays > 30% of base docs, this clone becomes
         // non-trivial. A Cow or persistent map would avoid the copy for unchanged
         // entries; deferred to v2. See ARCHITECTURE.md "Overlay compaction" note.
         let mut gram_index = old_overlay.gram_index.clone();
+        let overlay_docs = old_overlay.docs.len() + new_files.len() - newly_changed.len();
 
         for old_doc in &old_overlay.docs {
             if removed_paths.contains(&old_doc.path) || newly_changed.contains(&old_doc.path) {
@@ -270,7 +281,7 @@ impl OverlayView {
         // Since next_doc_id > all existing doc_ids, push keeps posting lists sorted.
         let mut next_id = old_overlay.next_doc_id;
         for (path, content) in new_files {
-            let doc_id = Self::next_doc_id(&mut next_id);
+            let doc_id = Self::next_doc_id(&mut next_id, base_doc_count, overlay_docs)?;
 
             let grams = build_all(&content);
             for &gram_hash in &grams {
@@ -299,13 +310,13 @@ impl OverlayView {
             .map(|(i, d)| (d.doc_id, i))
             .collect();
 
-        OverlayView {
+        Ok(OverlayView {
             gram_index,
             docs,
             doc_id_map,
             next_doc_id: next_id,
             base_doc_count,
-        }
+        })
     }
 
     /// Look up an overlay doc by its global doc_id. O(1) via HashMap.
@@ -337,7 +348,8 @@ mod tests {
                 ("a.rs".to_string(), Arc::clone(&content_a)),
                 ("b.rs".to_string(), Arc::clone(&content_b)),
             ],
-        );
+        )
+        .unwrap();
 
         let content_a2: Arc<[u8]> = Arc::from(b"fn alpha_changed() {}".as_slice());
         let newly_changed: HashSet<String> = ["a.rs".to_string()].into();
@@ -349,7 +361,8 @@ mod tests {
             vec![("a.rs".to_string(), content_a2)],
             &newly_changed,
             &removed,
-        );
+        )
+        .unwrap();
 
         for (hash, ids) in &overlay2.gram_index {
             assert!(

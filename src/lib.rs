@@ -64,6 +64,8 @@ pub struct SearchOptions {
     pub path_filter: Option<String>,
     /// File type filter (e.g., "rs", "py").
     pub file_type: Option<String>,
+    /// File type exclusion (e.g., "js").
+    pub exclude_type: Option<String>,
     /// Maximum number of results.
     pub max_results: Option<usize>,
     /// Enable case-insensitive matching.
@@ -117,6 +119,13 @@ pub enum IndexError {
         /// Number of base documents at the time of the check.
         base_docs: usize,
     },
+    /// Document ID space exceeded `u32::MAX`.
+    DocIdOverflow {
+        /// Number of base documents already allocated.
+        base_doc_count: u32,
+        /// Number of overlay documents requested on top of the base.
+        overlay_docs: usize,
+    },
 }
 
 impl From<std::io::Error> for IndexError {
@@ -142,6 +151,13 @@ impl std::fmt::Display for IndexError {
                 f,
                 "overlay too large ({overlay_docs} overlay docs, {base_docs} base docs): \
                  run `ripline index` to rebuild"
+            ),
+            IndexError::DocIdOverflow {
+                base_doc_count,
+                overlay_docs,
+            } => write!(
+                f,
+                "doc_id overflow: base {base_doc_count} docs plus {overlay_docs} overlay docs exceeds u32::MAX"
             ),
         }
     }

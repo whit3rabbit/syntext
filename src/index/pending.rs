@@ -137,24 +137,6 @@ pub struct TakeResult {
     pub all_deleted: Vec<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dirty_files_is_cleared_by_reset() {
-        let pe = PendingEdits::new();
-        pe.notify_change("a.rs");
-        pe.notify_change("b.rs");
-        pe.take_for_commit();
-        // dirty_files still has entries after take_for_commit.
-        pe.reset();
-        let state = pe.inner.lock().unwrap_or_else(|p| p.into_inner());
-        assert!(state.dirty_files.is_empty(), "reset() must clear dirty_files");
-        assert!(state.uncommitted.is_empty(), "reset() must clear uncommitted");
-    }
-}
-
 /// Compute the delete_set: base doc_ids that are invalidated by overlay
 /// changes (modified or deleted files).
 ///
@@ -175,4 +157,28 @@ pub fn compute_delete_set(
     }
 
     delete_set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_files_is_cleared_by_reset() {
+        let pe = PendingEdits::new();
+        pe.notify_change("a.rs");
+        pe.notify_change("b.rs");
+        pe.take_for_commit();
+        // dirty_files still has entries after take_for_commit.
+        pe.reset();
+        let state = pe.inner.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(
+            state.dirty_files.is_empty(),
+            "reset() must clear dirty_files"
+        );
+        assert!(
+            state.uncommitted.is_empty(),
+            "reset() must clear uncommitted"
+        );
+    }
 }
