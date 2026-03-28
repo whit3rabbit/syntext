@@ -239,7 +239,11 @@ impl OverlayView {
         newly_changed: &HashSet<String>,
         removed_paths: &HashSet<String>,
     ) -> Self {
-        // Clone old gram_index; remove stale doc_ids for changed/deleted files.
+        // Clone old gram_index; remove stale entries for changed/deleted files.
+        //
+        // Cost: O(entries). For overlays > 30% of base docs, this clone becomes
+        // non-trivial. A Cow or persistent map would avoid the copy for unchanged
+        // entries; deferred to v2. See ARCHITECTURE.md "Overlay compaction" note.
         let mut gram_index = old_overlay.gram_index.clone();
 
         for old_doc in &old_overlay.docs {
