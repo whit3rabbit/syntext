@@ -14,8 +14,11 @@ pub mod manifest;
 pub mod overlay;
 pub mod pending;
 pub mod segment;
+pub mod snapshot;
 mod stats;
 pub mod walk;
+
+pub use snapshot::{BaseSegments, IndexSnapshot};
 
 pub use walk::is_binary;
 
@@ -23,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use fs2::FileExt;
 
@@ -152,137 +155,6 @@ fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
     //   threshold = scan_ns_per_doc / (scan_ns_per_doc + posting_ns_per_entry)
     let threshold = scan_ns_per_doc as f64 / (scan_ns_per_doc + posting_ns_per_entry) as f64;
     threshold.clamp(0.01, 0.50)
-}
-
-/// Shared base segments (Arc-shared across snapshot swaps).
-pub struct BaseSegments {
-    /// The memory mapped segments.
-    pub segments: Vec<MmapSegment>,
-    /// Global doc_id offsets for each segment.
-    pub base_ids: Vec<u32>,
-    /// Global base doc_id -> repository-relative path.
-    pub base_doc_paths: Vec<String>,
-    /// Repository-relative path -> all base doc_ids for that path.
-    pub path_doc_ids: HashMap<String, Vec<u32>>,
-}
-
-/// A consistent point-in-time view of the index for querying.
-pub struct IndexSnapshot {
-    /// Shared base segments (immutable between full rebuilds).
-    pub base: Arc<BaseSegments>,
-    /// In-memory gram index for dirty (not yet flushed) files.
-    pub overlay: OverlayView,
-    /// Base doc_ids invalidated by overlay changes (modified/deleted files).
-    pub delete_set: RoaringBitmap,
-    /// Roaring-bitmap component index for path-scoped queries.
-    pub path_index: PathIndex,
-    /// Maps global doc_id -> PathIndex file_id for O(1) path filter lookup.
-    /// Value is u32::MAX for docs with no PathIndex entry.
-    pub doc_to_file_id: Vec<u32>,
-    /// Cached bitmap of all valid doc IDs. Lazy-initialized on first access.
-    all_doc_ids_cache: OnceLock<RoaringBitmap>,
-    /// Cached merged posting bitmaps for repeated gram lookups in this snapshot.
-    posting_bitmap_cache: OnceLock<Mutex<HashMap<u64, Arc<RoaringBitmap>>>>,
-    /// Calibrated index-vs-scan crossover fraction. Populated from
-    /// `Manifest::scan_threshold_fraction` on open; defaults to 0.10.
-    pub scan_threshold: f64,
-}
-
-impl IndexSnapshot {
-    /// Return the immutable base segments.
-    pub fn base_segments(&self) -> &[MmapSegment] {
-        &self.base.segments
-    }
-    /// Return the global doc_id offsets for each base segment.
-    pub fn segment_base_ids(&self) -> &[u32] {
-        &self.base.base_ids
-    }
-
-    /// All valid global doc IDs (base minus deleted, plus overlay). Cached.
-    pub fn all_doc_ids(&self) -> &RoaringBitmap {
-        self.all_doc_ids_cache.get_or_init(|| {
-            let mut bm = RoaringBitmap::new();
-            for (seg_idx, seg) in self.base.segments.iter().enumerate() {
-                let base = self.base.base_ids.get(seg_idx).copied().unwrap_or(0);
-                for local in 0..seg.doc_count {
-                    let global = base + local;
-                    if !self.delete_set.contains(global) {
-                        bm.insert(global);
-                    }
-                }
-            }
-            for doc in &self.overlay.docs {
-                bm.insert(doc.doc_id);
-            }
-            bm
-        })
-    }
-
-    fn posting_bitmap_cache(&self) -> &Mutex<HashMap<u64, Arc<RoaringBitmap>>> {
-        self.posting_bitmap_cache
-            .get_or_init(|| Mutex::new(HashMap::new()))
-    }
-
-    pub(crate) fn cached_posting_bitmap(&self, gram_hash: u64) -> Option<Arc<RoaringBitmap>> {
-        let cache = self
-            .posting_bitmap_cache()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache.get(&gram_hash).cloned()
-    }
-
-    pub(crate) fn store_posting_bitmap(
-        &self,
-        gram_hash: u64,
-        bitmap: Arc<RoaringBitmap>,
-    ) -> Arc<RoaringBitmap> {
-        let mut cache = self
-            .posting_bitmap_cache()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache
-            .entry(gram_hash)
-            .or_insert_with(|| Arc::clone(&bitmap))
-            .clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clone_for_test(&self) -> IndexSnapshot {
-        IndexSnapshot {
-            base: Arc::clone(&self.base),
-            overlay: self.overlay.clone(),
-            delete_set: self.delete_set.clone(),
-            path_index: self.path_index.clone(),
-            doc_to_file_id: self.doc_to_file_id.clone(),
-            scan_threshold: self.scan_threshold,
-            all_doc_ids_cache: OnceLock::new(),
-            posting_bitmap_cache: OnceLock::new(),
-        }
-    }
-
-    /// Clone this snapshot with a different `scan_threshold`. Used by tests to
-    /// verify that `should_use_index` reads from the snapshot rather than a
-    /// hard-coded constant.
-    #[cfg(test)]
-    pub(crate) fn with_scan_threshold(&self, threshold: f64) -> IndexSnapshot {
-        IndexSnapshot {
-            scan_threshold: threshold,
-            ..self.clone_for_test()
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn posting_bitmap_cache_len(&self) -> usize {
-        self.posting_bitmap_cache
-            .get()
-            .map(|cache| {
-                cache
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .len()
-            })
-            .unwrap_or(0)
-    }
 }
 
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
@@ -591,16 +463,14 @@ impl Index {
             }
         }
 
-        let snapshot = Arc::new(IndexSnapshot {
+        let snapshot = Arc::new(snapshot::new_snapshot(
             base,
-            overlay: OverlayView::empty(),
-            delete_set: RoaringBitmap::new(),
+            OverlayView::empty(),
+            RoaringBitmap::new(),
             path_index,
             doc_to_file_id,
             scan_threshold,
-            all_doc_ids_cache: OnceLock::new(),
-            posting_bitmap_cache: OnceLock::new(),
-        });
+        ));
 
         // Open symbol index if it exists on disk.
         #[cfg(feature = "symbols")]
@@ -815,16 +685,14 @@ impl Index {
             }
         }
 
-        let new_snap = Arc::new(IndexSnapshot {
-            base: Arc::clone(&old_snap.base),
+        let new_snap = Arc::new(snapshot::new_snapshot(
+            Arc::clone(&old_snap.base),
             overlay,
             delete_set,
             path_index,
             doc_to_file_id,
-            scan_threshold: old_snap.scan_threshold,
-            all_doc_ids_cache: OnceLock::new(),
-            posting_bitmap_cache: OnceLock::new(),
-        });
+            old_snap.scan_threshold,
+        ));
 
         // Pre-populate all_doc_ids so the first post-commit query doesn't pay rebuild cost.
         new_snap.all_doc_ids();
