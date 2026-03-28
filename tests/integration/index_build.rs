@@ -313,6 +313,142 @@ fn build_indexes_files_under_symlinked_directory_path() {
 }
 
 // ---------------------------------------------------------------------------
+// T049: non-UTF-8 encoding normalization (BOM stripping, UTF-16 transcoding)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn utf8_bom_file_is_indexed_without_bom_bytes() {
+    let corpus_dir = TempDir::new().unwrap();
+    let src_dir = corpus_dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let mut content = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+    content.extend_from_slice(b"fn bom_function() {}\n");
+    std::fs::write(src_dir.join("bom.rs"), &content).unwrap();
+
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        repo_root: corpus_dir.path().to_path_buf(),
+        index_dir: index_dir.path().to_path_buf(),
+        ..Config::default()
+    };
+    let idx = Index::build(config).unwrap();
+    let snap = idx.snapshot();
+
+    assert!(
+        snap.path_index.paths.iter().any(|p| p == std::path::Path::new("src/bom.rs")),
+        "UTF-8 BOM file must appear in the path index"
+    );
+
+    let opts = SearchOptions::default();
+    let matches = idx.search("bom_function", &opts).unwrap();
+    assert!(!matches.is_empty(), "must find 'bom_function' in a UTF-8 BOM file");
+    let line = &matches[0].line_content;
+    assert!(
+        !line.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "BOM bytes must not appear in matched line content, got: {line:?}"
+    );
+}
+
+#[test]
+fn utf16_le_file_is_indexed_and_searchable() {
+    let corpus_dir = TempDir::new().unwrap();
+    let src_dir = corpus_dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let src = "fn utf16_function() {}\n";
+    let mut utf16le: Vec<u8> = vec![0xFF, 0xFE]; // LE BOM
+    utf16le.extend(src.encode_utf16().flat_map(|u| u.to_le_bytes()));
+    std::fs::write(src_dir.join("utf16le.rs"), &utf16le).unwrap();
+
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        repo_root: corpus_dir.path().to_path_buf(),
+        index_dir: index_dir.path().to_path_buf(),
+        ..Config::default()
+    };
+    let idx = Index::build(config).unwrap();
+    let snap = idx.snapshot();
+
+    assert!(
+        snap.path_index.paths.iter().any(|p| p == std::path::Path::new("src/utf16le.rs")),
+        "UTF-16 LE file must appear in the path index (not skipped as binary)"
+    );
+
+    let opts = SearchOptions::default();
+    let matches = idx.search("utf16_function", &opts).unwrap();
+    assert!(!matches.is_empty(), "must find 'utf16_function' in a UTF-16 LE file");
+}
+
+#[test]
+fn utf16_be_file_is_indexed_and_searchable() {
+    let corpus_dir = TempDir::new().unwrap();
+    let src_dir = corpus_dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let src = "fn utf16be_fn() {}\n";
+    let mut utf16be: Vec<u8> = vec![0xFE, 0xFF]; // BE BOM
+    utf16be.extend(src.encode_utf16().flat_map(|u| u.to_be_bytes()));
+    std::fs::write(src_dir.join("utf16be.rs"), &utf16be).unwrap();
+
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        repo_root: corpus_dir.path().to_path_buf(),
+        index_dir: index_dir.path().to_path_buf(),
+        ..Config::default()
+    };
+    let idx = Index::build(config).unwrap();
+    let snap = idx.snapshot();
+
+    assert!(
+        snap.path_index.paths.iter().any(|p| p == std::path::Path::new("src/utf16be.rs")),
+        "UTF-16 BE file must appear in the path index (not skipped as binary)"
+    );
+
+    let opts = SearchOptions::default();
+    let matches = idx.search("utf16be_fn", &opts).unwrap();
+    assert!(!matches.is_empty(), "must find 'utf16be_fn' in a UTF-16 BE file");
+}
+
+#[test]
+fn utf16_le_via_incremental_commit_is_searchable() {
+    let corpus_dir = TempDir::new().unwrap();
+    let src_dir = corpus_dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    // Need enough base docs so 1 overlay doc stays within the 50% threshold.
+    for i in 0..4 {
+        std::fs::write(
+            src_dir.join(format!("base_{i}.rs")),
+            format!("fn base_fn_{i}() {{}}\n").as_bytes(),
+        )
+        .unwrap();
+    }
+
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        repo_root: corpus_dir.path().to_path_buf(),
+        index_dir: index_dir.path().to_path_buf(),
+        ..Config::default()
+    };
+    let idx = Index::build(config).unwrap();
+
+    let src = "fn incremental_utf16() {}\n";
+    let mut utf16le: Vec<u8> = vec![0xFF, 0xFE];
+    utf16le.extend(src.encode_utf16().flat_map(|u| u.to_le_bytes()));
+    let new_path = src_dir.join("added.rs");
+    std::fs::write(&new_path, &utf16le).unwrap();
+
+    idx.notify_change(&new_path).unwrap();
+    idx.commit_batch().unwrap();
+
+    let opts = SearchOptions::default();
+    let matches = idx.search("incremental_utf16", &opts).unwrap();
+    assert!(
+        !matches.is_empty(),
+        "UTF-16 LE file added via commit_batch must be searchable"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // T048: v3 two-file segment format end-to-end integration
 // ---------------------------------------------------------------------------
 

@@ -176,12 +176,13 @@ pub(super) fn render_invert_match(
         if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
             continue;
         }
-        let mut file_bytes = Vec::new();
-        if file.read_to_end(&mut file_bytes).is_err() {
+        let mut raw_bytes = Vec::new();
+        if file.read_to_end(&mut raw_bytes).is_err() {
             continue;
         }
+        let file_bytes = crate::index::normalize_encoding(&raw_bytes);
 
-        for_each_line(&file_bytes, |line_num, _line_start, line| {
+        for_each_line(file_bytes.as_ref(), |line_num, _line_start, line| {
             if !re.is_match(line) {
                 found_any = true;
                 if !args.quiet {
@@ -254,12 +255,13 @@ pub(super) fn render_with_context_to(
         if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
             continue;
         }
-        let mut file_content = Vec::new();
-        if file.read_to_end(&mut file_content).is_err() {
+        let mut raw_content = Vec::new();
+        if file.read_to_end(&mut raw_content).is_err() {
             continue;
         }
+        let file_content = crate::index::normalize_encoding(&raw_content);
         let mut file_lines: Vec<Vec<u8>> = Vec::new();
-        for_each_line(&file_content, |_, _, line| file_lines.push(line.to_vec()));
+        for_each_line(file_content.as_ref(), |_, _, line| file_lines.push(line.to_vec()));
 
         // Set of 0-based line indices that are direct matches.
         let match_set: BTreeSet<usize> = match_lines
