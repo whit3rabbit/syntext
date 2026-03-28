@@ -1,5 +1,6 @@
 //! Repository walking and file utilities.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,9 @@ pub type FileRecord = (PathBuf, PathBuf, u64);
 pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
     let mut files: Vec<FileRecord> = Vec::new();
     let canonical_root = fs::canonicalize(&config.repo_root)?;
+    // Track canonical paths already queued via symlinks so that N symlinks
+    // pointing at the same target don't produce N copies of its contents.
+    let mut seen_canonical: HashSet<PathBuf> = HashSet::new();
 
     let walker = WalkBuilder::new(&config.repo_root)
         .hidden(false) // include hidden files (gitignore handles exclusions)
@@ -38,6 +42,7 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
                 &canonical_root,
                 config.max_file_size,
                 &mut files,
+                &mut seen_canonical,
             );
             continue;
         }
@@ -85,6 +90,7 @@ fn collect_symlink_entry(
     canonical_root: &Path,
     max_file_size: u64,
     files: &mut Vec<FileRecord>,
+    seen_canonical: &mut HashSet<PathBuf>,
 ) {
     let target = match fs::read_link(symlink_path) {
         Ok(target) => target,
@@ -120,6 +126,12 @@ fn collect_symlink_entry(
         Err(_) => return,
     };
     if canonical_meta.file_type().is_symlink() {
+        return;
+    }
+
+    // Dedup: skip if another symlink already resolved to this canonical target.
+    // Without this, N symlinks to the same directory produce N full sub-walks.
+    if !seen_canonical.insert(canonical_target.clone()) {
         return;
     }
 
@@ -207,6 +219,38 @@ pub fn is_binary(content: &[u8]) -> bool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_files_deduplicates_multiple_symlinks_to_same_dir() {
+        use std::os::unix::fs::symlink;
+
+        let repo = TempDir::new().unwrap();
+        let real_dir = repo.path().join("real");
+        fs::create_dir_all(&real_dir).unwrap();
+        for i in 0..5u8 {
+            fs::write(real_dir.join(format!("file{i}.rs")), b"fn f() {}").unwrap();
+        }
+        // 10 symlinks all pointing at the same 5-file directory
+        for i in 0..10u8 {
+            symlink(&real_dir, repo.path().join(format!("alias{i}"))).unwrap();
+        }
+
+        let config = Config {
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let files = enumerate_files(&config).unwrap();
+        // The 5 real files plus 1 symlink's worth (5) = 10 total.
+        // Without dedup we'd get 5 + 10*5 = 55.
+        // With dedup: only the first symlink (alphabetically) is walked.
+        assert!(
+            files.len() <= 10,
+            "expected at most 10 records (5 real + 5 via one alias), got {}",
+            files.len()
+        );
+    }
 
     #[cfg(unix)]
     #[test]
