@@ -692,4 +692,28 @@ mod tests {
         );
         assert!(result.is_err(), "open_split must reject corrupt .post magic");
     }
+
+    #[test]
+    fn mmap_isolation_from_disk_overwrite() {
+        // MAP_PRIVATE: after opening, overwriting the file on disk must not
+        // corrupt the in-memory mapping (CoW isolation).
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, std::path::Path::new("a.rs"), 0xABCD, 10);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        let dict_path = dir.path().join(&meta.dict_filename);
+        let seg = MmapSegment::open(&dict_path).unwrap();
+
+        // Overwrite the segment file after opening.
+        std::fs::write(&dict_path, b"CORRUPTED").unwrap();
+
+        // With MAP_PRIVATE, the in-memory view is isolated from the disk overwrite.
+        // The document should still be readable.
+        let doc = seg.get_doc(0);
+        assert!(
+            doc.is_some(),
+            "MAP_PRIVATE mapping must survive external file overwrite"
+        );
+    }
 }
