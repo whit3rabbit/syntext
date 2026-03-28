@@ -145,9 +145,18 @@ impl std::fmt::Display for IndexError {
             IndexError::Io(e) => write!(f, "I/O error: {e}"),
             IndexError::InvalidPattern(p) => write!(f, "invalid pattern: {p}"),
             IndexError::CorruptIndex(msg) => write!(f, "corrupt index: {msg}"),
-            IndexError::PathOutsideRepo(p) => write!(f, "path outside repo: {}", p.display()),
+            IndexError::PathOutsideRepo(p) => {
+                // Use only the last path component to avoid leaking absolute
+                // filesystem layout in library/server contexts where this error
+                // may be forwarded to an untrusted caller.
+                let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                write!(f, "path outside repo: {name}")
+            }
             IndexError::FileTooLarge { path, size } => {
-                write!(f, "file too large: {} ({size} bytes)", path.display())
+                // Same rationale: show filename only, not the full absolute path.
+                let name =
+                    path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                write!(f, "file too large: {name} ({size} bytes)")
             }
             IndexError::LockConflict(p) => {
                 write!(f, "index locked by another process: {}", p.display())

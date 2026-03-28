@@ -20,6 +20,7 @@ pub enum SymbolKind {
 }
 
 impl SymbolKind {
+    /// Returns the lowercase string representation used in queries and storage.
     pub fn as_str(&self) -> &'static str {
         match self {
             SymbolKind::Function => "function",

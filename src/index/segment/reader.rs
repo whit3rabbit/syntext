@@ -109,6 +109,12 @@ pub(super) fn parse_segment_mmap(
     if dict_offset < HEADER_SIZE || dict_offset > content_end {
         return Err(corrupt("dict_offset out of range"));
     }
+    // dict must not overlap the doc table: a crafted segment with dict_offset ==
+    // doc_table_offset would cause dict_lookup to binary-search doc table bytes as
+    // dict entries, producing garbage posting offsets from an attacker-controlled region.
+    if dict_offset < doc_table_offset {
+        return Err(corrupt("dict_offset precedes doc_table_offset"));
+    }
 
     Ok(SegmentLayout {
         doc_table_offset,
@@ -163,8 +169,15 @@ pub(super) fn read_posting_list_pread(
     // abs_off is relative to start of postings data (byte POST_MAGIC_SIZE of .post file).
     // Add POST_MAGIC_SIZE to convert to file-absolute offset.
     // Read the 9-byte entry header: encoding(1) + count(4) + byte_len(4).
+    //
+    // Use checked_add: abs_off comes from on-disk dict data and could be
+    // crafted to wrap around u64::MAX, redirecting the read to byte 0 of the
+    // .post file (the magic header bytes) and producing a silent false negative.
     let mut header = [0u8; 9];
-    read_exact_at(post_file, &mut header, abs_off + POST_MAGIC_SIZE)?;
+    let header_off = abs_off.checked_add(POST_MAGIC_SIZE).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "posting header offset overflow")
+    })?;
+    read_exact_at(post_file, &mut header, header_off)?;
 
     let encoding = header[0];
     // infallible: header is [u8; 9]; header[5..9] is always exactly 4 bytes
@@ -180,7 +193,10 @@ pub(super) fn read_posting_list_pread(
     }
 
     let mut data = vec![0u8; byte_len];
-    read_exact_at(post_file, &mut data, abs_off + 9 + POST_MAGIC_SIZE)?;
+    let data_off = abs_off.checked_add(9 + POST_MAGIC_SIZE).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "posting data offset overflow")
+    })?;
+    read_exact_at(post_file, &mut data, data_off)?;
 
     match encoding {
         0 => Ok(PostingList::Small(data)),
