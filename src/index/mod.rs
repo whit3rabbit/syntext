@@ -42,6 +42,9 @@ const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 /// Fraction of base docs beyond which the overlay is considered too large.
 const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
 
+/// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
+const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
+
 /// Measure the crossover fraction where index lookup becomes cheaper than a
 /// full scan for this repository.
 ///
@@ -666,6 +669,19 @@ impl Index {
             &removed_paths,
         );
 
+        // Enforce hard overlay size limit. At > 50% of base docs the clone
+        // cost in build_incremental_delta becomes significant. Return OverlayFull
+        // so callers know to rebuild.
+        if base_doc_count > 0 {
+            let ratio = overlay.docs.len() as f64 / base_doc_count as f64;
+            if ratio > OVERLAY_ENFORCE_THRESHOLD {
+                return Err(IndexError::OverlayFull {
+                    overlay_docs: overlay.docs.len(),
+                    base_docs: base_doc_count as usize,
+                });
+            }
+        }
+
         // Compute delete_set: base doc_ids invalidated by changes.
         let delete_set = compute_delete_set(
             &old_snap.base.path_doc_ids,
@@ -844,6 +860,39 @@ mod tests {
         assert!(
             matches!(result, Err(IndexError::PathOutsideRepo(_))),
             "commit_batch must reject symlinks that escape the repo root, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn commit_batch_returns_overlay_full_when_overlay_ratio_exceeded() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..10 {
+            std::fs::write(
+                repo.path().join(format!("base_{i:03}.rs")),
+                format!("fn base_{i}() {{ let x = {i}; }}\n"),
+            )
+            .unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        for i in 0..6 {
+            let path = repo.path().join(format!("overlay_{i:03}.rs"));
+            std::fs::write(&path, format!("fn overlay_{i}() {{}}\n")).unwrap();
+            index.notify_change(&path).unwrap();
+        }
+
+        let result = index.commit_batch();
+        assert!(
+            matches!(result, Err(IndexError::OverlayFull { .. })),
+            "commit_batch must return OverlayFull when overlay exceeds 50% of base, got: {result:?}"
         );
     }
 

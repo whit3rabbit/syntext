@@ -109,6 +109,14 @@ pub enum IndexError {
     },
     /// Another process holds a conflicting lock on the index directory.
     LockConflict(PathBuf),
+    /// Overlay has grown too large relative to the base index.
+    /// Call `Index::build()` to perform a full reindex.
+    OverlayFull {
+        /// Current number of overlay documents.
+        overlay_docs: usize,
+        /// Number of base documents at the time of the check.
+        base_docs: usize,
+    },
 }
 
 impl From<std::io::Error> for IndexError {
@@ -130,6 +138,11 @@ impl std::fmt::Display for IndexError {
             IndexError::LockConflict(p) => {
                 write!(f, "index locked by another process: {}", p.display())
             }
+            IndexError::OverlayFull { overlay_docs, base_docs } => write!(
+                f,
+                "overlay too large ({overlay_docs} overlay docs, {base_docs} base docs): \
+                 run `ripline index` to rebuild"
+            ),
         }
     }
 }
