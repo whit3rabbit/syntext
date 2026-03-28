@@ -691,6 +691,7 @@ impl Index {
         });
 
         self.snapshot.store(new_snap);
+        // TODO(overlay-backpressure): call self.pending.reset() here when full reindex is triggered.
         Ok(())
     }
 
