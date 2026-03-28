@@ -280,6 +280,15 @@ impl OverlayView {
             });
         }
 
+        // Verify sorted-order invariant: new doc_ids > all existing, so push() keeps lists sorted.
+        #[cfg(debug_assertions)]
+        for (gram_hash, ids) in &gram_index {
+            debug_assert!(
+                ids.windows(2).all(|w| w[0] < w[1]),
+                "posting list for gram {gram_hash:#x} is not strictly sorted after delta build: {ids:?}"
+            );
+        }
+
         let doc_id_map = docs
             .iter()
             .enumerate()
@@ -308,3 +317,41 @@ impl OverlayView {
 
 // Re-export pending types so callers using `crate::index::overlay::*` continue to compile.
 pub use crate::index::pending::{compute_delete_set, PendingEdits, TakeResult};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn incremental_delta_posting_lists_are_sorted() {
+        let content_a: Arc<[u8]> = Arc::from(b"fn alpha_one() {}".as_slice());
+        let content_b: Arc<[u8]> = Arc::from(b"fn beta_two() {}".as_slice());
+        let overlay1 = OverlayView::build(
+            0,
+            vec![
+                ("a.rs".to_string(), Arc::clone(&content_a)),
+                ("b.rs".to_string(), Arc::clone(&content_b)),
+            ],
+        );
+
+        let content_a2: Arc<[u8]> = Arc::from(b"fn alpha_changed() {}".as_slice());
+        let newly_changed: HashSet<String> = ["a.rs".to_string()].into();
+        let removed: HashSet<String> = HashSet::new();
+
+        let overlay2 = OverlayView::build_incremental(
+            0,
+            &overlay1,
+            vec![("a.rs".to_string(), content_a2)],
+            &newly_changed,
+            &removed,
+        );
+
+        for (hash, ids) in &overlay2.gram_index {
+            assert!(
+                ids.windows(2).all(|w| w[0] < w[1]),
+                "gram {hash:#x} posting list is not strictly sorted: {ids:?}"
+            );
+        }
+    }
+}
