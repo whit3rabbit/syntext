@@ -143,21 +143,21 @@ Segments are immutable single-file mmap structures (RPLX format). Updates go thr
 
 ## Project status
 
-**Phase 2 (Foundational) — in progress.** The weight table is generated, the tokenizer is implemented, the correctness test harness is built. Posting list operations and the segment format are next.
+**Phases 1–6 and 8 complete. Phase 7 (Symbols) and Phase 9 (Polish) in progress.** The core `ripline index && ripline search "pattern"` workflow is functional and validated against ripgrep. Remaining work: Tree-sitter symbol extraction via SQLite, and larger corpus benchmarks with segment merge and crash recovery.
 
 See `specs/001-hybrid-code-search-index/tasks.md` for the full implementation plan with 69 tasks across 9 phases.
 
 | Phase | Status | What it delivers |
 |---|---|---|
 | 1. Setup | ✅ Complete | Cargo project, dependencies, module structure |
-| 2. Foundational | 🔧 In progress | Weight table, tokenizer, posting lists, correctness harness |
-| 3. US5 — Build | Not started | Full index build from scratch |
-| 4. US1 — Search | Not started | Literal + regex search, ripgrep correctness validation |
-| 5. US2 — Incremental | Not started | Overlay, batch commit, read-your-writes |
-| 6. US3 — Path scoping | Not started | Path/type filters with Roaring bitmaps |
-| 7. US4 — Symbols | Not started | Tree-sitter symbol extraction, SQLite storage |
-| 8. CLI | Not started | `ripline` binary with grep-compatible output |
-| 9. Polish | Not started | Benchmarks, edge cases, documentation |
+| 2. Foundational | ✅ Complete | Weight table, tokenizer, posting lists, correctness harness |
+| 3. US5 — Build | ✅ Complete | Full index build from scratch |
+| 4. US1 — Search | ✅ Complete | Literal + regex search, ripgrep correctness validation |
+| 5. US2 — Incremental | ✅ Complete | Overlay, batch commit, read-your-writes |
+| 6. US3 — Path scoping | ✅ Complete | Path/type filters with Roaring bitmaps |
+| 7. US4 — Symbols | 🔄 In progress | Tree-sitter symbol extraction, SQLite storage |
+| 8. CLI | ✅ Complete | `ripline` binary with grep-compatible output |
+| 9. Polish | 🔄 In progress | Benchmarks, edge cases, documentation |
 
 ## Design documents
 
