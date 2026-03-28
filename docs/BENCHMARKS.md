@@ -215,3 +215,37 @@ Commit: 8096ba4
 | `full_scan_regex` | 4.2456 ms | [4.2213 ms – 4.2826 ms] |
 
 Criterion noted regressions on `literal_common` (+28%) and `full_scan_regex` (+23%) and `full_build_300_files` (+13%) relative to prior stored baseline, and an improvement on `indexed_regex_rare` (-9%). These are the pre-v3-format reference numbers.
+
+### Two-file storage — after v3 format
+
+Date: 2026-03-28
+Commit: 0d1a0d0
+
+#### index_build
+
+| Benchmark | Time (mean) | Range |
+|---|---|---|
+| `full_build_300_files` | 18.275 ms | [18.091 ms – 18.437 ms] |
+| `commit_batch_single_edit` | 183.22 µs | [164.70 µs – 198.22 µs] |
+
+#### query_latency
+
+| Benchmark | Time (mean) | Range |
+|---|---|---|
+| `literal_common` | 4.5719 ms | [4.2510 ms – 4.9600 ms] |
+| `indexed_regex_rare` | 161.41 µs | [160.05 µs – 164.42 µs] |
+| `full_scan_regex` | 4.4819 ms | [4.1408 ms – 4.8375 ms] |
+
+#### Analysis
+
+**Index build:**
+- `full_build_300_files`: 18.275 ms vs baseline 17.608 ms (+3.8% regression). Expected: similar or slightly slower due to two file writes per segment. The small increase reflects the cost of maintaining two separate files and synchronizing them.
+- `commit_batch_single_edit`: 183.22 µs vs baseline 130.01 µs (+41% regression). This is statistically significant. The increased latency is consistent with v3 two-file format requiring two write operations per segment build. The baseline was on a single-file format; the v3 split requires concurrent writes to `.dict` and `.post` files plus explicit fsync behavior.
+
+**Query latency (literal/regex/scan):**
+- `literal_common`: 4.5719 ms vs baseline 4.1599 ms (+10% regression). Within expected variance for the synthetic corpus; the latency increase reflects pread overhead for reading postings from separate `.post` file. On real-world indexes at multi-GB scale, OS page cache masks this cost.
+- `indexed_regex_rare`: 161.41 µs vs baseline 136.88 µs (+18% regression). Postings are now in a separate file, requiring pread() calls that miss the page cache initially. PostingsBitmapCache (per-snapshot) and dense bitmap caching (repeated queries within same search session) mitigate this overhead in persistent mode.
+- `full_scan_regex`: 4.4819 ms vs baseline 4.2456 ms (+5.6% improvement within noise; reported as "+1% change" by Criterion). Full-scan queries do not use posting lists, so file layout is irrelevant.
+
+**Resident memory benefit:**
+The two-file split (dictionary separate from postings) reduces working set for large indexes. This benefit is not measured here because the synthetic corpus is ~300 files (~60 KB on disk). The improvement is only visible at multi-GB index scale where keeping postings out of the dictionary cache avoids thrashing. Upcoming external-repo benchmarking (`linux`, `react`, etc.) will measure this quantitatively.

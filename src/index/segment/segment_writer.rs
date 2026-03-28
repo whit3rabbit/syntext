@@ -27,6 +27,8 @@ pub struct SegmentWriter {
     /// Unsorted `(gram_hash, doc_id)` pairs, aggregated at write time.
     postings: Vec<(u64, u32)>,
     /// Capacity hint recorded at construction for debug overshoot detection.
+    /// Only used in debug assertions; allowed to be dead in release builds.
+    #[allow(dead_code)]
     initial_postings_capacity: usize,
 }
 
