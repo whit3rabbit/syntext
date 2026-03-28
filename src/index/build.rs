@@ -179,7 +179,6 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
         }
 
         let meta = writer.write_to_dir(&config.index_dir)?;
-        let seg_path = config.index_dir.join(&meta.filename);
 
         // Sanity check: the posting/dictionary overhead should not exceed 50% of
         // the raw content size. Larger ratios indicate an unexpectedly dense gram
@@ -189,7 +188,14 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
             .zip(results.iter())
             .filter_map(|((_, _, size), r)| r.as_ref().map(|_| size))
             .sum();
-        let seg_size = fs::metadata(&seg_path).map(|m| m.len()).unwrap_or(0);
+        // For v3 segments the segment size is .dict + .post combined.
+        let dict_size = fs::metadata(config.index_dir.join(&meta.dict_filename))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let post_size = fs::metadata(config.index_dir.join(&meta.post_filename))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let seg_size = dict_size + post_size;
         if config.verbose && seg_size > content_size / 2 && content_size > 0 {
             eprintln!(
                 "syntext: warning: segment is {seg_size} bytes for {content_size} bytes content"

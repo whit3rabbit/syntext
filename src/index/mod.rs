@@ -138,18 +138,24 @@ impl Index {
         let mut next_global_id: u32 = 0;
 
         for seg_ref in &manifest.segments {
+            // Choose the correct file to open: v3 uses dict_filename, v2 uses filename.
+            let open_filename = if !seg_ref.dict_filename.is_empty() {
+                &seg_ref.dict_filename
+            } else {
+                &seg_ref.filename
+            };
             // Reject path traversal in manifest segment filenames
-            if seg_ref.filename.contains('/')
-                || seg_ref.filename.contains('\\')
-                || seg_ref.filename.contains("..")
-                || Path::new(&seg_ref.filename).is_absolute()
+            if open_filename.contains('/')
+                || open_filename.contains('\\')
+                || open_filename.contains("..")
+                || Path::new(open_filename).is_absolute()
             {
                 return Err(IndexError::CorruptIndex(format!(
                     "invalid segment filename in manifest: {:?}",
-                    seg_ref.filename
+                    open_filename
                 )));
             }
-            let seg_path = config.index_dir.join(&seg_ref.filename);
+            let seg_path = config.index_dir.join(open_filename);
             let seg = MmapSegment::open(&seg_path)?;
             segment_base_ids.push(next_global_id);
             // Iterate using local 0-based indices (0..seg.doc_count).

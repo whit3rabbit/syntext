@@ -1,8 +1,9 @@
 //! SNTX segment writer.
 //!
 //! Accumulates documents and gram postings in memory, then serializes them
-//! to the SNTX on-disk format. See `segment.rs` for format constants and
-//! shared types (`DocEntry`, `SegmentMeta`).
+//! to the SNTX v3 split format: a `.dict` file (header, doc table, page-aligned
+//! dictionary, footer) and a `.post` file (raw postings bytes).
+//! See `segment.rs` for format constants and shared types (`DocEntry`, `SegmentMeta`).
 
 use std::io;
 use std::path::Path;
@@ -18,7 +19,8 @@ use crate::posting::{roaring_util, varint_encode, ROARING_THRESHOLD};
 // T021: SegmentWriter
 // ---------------------------------------------------------------------------
 
-/// Accumulates documents and gram postings, then serializes to an SNTX file.
+/// Accumulates documents and gram postings, then serializes to SNTX v3 split
+/// files (`.dict` + `.post`).
 pub struct SegmentWriter {
     docs: Vec<DocEntry>,
     /// Unsorted `(gram_hash, doc_id)` pairs, aggregated at write time.
@@ -76,46 +78,73 @@ impl SegmentWriter {
         self.postings.push((gram_hash, doc_id));
     }
 
-    /// Write segment into `dir`, naming it `{uuid}.seg`.
+    /// Write segment into `dir`, naming files `{uuid}.dict` and `{uuid}.post`.
     ///
-    /// Returns metadata whose `filename` matches the file created on disk.
-    /// Use this in production code so the manifest is always consistent.
+    /// Returns metadata whose `dict_filename` and `post_filename` match the
+    /// files created on disk. Use this in production code so the manifest is
+    /// always consistent.
     pub fn write_to_dir(&mut self, dir: &Path) -> io::Result<SegmentMeta> {
         let segment_id = Uuid::new_v4();
-        let filename = format!("{}.seg", segment_id);
-        let path = dir.join(&filename);
-        let (bytes, doc_count, gram_count) = self.serialize()?;
-        std::fs::write(&path, &bytes)?;
+        let dict_filename = format!("{}.dict", segment_id);
+        let post_filename = format!("{}.post", segment_id);
+        let (dict_bytes, post_bytes, doc_count, gram_count) = self.serialize()?;
+        std::fs::write(dir.join(&dict_filename), &dict_bytes)?;
+        std::fs::write(dir.join(&post_filename), &post_bytes)?;
         Ok(SegmentMeta {
             segment_id,
-            filename,
+            filename: String::new(),
+            dict_filename,
+            post_filename,
             doc_count,
             gram_count,
         })
     }
 
-    /// Write segment to an explicit `path` (used in unit tests with `NamedTempFile`).
+    /// Write segment files derived from `path` (used in unit tests).
     ///
-    /// The `SegmentMeta.filename` reflects the actual `path.file_name()`.
+    /// Writes `{stem}.dict` and `{stem}.post` alongside the provided path,
+    /// replacing whatever extension was given. The `SegmentMeta.dict_filename`
+    /// and `post_filename` reflect the actual names created on disk.
     pub fn write_to_file(&mut self, path: &Path) -> io::Result<SegmentMeta> {
         let segment_id = Uuid::new_v4();
-        let filename = path
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("segment");
+        let dict_path = parent.join(format!("{stem}.dict"));
+        let post_path = parent.join(format!("{stem}.post"));
+        let dict_filename = dict_path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("segment.seg")
+            .unwrap_or("segment.dict")
             .to_owned();
-        let (bytes, doc_count, gram_count) = self.serialize()?;
-        std::fs::write(path, &bytes)?;
+        let post_filename = post_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("segment.post")
+            .to_owned();
+        let (dict_bytes, post_bytes, doc_count, gram_count) = self.serialize()?;
+        std::fs::write(&dict_path, &dict_bytes)?;
+        std::fs::write(&post_path, &post_bytes)?;
         Ok(SegmentMeta {
             segment_id,
-            filename,
+            filename: String::new(),
+            dict_filename,
+            post_filename,
             doc_count,
             gram_count,
         })
     }
 
-    /// Build the on-disk byte representation. Returns `(bytes, doc_count, gram_count)`.
-    fn serialize(&mut self) -> io::Result<(Vec<u8>, u32, u32)> {
+    /// Build the on-disk byte representations.
+    ///
+    /// Returns `(dict_bytes, post_bytes, doc_count, gram_count)`.
+    ///
+    /// `dict_bytes`: header + doc table + page-aligned dictionary + footer.
+    /// `post_bytes`: raw posting list data; offsets in dict entries are byte
+    ///   offsets from the start of `post_bytes` (offset 0 = first byte).
+    fn serialize(&mut self) -> io::Result<(Vec<u8>, Vec<u8>, u32, u32)> {
         self.docs.sort_by_key(|d| d.doc_id);
 
         // Validate that doc_ids are strictly increasing after sort.
@@ -154,7 +183,7 @@ impl SegmentWriter {
         buf.extend_from_slice(&0u32.to_le_bytes()); // gram_count placeholder
         let hdr_offsets_pos = buf.len();
         buf.extend_from_slice(&0u64.to_le_bytes()); // doc_table_offset placeholder
-        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset placeholder
+        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset (reserved/0 in v3)
         buf.extend_from_slice(&0u64.to_le_bytes()); // dict_offset placeholder
         debug_assert_eq!(buf.len(), HEADER_SIZE);
 
@@ -189,8 +218,9 @@ impl SegmentWriter {
             buf[p..p + 8].copy_from_slice(&abs_off.to_le_bytes());
         }
 
-        // Postings Section
-        let postings_offset = buf.len() as u64;
+        // Postings Section -- written to post_buf, not to the main dict buf.
+        // Offsets stored in dict entries are byte offsets from the start of post_buf.
+        let mut post_buf: Vec<u8> = Vec::new();
         let mut dict_entries: Vec<(u64, u64, u32)> = Vec::new();
         let mut posting_idx = 0usize;
         while posting_idx < self.postings.len() {
@@ -201,7 +231,7 @@ impl SegmentWriter {
                 posting_idx += 1;
             }
 
-            let posting_abs_off = buf.len() as u64;
+            let posting_abs_off = post_buf.len() as u64; // offset within .post file
             let doc_ids: Vec<u32> = self.postings[group_start..posting_idx]
                 .iter()
                 .map(|(_, doc_id)| *doc_id)
@@ -210,10 +240,10 @@ impl SegmentWriter {
             if doc_ids.len() >= ROARING_THRESHOLD {
                 let bm: RoaringBitmap = doc_ids.iter().copied().collect();
                 let rbytes = roaring_util::serialize(&bm);
-                buf.push(1u8);
-                buf.extend_from_slice(&entry_count.to_le_bytes());
-                buf.extend_from_slice(&(rbytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(&rbytes);
+                post_buf.push(1u8);
+                post_buf.extend_from_slice(&entry_count.to_le_bytes());
+                post_buf.extend_from_slice(&(rbytes.len() as u32).to_le_bytes());
+                post_buf.extend_from_slice(&rbytes);
             } else {
                 let encoded = varint_encode(&doc_ids).map_err(|msg| {
                     io::Error::new(
@@ -221,10 +251,10 @@ impl SegmentWriter {
                         format!("segment postings for gram {gram_hash:#x}: {msg}"),
                     )
                 })?;
-                buf.push(0u8);
-                buf.extend_from_slice(&entry_count.to_le_bytes());
-                buf.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
-                buf.extend_from_slice(&encoded);
+                post_buf.push(0u8);
+                post_buf.extend_from_slice(&entry_count.to_le_bytes());
+                post_buf.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+                post_buf.extend_from_slice(&encoded);
             }
             dict_entries.push((gram_hash, posting_abs_off, entry_count));
         }
@@ -244,16 +274,18 @@ impl SegmentWriter {
             buf.extend_from_slice(&abs_off.to_le_bytes());
             buf.extend_from_slice(&count.to_le_bytes());
         }
+
         // Patch header offsets
         buf[hdr_offsets_pos..hdr_offsets_pos + 8].copy_from_slice(&doc_table_offset.to_le_bytes());
         buf[hdr_offsets_pos + 8..hdr_offsets_pos + 16]
-            .copy_from_slice(&postings_offset.to_le_bytes());
-        buf[hdr_offsets_pos + 16..hdr_offsets_pos + 24].copy_from_slice(&dict_offset.to_le_bytes());
+            .copy_from_slice(&0u64.to_le_bytes()); // postings_offset reserved/0 in v3
+        buf[hdr_offsets_pos + 16..hdr_offsets_pos + 24]
+            .copy_from_slice(&dict_offset.to_le_bytes());
 
         // TOC Footer
         let checksum = xxh64(&buf, 0);
         buf.extend_from_slice(&doc_table_offset.to_le_bytes()); // -48
-        buf.extend_from_slice(&postings_offset.to_le_bytes()); // -40
+        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset (0 in v3) -40
         buf.extend_from_slice(&dict_offset.to_le_bytes()); // -32
         buf.extend_from_slice(&doc_count.to_le_bytes()); // -24
         buf.extend_from_slice(&gram_count.to_le_bytes()); // -20
@@ -261,6 +293,6 @@ impl SegmentWriter {
         buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes()); // -8
         buf.extend_from_slice(MAGIC); // -4
 
-        Ok((buf, doc_count, gram_count))
+        Ok((buf, post_buf, doc_count, gram_count))
     }
 }

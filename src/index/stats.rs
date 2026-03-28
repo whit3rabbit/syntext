@@ -29,12 +29,38 @@ pub fn compute_stats(snap: &IndexSnapshot, config: &Config) -> IndexStats {
             .segments
             .iter()
             .map(|sr| {
-                config
-                    .index_dir
-                    .join(&sr.filename)
-                    .metadata()
-                    .map(|m| m.len())
-                    .unwrap_or(0)
+                // v3: sum .dict + .post; v2: just .seg
+                let dict_size = if !sr.dict_filename.is_empty() {
+                    config
+                        .index_dir
+                        .join(&sr.dict_filename)
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let post_size = if !sr.post_filename.is_empty() {
+                    config
+                        .index_dir
+                        .join(&sr.post_filename)
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let seg_file_size = if !sr.filename.is_empty() {
+                    config
+                        .index_dir
+                        .join(&sr.filename)
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                dict_size + post_size + seg_file_size
             })
             .sum()
     } else {

@@ -16,8 +16,15 @@ use crate::index::segment::SegmentMeta;
 pub struct SegmentRef {
     /// UUID string that uniquely identifies this segment across rebuilds.
     pub segment_id: String,
-    /// Filename relative to the index directory (e.g., `"<uuid>.seg"`).
+    /// Legacy combined filename (`<uuid>.seg`). Empty for v3 segments.
+    #[serde(default)]
     pub filename: String,
+    /// Dictionary filename (`<uuid>.dict`) for v3 segments. Empty for v2.
+    #[serde(default)]
+    pub dict_filename: String,
+    /// Postings filename (`<uuid>.post`) for v3 segments. Empty for v2.
+    #[serde(default)]
+    pub post_filename: String,
     /// Number of documents (files) indexed in this segment.
     pub doc_count: u32,
     /// Number of distinct n-gram hashes stored in this segment's dictionary.
@@ -29,6 +36,8 @@ impl From<SegmentMeta> for SegmentRef {
         SegmentRef {
             segment_id: m.segment_id.to_string(),
             filename: m.filename,
+            dict_filename: m.dict_filename,
+            post_filename: m.post_filename,
             doc_count: m.doc_count,
             gram_count: m.gram_count,
         }
@@ -132,13 +141,26 @@ impl Manifest {
 
     /// Delete segment files in `index_dir` not referenced by this manifest.
     pub fn gc_orphan_segments(&self, index_dir: &Path) -> io::Result<()> {
-        let known: std::collections::HashSet<&str> =
-            self.segments.iter().map(|s| s.filename.as_str()).collect();
+        let mut known: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for s in &self.segments {
+            if !s.filename.is_empty() {
+                known.insert(s.filename.as_str());
+            }
+            if !s.dict_filename.is_empty() {
+                known.insert(s.dict_filename.as_str());
+            }
+            if !s.post_filename.is_empty() {
+                known.insert(s.post_filename.as_str());
+            }
+        }
         for entry in std::fs::read_dir(index_dir)? {
             let entry = entry?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.ends_with(".seg") && !known.contains(name_str.as_ref()) {
+            let is_segment_file = name_str.ends_with(".seg")
+                || name_str.ends_with(".dict")
+                || name_str.ends_with(".post");
+            if is_segment_file && !known.contains(name_str.as_ref()) {
                 if let Err(e) = std::fs::remove_file(entry.path()) {
                     eprintln!("syntext: gc: could not remove {}: {e}", name_str);
                 }
