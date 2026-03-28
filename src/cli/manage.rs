@@ -147,6 +147,12 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         }
     };
 
+    // Security audit (command injection): no user-controlled data is interpolated
+    // as shell arguments. `resolve_git_binary()` resolves the git path via PATH
+    // with canonicalize (see its doc comment). `canonical_root` below is
+    // canonicalized before passing to `git -C`. All other arguments are static
+    // string literals. The only injection surface would be `--repo-root`, which
+    // is documented as trusted input.
     let git = resolve_git_binary();
     let mut changed: HashSet<String> = HashSet::new();
 

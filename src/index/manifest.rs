@@ -109,6 +109,13 @@ impl Manifest {
     const MAX_MANIFEST_SIZE: u64 = 10 * 1024 * 1024;
 
     /// Load the manifest from `index_dir/manifest.json`.
+    ///
+    /// Security audit (deserialization): `serde_json::from_str` performs pure data
+    /// parsing with no code execution, no gadget chains, and no polymorphic type
+    /// resolution. The 10 MB size cap (`MAX_MANIFEST_SIZE`) bounds memory before
+    /// parsing begins. Post-parse, `MAX_TOTAL_DOCS` (50M, in `index/mod.rs`)
+    /// caps the doc count derived from segment refs, preventing unbounded
+    /// allocations from a crafted manifest with inflated `doc_count` values.
     pub fn load(index_dir: &Path) -> io::Result<Self> {
         let path = index_dir.join(Self::FILENAME);
         let meta = std::fs::metadata(&path)?;

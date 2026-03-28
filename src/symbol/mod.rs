@@ -121,6 +121,12 @@ impl SymbolIndex {
     /// Search for symbols matching `name_query` (prefix match, case-insensitive).
     ///
     /// Optionally filter by `kind` (e.g., "function", "struct").
+    ///
+    /// Security audit (SQL injection): all user-supplied values (`name_query`,
+    /// `kind_filter`) are bound via `rusqlite::params!` positional placeholders
+    /// (`?1`, `?2`). The only dynamic SQL is the branch selecting one of two
+    /// static string literals for the `kind` clause. No user input is ever
+    /// interpolated into the SQL text. LIKE metacharacters are escaped below.
     pub fn search(
         &self,
         name_query: &str,

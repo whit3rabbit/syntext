@@ -84,6 +84,20 @@ fn push_file_record(
     files.push((read_path, rel, size));
 }
 
+/// Resolve a symlink entry and add it to the file list if it points inside the repo.
+///
+/// Security audit (symlink escape): three-layer defense prevents indexing files
+/// outside the repository root:
+///   1. `canonicalize(target)` resolves the full chain, then `starts_with(canonical_root)`
+///      rejects targets outside the repo.
+///   2. Post-canonicalize TOCTOU guard: `symlink_metadata(canonical_target)` re-stats
+///      the resolved path and rejects it if it is itself a symlink (concurrent swap).
+///   3. `seen_canonical` deduplication prevents N symlinks to the same directory from
+///      producing N sub-walks, bounding traversal cost.
+/// Multi-hop symlink chains are rejected at step 1 (the initial `symlink_metadata`
+/// check rejects targets that are themselves symlinks, limiting to one level of
+/// indirection). Tests: `enumerate_files_skips_symlink_outside_repo`,
+/// `collect_symlink_entry_rejects_canonical_symlink`.
 fn collect_symlink_entry(
     symlink_path: &Path,
     repo_root: &Path,

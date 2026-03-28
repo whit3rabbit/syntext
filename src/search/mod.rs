@@ -27,6 +27,15 @@ use crate::query::{literal_grams, route_query, GramQuery, QueryRoute};
 use crate::{Config, IndexError, SearchMatch, SearchOptions};
 
 /// 10 MiB cap on regex NFA/DFA size: prevents ReDoS during compilation (not just matching).
+///
+/// Security audit: user-supplied patterns pass through two layers before matching:
+///   1. `regex_syntax::Parser` in `decompose()` validates HIR structure and rejects
+///      invalid syntax before the main `RegexBuilder` sees the pattern.
+///   2. `RegexBuilder::size_limit` + `dfa_size_limit` (set here) cap the NFA/DFA
+///      automaton size at compilation time, bounding both memory and CPU.
+/// Together these prevent catastrophic backtracking and unbounded automaton growth
+/// from adversarial patterns. The `regex` crate's RE2-style engine guarantees
+/// linear-time matching once compiled, so matching itself is not a ReDoS vector.
 pub(crate) const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
 
 use verifier::{verify_literal, verify_regex};
