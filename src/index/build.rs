@@ -5,6 +5,7 @@
 //! during a fresh `st index` build; it is not used by open/search/commit.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -48,19 +49,23 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
         .collect();
 
     let mut docs_read = 0usize;
-    let mut scan_elapsed_ns = 0u64;
+    // Use u128 to match as_nanos() return type; avoids silent truncation on
+    // platforms where accumulated sample time would overflow u64 (~584 years
+    // of nanoseconds). Cast to u64 only after the per-doc division.
+    let mut scan_elapsed_ns = 0u128;
     for path in &sample_paths {
         let t0 = std::time::Instant::now();
         if std::fs::read(config.repo_root.join(path)).is_ok() {
             docs_read += 1;
-            scan_elapsed_ns += t0.elapsed().as_nanos() as u64;
+            scan_elapsed_ns += t0.elapsed().as_nanos();
         }
     }
 
     if docs_read == 0 || scan_elapsed_ns == 0 {
         return DEFAULT;
     }
-    let scan_ns_per_doc = scan_elapsed_ns / docs_read as u64;
+    // Per-doc value is always << u64::MAX; cast is safe after division.
+    let scan_ns_per_doc = (scan_elapsed_ns / docs_read as u128) as u64;
 
     // --- Posting cost: synthetic Roaring bitmap AND microbenchmark ---
     // Two bitmaps with BITMAP_ENTRIES entries each, interleaved so the AND
@@ -72,13 +77,14 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
     for _ in 0..BITMAP_REPS {
         let _ = &a & &b;
     }
-    let posting_elapsed_ns = t1.elapsed().as_nanos() as u64;
+    // u128 accumulation; per-entry value cast to u64 after division.
+    let posting_elapsed_ns = t1.elapsed().as_nanos();
     // Cost per entry processed by the AND (both bitmaps contribute BITMAP_ENTRIES entries).
     let total_entries_processed = BITMAP_ENTRIES as u64 * BITMAP_REPS as u64 * 2;
     if posting_elapsed_ns == 0 {
         return DEFAULT;
     }
-    let posting_ns_per_entry = posting_elapsed_ns / total_entries_processed;
+    let posting_ns_per_entry = (posting_elapsed_ns / total_entries_processed as u128) as u64;
 
     if posting_ns_per_entry == 0 {
         // Posting decode is immeasurably fast relative to scan — use index
@@ -101,6 +107,18 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
 /// `Index` by delegating to `Index::open()` after writing all segments.
 pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     fs::create_dir_all(&config.index_dir)?;
+    // Security: restrict the index directory to owner-only access. A group- or
+    // world-writable index directory allows an unprivileged process to replace
+    // segment files or symbols.db between open and mmap, enabling a SIGBUS DoS
+    // via ftruncate() racing the xxh64 checksum pass (SIGBUS window) or
+    // injecting crafted DB rows (Vuln 4). Mode 0700 eliminates both threats in
+    // single-principal deployments. Multi-tenant shared-cache deployments must
+    // additionally arrange for mandatory locking or separate index directories.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&config.index_dir, fs::Permissions::from_mode(0o700))?;
+    }
 
     // Exclusive lock for the duration of the build. Prevents concurrent
     // builds and blocks open() callers until the build completes.
@@ -145,7 +163,21 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
         let results: Vec<Option<(u64, Vec<u64>)>> = batch
             .par_iter()
             .map(|(abs_path, _, _)| {
-                let content = fs::read(abs_path).ok()?;
+                // Security: close the TOCTOU window between enumerate_files()'s
+                // symlink resolution (symlink_metadata + canonicalize) and this
+                // read. A concurrent rename() could swap the canonical target
+                // after the walk's stat. open_readonly_nofollow blocks final-
+                // component symlink substitution (O_NOFOLLOW); verify_fd_matches_stat
+                // catches directory-component swaps by comparing dev/ino before
+                // open vs after open. This matches the same pattern used in
+                // commit_batch and the resolver hot path.
+                let pre_meta = std::fs::symlink_metadata(abs_path).ok()?;
+                let mut file = super::open_readonly_nofollow(abs_path).ok()?;
+                if !super::verify_fd_matches_stat(&file, &pre_meta) {
+                    return None;
+                }
+                let mut content = Vec::new();
+                file.read_to_end(&mut content).ok()?;
                 if is_binary(&content) {
                     return None;
                 }
@@ -245,11 +277,18 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
                             if !is_binary(&content) {
                                 // file_id from path_index built in open(); use position
                                 // in indexed_paths as a stable id for build time.
-                                let file_id = indexed_paths
+                                // Security: skip symbol indexing for files absent from
+                                // indexed_paths (binary or unreadable during gram indexing).
+                                // unwrap_or(0) would silently assign file_id 0, colliding
+                                // with the first legitimately indexed file and corrupting
+                                // its symbol rows and any incremental delete operation.
+                                let Some(pos) = indexed_paths
                                     .iter()
                                     .position(|p| p == rel_path)
-                                    .unwrap_or(0)
-                                    as u32;
+                                else {
+                                    continue;
+                                };
+                                let file_id = pos as u32;
                                 let rel_path_str = rel_path.to_string_lossy();
                                 if let Err(e) = sym_idx.index_file(file_id, &rel_path_str, &content) {
                                         if config.verbose {

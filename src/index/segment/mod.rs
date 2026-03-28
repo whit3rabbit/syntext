@@ -325,11 +325,32 @@ impl MmapSegment {
             .checked_add((doc_id as usize).checked_mul(8)?)? ;
         let abs_off =
             u64::from_le_bytes(self.mmap.get(idx_pos..idx_pos + 8)?.try_into().ok()?) as usize;
+        // Security: validate abs_off points within the doc table section, not the
+        // dictionary or footer. Doc entries occupy [doc_table_offset, dict_offset).
+        // Minimum fixed entry size: doc_id(4) + content_hash(8) + size_bytes(8) +
+        // path_len(2) = 22 bytes. A crafted segment with a valid checksum could embed
+        // an abs_off pointing into the dict section; without this check, dict bytes
+        // would be returned to callers as DocEntry fields (information disclosure).
+        const MIN_DOC_ENTRY_BYTES: usize = 22;
+        if abs_off < self.doc_table_offset
+            || abs_off.saturating_add(MIN_DOC_ENTRY_BYTES) > self.dict_offset
+        {
+            return None;
+        }
         let e = self.mmap.get(abs_off..)?;
         let doc_id_r = u32::from_le_bytes(e.get(0..4)?.try_into().ok()?);
         let content_hash = u64::from_le_bytes(e.get(4..12)?.try_into().ok()?);
         let size_bytes = u64::from_le_bytes(e.get(12..20)?.try_into().ok()?);
         let path_len = u16::from_le_bytes(e.get(20..22)?.try_into().ok()?) as usize;
+        // Security: verify the full variable-length entry (22 fixed bytes + path)
+        // fits within the doc table region [doc_table_offset, dict_offset). The
+        // earlier MIN_DOC_ENTRY_BYTES check only reserved space for the 22-byte
+        // fixed header. A crafted segment could set path_len large enough to
+        // extend the slice past dict_offset, silently dropping this doc from all
+        // query results (targeted denial-of-service against specific files).
+        if abs_off.saturating_add(22 + path_len) > self.dict_offset {
+            return None;
+        }
         let path = path_from_bytes(e.get(22..22 + path_len)?);
         Some(DocEntry {
             doc_id: doc_id_r,
@@ -374,6 +395,17 @@ impl MmapSegment {
     }
 
     fn read_posting_list_mmap(&self, abs_off: usize) -> Option<PostingList> {
+        // Security: validate abs_off points within the postings section of a V2
+        // combined segment. Postings precede the dictionary; minimum entry size is
+        // 9 bytes: encoding(1) + count(4) + byte_len(4). Without this check, a
+        // crafted V2 dict entry with an abs_off pointing into the doc table or
+        // header would return garbage bytes as a posting list (information disclosure).
+        const MIN_POSTING_BYTES: usize = 9;
+        if abs_off < HEADER_SIZE
+            || abs_off.saturating_add(MIN_POSTING_BYTES) > self.dict_offset
+        {
+            return None;
+        }
         let b = self.mmap.get(abs_off..)?;
         let encoding = *b.first()?;
         let byte_len = u32::from_le_bytes(b.get(5..9)?.try_into().ok()?) as usize;
@@ -691,6 +723,49 @@ mod tests {
             &dir.path().join(&meta.post_filename),
         );
         assert!(result.is_err(), "open_split must reject corrupt .post magic");
+    }
+
+    #[test]
+    fn get_doc_rejects_abs_off_pointing_into_dict_section() {
+        // Security regression test for Fix 1a: craft a segment whose doc table
+        // index pointer points into the dictionary section. Without the abs_off
+        // range check, get_doc would interpret dict bytes as DocEntry fields
+        // (information disclosure). With the check, it must return None.
+        use xxhash_rust::xxh64::xxh64;
+
+        let dir = TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, Path::new("a.rs"), 0xABCD, 10);
+        writer.add_gram_posting(0x1111, 0);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        let dict_path = dir.path().join(&meta.dict_filename);
+        let mut bytes = std::fs::read(&dict_path).unwrap();
+        let len = bytes.len();
+        // Footer layout (from end): [doc_table_off(8)][reserved(8)][dict_off(8)]
+        //                           [doc_cnt(4)][gram_cnt(4)][cksum(8)][ver(4)][magic(4)]
+        let footer_start = len - FOOTER_SIZE;
+        let dict_offset_value =
+            u64::from_le_bytes(bytes[footer_start + 16..footer_start + 24].try_into().unwrap())
+                as usize;
+
+        // Overwrite doc 0's abs_off pointer to point 4 bytes into the dict section.
+        let doc_table_offset = HEADER_SIZE; // always 40 for V3
+        let bad_abs_off = (dict_offset_value + 4) as u64;
+        bytes[doc_table_offset..doc_table_offset + 8].copy_from_slice(&bad_abs_off.to_le_bytes());
+
+        // Recompute the checksum over the content (everything before the footer).
+        let new_cksum = xxh64(&bytes[..footer_start], 0);
+        bytes[footer_start + 32..footer_start + 40].copy_from_slice(&new_cksum.to_le_bytes());
+
+        let crafted_path = dir.path().join("crafted.dict");
+        std::fs::write(&crafted_path, &bytes).unwrap();
+
+        let seg = MmapSegment::open(&crafted_path).unwrap();
+        assert!(
+            seg.get_doc(0).is_none(),
+            "get_doc must return None when abs_off points into dict section"
+        );
     }
 
     #[test]

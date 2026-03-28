@@ -178,13 +178,27 @@ impl SymbolIndex {
 
         Ok(rows
             .into_iter()
-            .map(|(path, line, name)| SearchMatch {
-                path: PathBuf::from(path),
-                line_number: line,
-                line_content: name.into_bytes(),
-                byte_offset: 0,
-                submatch_start: 0,
-                submatch_end: 0,
+            .filter_map(|(path, line, name)| {
+                let pb = PathBuf::from(&path);
+                // Security: all paths written by index_file() are repo-relative paths
+                // from the walk — no absolute paths, no '..' components. A crafted
+                // symbols.db placed in the index directory could embed traversal paths;
+                // a caller that joins the result with repo_root would escape the repo.
+                // We filter (skip) rather than error so one bad row does not abort
+                // a query that has many valid rows.
+                if pb.is_absolute()
+                    || pb.components().any(|c| c == std::path::Component::ParentDir)
+                {
+                    return None;
+                }
+                Some(SearchMatch {
+                    path: pb,
+                    line_number: line,
+                    line_content: name.into_bytes(),
+                    byte_offset: 0,
+                    submatch_start: 0,
+                    submatch_end: 0,
+                })
             })
             .collect())
     }
@@ -206,6 +220,57 @@ mod tests {
         // If neither panics, the type system accepted Option<SymbolKind>.
         drop(_r1);
         drop(_r2);
+    }
+
+    #[test]
+    fn search_filters_traversal_paths_from_crafted_db() {
+        // Security regression test for Fix 2 (Vuln 4): a crafted symbols.db
+        // that embeds path traversal strings must not appear in search results.
+        // Legitimate rows with valid relative paths must still be returned.
+        use rusqlite::params;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let idx = SymbolIndex::open(tmp.path()).unwrap();
+
+        // Inject rows directly, bypassing index_file(), to simulate a crafted DB.
+        {
+            let conn = idx.conn.lock().unwrap();
+            // Bad: absolute path
+            conn.execute(
+                "INSERT INTO symbols(name, kind, file_id, path, line, col) \
+                 VALUES('root_fn', 'function', 1, '/etc/passwd', 1, 0)",
+                [],
+            )
+            .unwrap();
+            // Bad: parent-dir traversal
+            conn.execute(
+                "INSERT INTO symbols(name, kind, file_id, path, line, col) \
+                 VALUES('escape_fn', 'function', 2, '../../etc/shadow', 1, 0)",
+                [],
+            )
+            .unwrap();
+            // Good: legitimate relative path
+            conn.execute(
+                "INSERT INTO symbols(name, kind, file_id, path, line, col) \
+                 VALUES('real_fn', 'function', 3, 'src/lib.rs', 10, 4)",
+                params![],
+            )
+            .unwrap();
+        }
+
+        let results = idx.search("", None).unwrap();
+        let paths: Vec<_> = results.iter().map(|m| m.path.display().to_string()).collect();
+
+        assert!(
+            !paths.iter().any(|p| p.contains("etc/passwd") || p.contains("etc/shadow")),
+            "traversal paths must not appear in results: {:?}",
+            paths
+        );
+        assert!(
+            paths.iter().any(|p| p == "src/lib.rs"),
+            "legitimate relative path must still be returned: {:?}",
+            paths
+        );
     }
 }
 

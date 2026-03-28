@@ -130,6 +130,26 @@ impl Index {
             .try_lock_shared()
             .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
 
+        // Security: warn when the index directory is readable or writable by
+        // group/other. Permissive modes allow concurrent ftruncate() races
+        // (SIGBUS DoS) and crafted-file injection. New builds enforce 0700 via
+        // build_index(); this check catches pre-existing indexes and warns the
+        // operator without failing the open.
+        #[cfg(unix)]
+        if config.verbose {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(meta) = std::fs::metadata(&config.index_dir) {
+                if meta.mode() & 0o077 != 0 {
+                    eprintln!(
+                        "syntext: warning: index dir {:?} has mode {:04o}; \
+                         recommend chmod 700 to prevent injection and SIGBUS DoS",
+                        config.index_dir,
+                        meta.mode() & 0o777
+                    );
+                }
+            }
+        }
+
         let manifest = Manifest::load(&config.index_dir)?;
 
         let scan_threshold = manifest

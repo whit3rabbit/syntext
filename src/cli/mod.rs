@@ -251,10 +251,19 @@ fn resolve_config(cli: &Cli) -> Config {
         .or_else(detect_repo_root)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let index_dir = cli
-        .index_dir
-        .clone()
-        .unwrap_or_else(|| repo_root.join(".syntext"));
+    let index_dir = {
+        let raw = cli
+            .index_dir
+            .clone()
+            .unwrap_or_else(|| repo_root.join(".syntext"));
+        // Security: reject paths that overlap system directories before any
+        // fs::create_dir_all or fs::set_permissions call in build_index.
+        if let Err(msg) = validate_index_dir(&raw) {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+        raw
+    };
 
     let max_file_size = parse_max_file_size();
 
@@ -302,6 +311,58 @@ fn detect_repo_root() -> Option<PathBuf> {
             return None;
         }
     }
+}
+
+/// Reject `index_dir` values that overlap known-sensitive system path prefixes.
+///
+/// `--index-dir` / `SYNTEXT_INDEX_DIR` is passed directly to
+/// `fs::create_dir_all` + `fs::set_permissions(0o700)` in `build_index`.
+/// If the value is sourced from untrusted input (e.g., a CI artifact field)
+/// and `st index` runs as root, a value like `/etc` would `chmod 0700 /etc`,
+/// making it inaccessible to non-root processes and breaking the system.
+///
+/// Only absolute paths matching a known-sensitive prefix are rejected.
+/// Relative paths and paths under user-owned directories are always accepted.
+#[cfg(unix)]
+fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
+    if !index_dir.is_absolute() {
+        return Ok(());
+    }
+    const SENSITIVE_PREFIXES: &[&str] = &[
+        "/etc",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/sys",
+        "/proc",
+        "/dev",
+        "/boot",
+        "/root",
+        // macOS: /etc and /var are symlinks into /private; check both.
+        "/System",
+        "/Library",
+        "/private/etc",
+        "/private/var/root",
+    ];
+    let dir_str = index_dir.to_string_lossy();
+    for prefix in SENSITIVE_PREFIXES {
+        // Reject exact match (e.g., /etc) or subpath (e.g., /etc/syntext).
+        if dir_str == *prefix || dir_str.starts_with(&format!("{prefix}/")) {
+            return Err(format!(
+                "st: refusing --index-dir '{}': overlaps system path '{prefix}'; \
+                 use a path under the repository or a user-owned directory",
+                index_dir.display(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_index_dir(_index_dir: &std::path::Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]

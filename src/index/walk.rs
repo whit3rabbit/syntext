@@ -129,13 +129,13 @@ fn collect_symlink_entry(
         return;
     }
 
-    // Dedup: skip if another symlink already resolved to this canonical target.
     // Without this, N symlinks to the same directory produce N full sub-walks.
-    if !seen_canonical.insert(canonical_target.clone()) {
+    if seen_canonical.contains(&canonical_target) {
         return;
     }
 
     if canonical_meta.is_file() {
+        seen_canonical.insert(canonical_target.clone());
         push_file_record(
             canonical_target,
             symlink_path,
@@ -150,6 +150,7 @@ fn collect_symlink_entry(
         return;
     }
 
+    seen_canonical.insert(canonical_target.clone());
     let nested = WalkBuilder::new(&canonical_target)
         .hidden(false)
         .git_ignore(true)
@@ -242,14 +243,8 @@ mod tests {
         };
 
         let files = enumerate_files(&config).unwrap();
-        // The 5 real files plus 1 symlink's worth (5) = 10 total.
-        // Without dedup we'd get 5 + 10*5 = 55.
-        // With dedup: only the first symlink (alphabetically) is walked.
-        assert!(
-            files.len() <= 10,
-            "expected at most 10 records (5 real + 5 via one alias), got {}",
-            files.len()
-        );
+        // Without dedup we'd get 5 + 10*5 = 55; with dedup exactly 10.
+        assert_eq!(files.len(), 10, "5 real + 5 via alias0, got {}", files.len());
     }
 
     #[cfg(unix)]
