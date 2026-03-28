@@ -32,7 +32,7 @@ Offset 0:
 
 | Offset | Size | Type | Field | Description |
 |---|---|---|---|---|
-| 0 | 4 | [u8; 4] | magic | `b"RPLX"` |
+| 0 | 4 | [u8; 4] | magic | `b"SNTX"` |
 | 4 | 4 | u32 LE | version | Format version (currently 1) |
 | 8 | 4 | u32 LE | doc_count | Number of documents |
 | 12 | 4 | u32 LE | gram_count | Number of dictionary entries |
@@ -98,7 +98,7 @@ Sorted by `gram_hash` ascending. Lookup via binary search. Page alignment enable
 | -20 | 4 | u32 LE | gram_count |
 | -16 | 8 | u64 LE | checksum (xxhash64 of all preceding bytes) |
 | -8 | 4 | u32 LE | version |
-| -4 | 4 | [u8; 4] | magic (`b"RPLX"`) |
+| -4 | 4 | [u8; 4] | magic (`b"SNTX"`) |
 
 The TOC footer duplicates critical offsets so readers can verify the file by reading only the last 48 bytes. The trailing magic enables file type detection by reading the end of the file.
 

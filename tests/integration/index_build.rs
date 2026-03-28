@@ -9,9 +9,9 @@
 use std::path::Path;
 use tempfile::TempDir;
 
-use ripline_rs::index::segment::{MmapSegment, FOOTER_SIZE, MAGIC};
-use ripline_rs::index::Index;
-use ripline_rs::{Config, SearchOptions};
+use syntext::index::segment::{MmapSegment, FOOTER_SIZE, MAGIC};
+use syntext::index::Index;
+use syntext::{Config, SearchOptions};
 
 /// Path to the fixture corpus committed to the repo.
 fn corpus_dir() -> std::path::PathBuf {

@@ -37,7 +37,7 @@ impl Default for Config {
         Self {
             max_file_size: 10 * 1024 * 1024,
             max_segments: 10,
-            index_dir: PathBuf::from(".ripline"),
+            index_dir: PathBuf::from(".syntext"),
             repo_root: PathBuf::from("."),
             verbose: false,
         }
@@ -77,7 +77,7 @@ pub struct SearchOptions {
 pub struct IndexStats {
     /// Number of indexed files across all base segments.
     pub total_documents: usize,
-    /// Number of on-disk RPLX segment files.
+    /// Number of on-disk SNTX segment files.
     pub total_segments: usize,
     /// Total distinct n-grams across all segments.
     pub total_grams: usize,
@@ -150,7 +150,7 @@ impl std::fmt::Display for IndexError {
             IndexError::OverlayFull { overlay_docs, base_docs } => write!(
                 f,
                 "overlay too large ({overlay_docs} overlay docs, {base_docs} base docs): \
-                 run `ripline index` to rebuild"
+                 run `st index` to rebuild"
             ),
             IndexError::DocIdOverflow {
                 base_doc_count,

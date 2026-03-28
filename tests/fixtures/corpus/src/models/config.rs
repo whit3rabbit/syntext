@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub const MAX_THREAD_COUNT: usize = 64;
 
 /// Default index directory name.
-pub const DEFAULT_INDEX_DIR: &str = ".ripline_index";
+pub const DEFAULT_INDEX_DIR: &str = ".syntext_index";
 
 /// PARSE_QUERY timeout in milliseconds.
 pub const PARSE_QUERY_TIMEOUT_MS: u64 = 5000;
@@ -41,16 +41,16 @@ impl Config {
     /// Load configuration from environment variables.
     /// Falls back to sensible defaults for unset variables.
     pub fn from_env() -> Result<Self, String> {
-        let port = std::env::var("RIPLINE_PORT")
+        let port = std::env::var("SYNTEXT_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(8080);
 
-        let index_path = std::env::var("RIPLINE_INDEX_PATH")
+        let index_path = std::env::var("SYNTEXT_INDEX_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_INDEX_DIR));
 
-        let threads = std::env::var("RIPLINE_THREADS")
+        let threads = std::env::var("SYNTEXT_THREADS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4);

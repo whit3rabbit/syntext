@@ -17,12 +17,12 @@ fn index_build_bench(c: &mut Criterion) {
         b.iter_batched(
             || tempfile::tempdir().unwrap(),
             |index_dir| {
-                let config = ripline_rs::Config {
+                let config = syntext::Config {
                     index_dir: index_dir.path().to_path_buf(),
                     repo_root: repo.path().to_path_buf(),
-                    ..ripline_rs::Config::default()
+                    ..syntext::Config::default()
                 };
-                let index = ripline_rs::index::Index::build(config).unwrap();
+                let index = syntext::index::Index::build(config).unwrap();
                 black_box(index.stats());
             },
             BatchSize::SmallInput,

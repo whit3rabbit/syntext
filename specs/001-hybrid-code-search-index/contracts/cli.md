@@ -5,17 +5,17 @@
 
 ## Binary Name
 
-`ripline` (or `rpl` as a short alias)
+`st`
 
 ## Commands
 
-### `ripline search <PATTERN> [PATH...]`
+### `st search <PATTERN> [PATH...]`
 
 Search for a pattern in the indexed repository.
 
 ```
 USAGE:
-    ripline search [OPTIONS] <PATTERN> [PATH...]
+    st search [OPTIONS] <PATTERN> [PATH...]
 
 ARGS:
     <PATTERN>    Regex pattern to search for
@@ -49,13 +49,13 @@ src/index/segment.rs:115:   let entry = DictEntry { gram_hash, offset };
 - 1: no matches found
 - 2: error (invalid pattern, corrupt index, I/O error)
 
-### `ripline index [OPTIONS]`
+### `st index [OPTIONS]`
 
 Build or rebuild the index.
 
 ```
 USAGE:
-    ripline index [OPTIONS]
+    st index [OPTIONS]
 
 OPTIONS:
     --force        Rebuild from scratch even if index exists
@@ -63,13 +63,13 @@ OPTIONS:
     --quiet        Suppress progress output
 ```
 
-### `ripline status`
+### `st status`
 
 Show index status and statistics.
 
 ```
 USAGE:
-    ripline status [OPTIONS]
+    st status [OPTIONS]
 
 OPTIONS:
     --json         Output as JSON
@@ -77,7 +77,7 @@ OPTIONS:
 
 **Output**:
 ```
-Index: /path/to/repo/.ripline/
+Index: /path/to/repo/.syntext/
 Documents: 1,234
 Segments: 3
 Grams: 89,012
@@ -86,13 +86,13 @@ Base commit: abc1234
 Overlay: 5 dirty files
 ```
 
-### `ripline update`
+### `st update`
 
 Incrementally update the index for changed files since last build.
 
 ```
 USAGE:
-    ripline update [OPTIONS]
+    st update [OPTIONS]
 
 OPTIONS:
     --flush        Force flush overlay to segment
@@ -103,7 +103,7 @@ OPTIONS:
 
 ```
 OPTIONS:
-    --index-dir <DIR>   Override index directory (default: .ripline/)
+    --index-dir <DIR>   Override index directory (default: .syntext/)
     --repo-root <DIR>   Override repository root (default: auto-detect via .git)
     -v, --verbose        Increase verbosity
     -h, --help           Print help
@@ -114,8 +114,8 @@ OPTIONS:
 
 | Variable | Description | Default |
 |---|---|---|
-| RIPLINE_INDEX_DIR | Index directory path | `{repo_root}/.ripline/` |
-| RIPLINE_MAX_FILE_SIZE | Max file size to index (bytes) | 10485760 (10MB) |
+| SYNTEXT_INDEX_DIR | Index directory path | `{repo_root}/.syntext/` |
+| SYNTEXT_MAX_FILE_SIZE | Max file size to index (bytes) | 10485760 (10MB) |
 
 ## Compatibility Notes
 

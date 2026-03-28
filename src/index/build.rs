@@ -2,7 +2,7 @@
 //!
 //! `build_index()` is the implementation of `Index::build()`. It is split out
 //! to keep `mod.rs` under the 400-line quality gate. Everything here runs only
-//! during a fresh `ripline index` build; it is not used by open/search/commit.
+//! during a fresh `st index` build; it is not used by open/search/commit.
 
 use std::fs;
 
@@ -118,7 +118,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     if let Ok(prev_manifest) = Manifest::load(&config.index_dir) {
         if let Err(e) = prev_manifest.gc_orphan_segments(&config.index_dir) {
             if config.verbose {
-                eprintln!("ripline: startup gc: {e}");
+                eprintln!("syntext: startup gc: {e}");
             }
         }
     }
@@ -127,7 +127,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     let file_list = enumerate_files(&config)?;
     let total_candidate = file_list.len();
     if config.verbose {
-        eprintln!("ripline: indexing {} candidate files", total_candidate);
+        eprintln!("syntext: indexing {} candidate files", total_candidate);
     }
 
     // Split into ~256MB batches and process each.
@@ -137,6 +137,8 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     let mut next_doc_id: u32 = 0;
 
     for batch in &batches {
+        // Security: checked_add guards against u32 overflow in the doc_id
+        // space. The overlay path already uses checked_add; this matches it.
         // Parallel: read file content and extract grams.
         // results[i] is None if file i was binary or could not be read.
         let results: Vec<Option<(u64, Vec<u64>)>> = batch
@@ -155,7 +157,12 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
         for ((abs_path, rel_path, size), result) in batch.iter().zip(results.iter()) {
             if let Some((content_hash, grams)) = result {
                 let doc_id = next_doc_id;
-                next_doc_id += 1;
+                next_doc_id = next_doc_id.checked_add(1).ok_or(
+                    IndexError::DocIdOverflow {
+                        base_doc_count: doc_id,
+                        overlay_docs: 0,
+                    },
+                )?;
                 writer.add_document(doc_id, rel_path, *content_hash, *size);
                 for &gram_hash in grams {
                     writer.add_gram_posting(gram_hash, doc_id);
@@ -185,7 +192,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
         let seg_size = fs::metadata(&seg_path).map(|m| m.len()).unwrap_or(0);
         if config.verbose && seg_size > content_size / 2 && content_size > 0 {
             eprintln!(
-                "ripline: warning: segment is {seg_size} bytes for {content_size} bytes content"
+                "syntext: warning: segment is {seg_size} bytes for {content_size} bytes content"
             );
         }
 
@@ -197,7 +204,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     // Calibrate index-vs-scan crossover threshold from actual disk timing.
     let scan_threshold = calibrate_threshold(&indexed_paths, &config);
     if config.verbose {
-        eprintln!("ripline: calibrated scan threshold: {:.3}", scan_threshold);
+        eprintln!("syntext: calibrated scan threshold: {:.3}", scan_threshold);
     }
     // Write manifest.
     let mut manifest = Manifest::new(seg_refs, total_indexed);
@@ -210,7 +217,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
 
     if config.verbose {
         eprintln!(
-            "ripline: indexed {} files into {} segment(s)",
+            "syntext: indexed {} files into {} segment(s)",
             total_indexed,
             manifest.segments.len()
         );
@@ -239,7 +246,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
                                 if let Err(e) = sym_idx.index_file(file_id, rel_path, &content) {
                                     if config.verbose {
                                         eprintln!(
-                                            "ripline: warning: symbol index failed for {rel_path}: {e}"
+                                            "syntext: warning: symbol index failed for {rel_path}: {e}"
                                         );
                                     }
                                 }
@@ -248,12 +255,12 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
                     }
                 }
                 if config.verbose {
-                    eprintln!("ripline: symbol index built");
+                    eprintln!("syntext: symbol index built");
                 }
             }
             Err(e) => {
                 if config.verbose {
-                    eprintln!("ripline: warning: could not build symbol index: {e}");
+                    eprintln!("syntext: warning: could not build symbol index: {e}");
                 }
             }
         }

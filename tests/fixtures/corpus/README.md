@@ -1,6 +1,6 @@
 # Fixture Corpus
 
-Test fixture repository for ripline correctness testing.
+Test fixture repository for syntext correctness testing.
 
 ## Structure
 
@@ -18,7 +18,7 @@ corpus/
 
 ## Invariants
 
-These properties must hold for the ripline correctness test harness (T010):
+These properties must hold for the syntext correctness test harness (T010):
 
 - `parse_query` appears in: src/utils/parser.rs, python/query_engine.py,
   typescript/query.ts, go/search/client.go, java/SearchService.java,
@@ -65,6 +65,6 @@ These properties must hold for the ripline correctness test harness (T010):
 # Run ripgrep oracle to capture expected results
 rg parse_query tests/fixtures/corpus --ignore-file tests/fixtures/corpus/.gitignore
 
-# Run ripline against same corpus
-ripline search parse_query --index-dir /tmp/test-index --repo tests/fixtures/corpus
+# Run syntext against same corpus
+syntext search parse_query --index-dir /tmp/test-index --repo tests/fixtures/corpus
 ```

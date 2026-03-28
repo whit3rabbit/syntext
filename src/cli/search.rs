@@ -31,14 +31,14 @@ pub(super) struct SearchArgs {
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     if args.paths.len() > 1 {
         eprintln!(
-            "rl: warning: multiple path arguments not yet supported; using only {:?}",
+            "st: warning: multiple path arguments not yet supported; using only {:?}",
             args.paths[0]
         );
     }
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("rl: {e}");
+            eprintln!("st: {e}");
             return 2;
         }
     };
@@ -46,7 +46,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let results = match run_search(&index, args) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("rl: {e}");
+            eprintln!("st: {e}");
             return 2;
         }
     };

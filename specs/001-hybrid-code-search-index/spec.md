@@ -204,7 +204,7 @@ The following error responses are required for all failure modes:
 - When the smallest posting list for a query exceeds 10% of total indexed documents, the index is not used for that query. The query falls back to full scan.
 - This threshold is configurable (future: `Config.scan_fallback_threshold`, default 0.10).
 - The fallback is transparent to callers: results are correct regardless of which execution path is used.
-- **Measurable criterion**: For a query with a known-high-frequency gram (e.g., `fn ` in a Rust repo), `Index::search()` MUST return correct results. Whether the index or full scan was used is observable via `RIPLINE_LOG_SELECTIVITY=1` environment variable output.
+- **Measurable criterion**: For a query with a known-high-frequency gram (e.g., `fn ` in a Rust repo), `Index::search()` MUST return correct results. Whether the index or full scan was used is observable via `SYNTEXT_LOG_SELECTIVITY=1` environment variable output.
 
 ---
 
@@ -213,11 +213,11 @@ The following error responses are required for all failure modes:
 - Target platform is macOS and Linux (desktop/server). Windows support is deferred.
 - The tool runs locally, not as a server. No network protocol needed for v1.
 - Repositories are primarily UTF-8 text. Binary file detection and skipping is sufficient.
-- Git is available on the host for commit-based snapshot tracking (`ripline update` subcommand). If `git` is not available, `ripline update` returns an error; `ripline index` (full build) and `ripline search` function without git.
+- Git is available on the host for commit-based snapshot tracking (`st update` subcommand). If `git` is not available, `st update` returns an error; `st index` (full build) and `st search` function without git.
 - tree-sitter grammars are available as optional dependencies for symbol indexing. If unavailable, the heuristic fallback is used (FR-015).
 - tree-sitter grammar versions are treated as pinned Cargo dependencies (declared in `Cargo.toml` with exact versions under the `symbols` feature flag). Runtime-dynamic grammar loading is not supported in v1.
 - The Rust `regex` crate is the default verification engine; PCRE2 support is optional/deferred and will not be added without an explicit feature flag.
-- The index directory (`config.index_dir`, default `.ripline/`) MUST be on a local filesystem (not NFS, SMB, or other network filesystem). Network filesystems are not tested and their behavior (mmap support, atomic rename) is undefined for this tool.
+- The index directory (`config.index_dir`, default `.syntext/`) MUST be on a local filesystem (not NFS, SMB, or other network filesystem). Network filesystems are not tested and their behavior (mmap support, atomic rename) is undefined for this tool.
 - ripgrep `14.x` is the correctness baseline. Tests pin the version and fail if it differs.
 - The index directory is assumed to be on the same filesystem as the repository root (for atomic rename semantics during manifest writes).
 

@@ -8,7 +8,7 @@ use support::{build_index_for_repo, create_synthetic_repo};
 fn query_latency_bench(c: &mut Criterion) {
     let repo = create_synthetic_repo(300);
     let (_index_dir, index) = build_index_for_repo(repo.path());
-    let opts = ripline_rs::SearchOptions::default();
+    let opts = syntext::SearchOptions::default();
 
     let mut group = c.benchmark_group("query_latency");
     group.sample_size(10);

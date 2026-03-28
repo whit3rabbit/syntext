@@ -1,4 +1,4 @@
-package com.example.ripline;
+package com.example.syntext;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -6,7 +6,7 @@ import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
 /**
- * SearchService wraps the ripline native library.
+ * SearchService wraps the syntext native library.
  *
  * <p>TODO: add metrics emission to http://localhost:9090/metrics
  * <p>TODO: support ParseQuery interface from the Kotlin interop layer
@@ -64,7 +64,7 @@ public class SearchService {
     }
 
     private SearchResult executeOne(ParseQuery query) {
-        // TODO: JNI call into ripline native lib
+        // TODO: JNI call into syntext native lib
         return new SearchResult(query.getRaw(), List.of());
     }
 

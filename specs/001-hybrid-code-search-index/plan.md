@@ -58,7 +58,7 @@ src/
 │   └── weights.rs       # Character-pair frequency weights ([u16; 65536])
 ├── index/
 │   ├── mod.rs           # Index builder + reader coordination
-│   ├── segment.rs       # Immutable segment: dictionary + postings file (RPLX format)
+│   ├── segment.rs       # Immutable segment: dictionary + postings file (SNTX format)
 │   ├── overlay.rs       # Generation-based overlay with batch commit
 │   ├── manifest.rs      # Segment manifest + atomic write-then-rename
 │   └── merge.rs         # Background segment compaction

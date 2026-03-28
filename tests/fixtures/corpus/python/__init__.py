@@ -1,1 +1,1 @@
-# ripline Python client package
+# syntext Python client package

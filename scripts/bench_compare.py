@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Benchmark ripline against rg and grep on an external Git repository.
+"""Benchmark syntext against rg and grep on an external Git repository.
 
 This script is intentionally simple:
-- It measures ripline index build time separately.
+- It measures syntext index build time separately.
 - It then reuses one built index to benchmark repeated searches.
 - It compares against ripgrep and grep over the same repository.
 
@@ -28,7 +28,7 @@ from typing import Iterable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-DEFAULT_RIPLINE_BIN = REPO_ROOT / "target" / "release" / "ripline"
+DEFAULT_SYNTEXT_BIN = REPO_ROOT / "target" / "release" / "st"
 DEFAULT_PRESET_FILE = REPO_ROOT / "benchmarks" / "repo_presets.json"
 DEFAULT_BUILD_ITERATIONS = 3
 DEFAULT_SEARCH_ITERATIONS = 5
@@ -94,7 +94,7 @@ def load_presets(path: Path) -> dict[str, PresetSpec]:
             build_iterations=int(item["build_iterations"]),
             search_iterations=int(item["search_iterations"]),
             warmups=int(item["warmups"]),
-            tools=tuple(item.get("tools", ["ripline", "rg", "grep"])),
+            tools=tuple(item.get("tools", ["syntext", "rg", "grep"])),
             queries=tuple(parse_query(query) for query in item["queries"]),
             notes=tuple(item.get("notes", [])),
         )
@@ -140,11 +140,11 @@ def tracked_file_count(repo_root: Path) -> int:
     return sum(1 for part in output.split(b"\0") if part)
 
 
-def ensure_ripline_binary(ripline_bin: Path) -> None:
-    if ripline_bin.exists():
+def ensure_syntext_binary(syntext_bin: Path) -> None:
+    if syntext_bin.exists():
         return
     subprocess.run(
-        ["cargo", "build", "--release", "--bin", "ripline"],
+        ["cargo", "build", "--release", "--bin", "st"],
         cwd=REPO_ROOT,
         check=True,
     )
@@ -227,11 +227,11 @@ def dir_size_bytes(root: Path) -> int:
     return total
 
 
-def ripline_search_cmd(
-    ripline_bin: Path, repo_root: Path, index_dir: Path, query: QuerySpec
+def syntext_search_cmd(
+    syntext_bin: Path, repo_root: Path, index_dir: Path, query: QuerySpec
 ) -> list[str]:
     cmd = [
-        str(ripline_bin),
+        str(syntext_bin),
         "--repo-root",
         str(repo_root),
         "--index-dir",
@@ -244,8 +244,8 @@ def ripline_search_cmd(
     return cmd
 
 
-def ripline_bench_search_cmd(
-    ripline_bin: Path,
+def syntext_bench_search_cmd(
+    syntext_bin: Path,
     repo_root: Path,
     index_dir: Path,
     queries: list[QuerySpec],
@@ -253,7 +253,7 @@ def ripline_bench_search_cmd(
     warmups: int,
 ) -> list[str]:
     cmd = [
-        str(ripline_bin),
+        str(syntext_bin),
         "--repo-root",
         str(repo_root),
         "--index-dir",
@@ -313,19 +313,19 @@ def benchmark_command(
 
 
 def parse_tools(value: str) -> tuple[str, ...]:
-    allowed = {"ripline", "rg", "grep"}
+    allowed = {"syntext", "rg", "grep"}
     tools = tuple(part.strip() for part in value.split(",") if part.strip())
     if not tools:
         raise argparse.ArgumentTypeError("tool list must not be empty")
     unknown = [tool for tool in tools if tool not in allowed]
     if unknown:
         raise argparse.ArgumentTypeError(
-            f"unknown tool(s): {', '.join(unknown)}; expected one of ripline, rg, grep"
+            f"unknown tool(s): {', '.join(unknown)}; expected one of syntext, rg, grep"
         )
     return tools
 
 
-def ripline_batch_results(
+def syntext_batch_results(
     cmd: list[str],
     *,
     cwd: Path,
@@ -353,11 +353,11 @@ def ripline_batch_results(
     }
 
 
-def report_tools(tools: tuple[str, ...], ripline_search_mode: str) -> list[str]:
+def report_tools(tools: tuple[str, ...], syntext_search_mode: str) -> list[str]:
     expanded: list[str] = []
     for tool in tools:
-        if tool == "ripline" and ripline_search_mode == "both":
-            expanded.extend(["ripline-fork", "ripline-persistent"])
+        if tool == "syntext" and syntext_search_mode == "both":
+            expanded.extend(["syntext-fork", "syntext-persistent"])
         else:
             expanded.append(tool)
     return expanded
@@ -373,18 +373,18 @@ def render_markdown_report(report: dict[str, object]) -> str:
     lines.append(f"- Tracked files: `{report['tracked_files']}`")
     lines.append(f"- Grep mode: `{report['grep_mode']}`")
     lines.append(f"- Tools: `{', '.join(report['tools'])}`")
-    lines.append(f"- Ripline build iterations: `{report['build_iterations']}`")
+    lines.append(f"- Syntext build iterations: `{report['build_iterations']}`")
     lines.append(
         f"- Search iterations per tool/query: `{report['search_iterations']}`"
     )
-    lines.append(f"- Ripline search mode: `{report['ripline_search_mode']}`")
+    lines.append(f"- Syntext search mode: `{report['syntext_search_mode']}`")
     if report["build_only"]:
         lines.append("- Mode: `build-only`")
     lines.append("")
 
-    build_summary = report["ripline_index_build_ms"]
-    size_summary = report["ripline_index_bytes"]
-    lines.append("## Ripline index build")
+    build_summary = report["syntext_index_build_ms"]
+    size_summary = report["syntext_index_bytes"]
+    lines.append("## Syntext index build")
     lines.append("")
     lines.append(
         f"- median: `{build_summary['median_ms']}` ms"
@@ -404,14 +404,14 @@ def render_markdown_report(report: dict[str, object]) -> str:
     lines.append("## Notes")
     lines.append("")
     lines.append(
-        "- `ripline` search latency excludes index build time, which is reported separately."
+        "- `syntext` search latency excludes index build time, which is reported separately."
     )
     lines.append(
-        "- `ripline` index byte totals measure the full on-disk index directory for each build iteration."
+        "- `syntext` index byte totals measure the full on-disk index directory for each build iteration."
     )
-    if report["ripline_search_mode"] == "both":
+    if report["syntext_search_mode"] == "both":
         lines.append(
-            "- `ripline-fork` measures one process per query. `ripline-persistent` reuses one opened index for all queries in the run."
+            "- `syntext-fork` measures one process per query. `syntext-persistent` reuses one opened index for all queries in the run."
         )
     if report["grep_mode"] == "tracked" and "grep" in report["tools"]:
         lines.append(
@@ -419,7 +419,7 @@ def render_markdown_report(report: dict[str, object]) -> str:
         )
     elif "grep" in report["tools"]:
         lines.append(
-            "- `grep` uses recursive traversal and may include files that `rg` or `ripline` skip."
+            "- `grep` uses recursive traversal and may include files that `rg` or `syntext` skip."
         )
 
     mismatched = [
@@ -438,7 +438,7 @@ def render_markdown_report(report: dict[str, object]) -> str:
         ]
         if literal_mismatches:
             lines.append(
-                "- For literal queries, a lower `ripline` count often means the pattern is being matched as a mid-token substring inside larger identifiers. Current `ripline` coverage guarantees are strongest for token-aligned queries."
+                "- For literal queries, a lower `syntext` count often means the pattern is being matched as a mid-token substring inside larger identifiers. Current `syntext` coverage guarantees are strongest for token-aligned queries."
             )
     return "\n".join(lines)
 
@@ -480,9 +480,9 @@ def main() -> int:
         help="List available presets and exit",
     )
     parser.add_argument(
-        "--ripline-bin",
-        default=str(DEFAULT_RIPLINE_BIN),
-        help="Path to a ripline binary, default: target/release/ripline",
+        "--syntext-bin",
+        default=str(DEFAULT_SYNTEXT_BIN),
+        help="Path to syntext binary, default: target/release/st",
     )
     parser.add_argument(
         "--query",
@@ -495,7 +495,7 @@ def main() -> int:
         "--build-iterations",
         type=int,
         default=None,
-        help="Number of ripline index builds to time",
+        help="Number of syntext index builds to time",
     )
     parser.add_argument(
         "--search-iterations",
@@ -532,18 +532,18 @@ def main() -> int:
     parser.add_argument(
         "--build-only",
         action="store_true",
-        help="Measure repeated ripline index builds and index bytes, skip search benchmarking",
+        help="Measure repeated syntext index builds and index bytes, skip search benchmarking",
     )
     parser.add_argument(
         "--tools",
         type=parse_tools,
-        help="Comma-separated tool set, for example ripline,rg or ripline,rg,grep",
+        help="Comma-separated tool set, for example syntext,rg or syntext,rg,grep",
     )
     parser.add_argument(
-        "--ripline-search-mode",
+        "--syntext-search-mode",
         choices=("fork", "persistent", "both"),
         default="fork",
-        help="fork runs one ripline process per search; persistent reuses one opened index per benchmark run; both reports both ripline modes side by side",
+        help="fork runs one syntext process per search; persistent reuses one opened index per benchmark run; both reports both syntext modes side by side",
     )
     args = parser.parse_args()
 
@@ -577,7 +577,7 @@ def main() -> int:
         raise SystemExit("either --repo or --preset is required")
 
     repo_root = Path(repo_arg).resolve()
-    ripline_bin = Path(args.ripline_bin).resolve()
+    syntext_bin = Path(args.syntext_bin).resolve()
 
     if not repo_root.joinpath(".git").exists():
         raise SystemExit(f"{repo_root} is not a Git repository")
@@ -611,10 +611,10 @@ def main() -> int:
     if selected_preset and tools is None:
         tools = selected_preset.tools
     if tools is None:
-        tools = ("ripline", "rg", "grep")
-    display_tools = report_tools(tools, args.ripline_search_mode)
+        tools = ("syntext", "rg", "grep")
+    display_tools = report_tools(tools, args.syntext_search_mode)
 
-    ensure_ripline_binary(ripline_bin)
+    ensure_syntext_binary(syntext_bin)
 
     env = dict(os.environ)
     env.setdefault("LC_ALL", "C")
@@ -625,9 +625,9 @@ def main() -> int:
     build_samples: list[float] = []
     build_size_samples: list[int] = []
     for _ in range(build_iterations):
-        with tempfile.TemporaryDirectory(prefix="ripline-bench-index-") as index_dir:
+        with tempfile.TemporaryDirectory(prefix="syntext-bench-index-") as index_dir:
             cmd = [
-                str(ripline_bin),
+                str(syntext_bin),
                 "--repo-root",
                 str(repo_root),
                 "--index-dir",
@@ -642,11 +642,11 @@ def main() -> int:
 
     query_results: list[dict[str, object]] = []
     if not args.build_only:
-        with tempfile.TemporaryDirectory(prefix="ripline-bench-search-") as index_dir:
+        with tempfile.TemporaryDirectory(prefix="syntext-bench-search-") as index_dir:
             index_path = Path(index_dir)
             subprocess.run(
                 [
-                    str(ripline_bin),
+                    str(syntext_bin),
                     "--repo-root",
                     str(repo_root),
                     "--index-dir",
@@ -662,20 +662,20 @@ def main() -> int:
             )
 
             with tempfile.NamedTemporaryFile(
-                prefix="ripline-bench-files-", delete=False
+                prefix="syntext-bench-files-", delete=False
             ) as filelist:
                 filelist.write(tracked)
                 tracked_list_path = Path(filelist.name)
 
             try:
-                ripline_batch: dict[str, dict[str, object]] | None = None
-                if "ripline" in tools and args.ripline_search_mode in (
+                syntext_batch: dict[str, dict[str, object]] | None = None
+                if "syntext" in tools and args.syntext_search_mode in (
                     "persistent",
                     "both",
                 ):
-                    ripline_batch = ripline_batch_results(
-                        ripline_bench_search_cmd(
-                            ripline_bin,
+                    syntext_batch = syntext_batch_results(
+                        syntext_bench_search_cmd(
+                            syntext_bin,
                             repo_root,
                             index_path,
                             queries,
@@ -686,8 +686,8 @@ def main() -> int:
                         env=env,
                     )
                 for query in queries:
-                    ripline_cmd = ripline_search_cmd(
-                        ripline_bin, repo_root, index_path, query
+                    syntext_cmd = syntext_search_cmd(
+                        syntext_bin, repo_root, index_path, query
                     )
                     rg_cmd = rg_search_cmd(repo_root, query)
                     grep_cmd = grep_search_cmd(
@@ -696,38 +696,38 @@ def main() -> int:
 
                     counts: dict[str, int] = {}
                     timings: dict[str, dict[str, float]] = {}
-                    if "ripline" in tools:
-                        if args.ripline_search_mode == "both":
-                            batch_entry = ripline_batch[query.name]
-                            counts["ripline-persistent"] = int(batch_entry["count"])
-                            timings["ripline-persistent"] = batch_entry["timings_ms"]
-                            counts["ripline-fork"] = output_line_count(
-                                ripline_cmd,
+                    if "syntext" in tools:
+                        if args.syntext_search_mode == "both":
+                            batch_entry = syntext_batch[query.name]
+                            counts["syntext-persistent"] = int(batch_entry["count"])
+                            timings["syntext-persistent"] = batch_entry["timings_ms"]
+                            counts["syntext-fork"] = output_line_count(
+                                syntext_cmd,
                                 cwd=repo_root,
                                 env=env,
                                 allowed_codes=(0, 1),
                             )
-                            timings["ripline-fork"] = benchmark_command(
-                                ripline_cmd,
+                            timings["syntext-fork"] = benchmark_command(
+                                syntext_cmd,
                                 cwd=repo_root,
                                 env=env,
                                 warmups=warmups,
                                 iterations=search_iterations,
                                 allowed_codes=(0, 1),
                             )
-                        elif ripline_batch is not None:
-                            batch_entry = ripline_batch[query.name]
-                            counts["ripline"] = int(batch_entry["count"])
-                            timings["ripline"] = batch_entry["timings_ms"]
+                        elif syntext_batch is not None:
+                            batch_entry = syntext_batch[query.name]
+                            counts["syntext"] = int(batch_entry["count"])
+                            timings["syntext"] = batch_entry["timings_ms"]
                         else:
-                            counts["ripline"] = output_line_count(
-                                ripline_cmd,
+                            counts["syntext"] = output_line_count(
+                                syntext_cmd,
                                 cwd=repo_root,
                                 env=env,
                                 allowed_codes=(0, 1),
                             )
-                            timings["ripline"] = benchmark_command(
-                                ripline_cmd,
+                            timings["syntext"] = benchmark_command(
+                                syntext_cmd,
                                 cwd=repo_root,
                                 env=env,
                                 warmups=warmups,
@@ -780,13 +780,13 @@ def main() -> int:
         "tracked_files": tracked_count,
         "grep_mode": args.grep_mode,
         "tools": display_tools,
-        "ripline_search_mode": args.ripline_search_mode,
+        "syntext_search_mode": args.syntext_search_mode,
         "build_only": args.build_only,
         "build_iterations": build_iterations,
         "search_iterations": search_iterations,
         "warmups": warmups,
-        "ripline_index_build_ms": summarize(build_samples),
-        "ripline_index_bytes": summarize_int(build_size_samples, "bytes"),
+        "syntext_index_build_ms": summarize(build_samples),
+        "syntext_index_bytes": summarize_int(build_size_samples, "bytes"),
         "queries": query_results,
     }
 

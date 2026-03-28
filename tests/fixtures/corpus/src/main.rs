@@ -1,4 +1,4 @@
-// Main entry point for the ripline search engine
+// Main entry point for the syntext search engine
 // TODO: add graceful shutdown handling
 
 use std::env;
@@ -28,7 +28,7 @@ fn main() {
     let engine = SearchEngine::new(&config);
 
     // TODO: replace with proper logging framework
-    println!("Starting ripline v{} on port {}", APP_VERSION, config.port);
+    println!("Starting syntext v{} on port {}", APP_VERSION, config.port);
 
     let admin = User {
         id: 1,

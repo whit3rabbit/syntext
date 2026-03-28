@@ -1,4 +1,4 @@
-//! CLI entry point: `rl <pattern>`, `rl index`, `rl status`, `rl update`.
+//! CLI entry point: `st <pattern>`, `st index`, `st status`, `st update`.
 //!
 //! Uses clap derive for argument parsing. Output format is grep-compatible
 //! by default, with `--json` for machine-readable output.
@@ -20,12 +20,12 @@ use search::{SearchArgs, cmd_search};
 
 /// Fast code search with index acceleration. rg-compatible interface.
 ///
-/// Use `rl index` to build the index first, then `rl <pattern>` to search.
+/// Use `st index` to build the index first, then `st <pattern>` to search.
 #[derive(Parser)]
-#[command(name = "rl", version, about, disable_help_subcommand = true)]
+#[command(name = "st", version, about, disable_help_subcommand = true)]
 pub struct Cli {
     /// Pattern to search (regex by default). Use -F for literal, -e to avoid
-    /// subcommand name conflicts (e.g. `rl -e index`).
+    /// subcommand name conflicts (e.g. `st -e index`).
     pub pattern: Option<String>,
 
     /// Paths (files or directories) to restrict the search.
@@ -127,8 +127,8 @@ pub struct Cli {
 
     // --- Index configuration ---
 
-    /// Override index directory (default: .ripline/ at repo root).
-    #[arg(long, global = true, env = "RIPLINE_INDEX_DIR")]
+    /// Override index directory (default: .syntext/ at repo root).
+    #[arg(long, global = true, env = "SYNTEXT_INDEX_DIR")]
     pub index_dir: Option<PathBuf>,
 
     /// Override repository root (default: nearest .git ancestor).
@@ -205,7 +205,7 @@ pub fn run() -> i32 {
             let pattern = match cli.pattern.or(cli.regexp) {
                 Some(p) => p,
                 None => {
-                    eprintln!("rl: a pattern is required (try `rl --help`)");
+                    eprintln!("st: a pattern is required (try `st --help`)");
                     return 2;
                 }
             };
@@ -248,9 +248,9 @@ fn resolve_config(cli: &Cli) -> Config {
     let index_dir = cli
         .index_dir
         .clone()
-        .unwrap_or_else(|| repo_root.join(".ripline"));
+        .unwrap_or_else(|| repo_root.join(".syntext"));
 
-    let max_file_size = std::env::var("RIPLINE_MAX_FILE_SIZE")
+    let max_file_size = std::env::var("SYNTEXT_MAX_FILE_SIZE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(10 * 1024 * 1024);
@@ -290,33 +290,33 @@ mod tests {
 
     #[test]
     fn search_works_without_subcommand() {
-        let cli = Cli::try_parse_from(["rl", "fn_hello"]).expect("parse failed");
+        let cli = Cli::try_parse_from(["st", "fn_hello"]).expect("parse failed");
         assert!(cli.command.is_none());
         assert_eq!(cli.pattern.as_deref(), Some("fn_hello"));
     }
 
     #[test]
     fn fixed_strings_short_flag_is_capital_f() {
-        let cli = Cli::try_parse_from(["rl", "-F", "fn.hello"]).expect("parse failed");
+        let cli = Cli::try_parse_from(["st", "-F", "fn.hello"]).expect("parse failed");
         assert!(cli.fixed_strings);
         assert_eq!(cli.pattern.as_deref(), Some("fn.hello"));
     }
 
     #[test]
     fn files_with_matches_short_flag_is_lowercase_l() {
-        let cli = Cli::try_parse_from(["rl", "-l", "pattern"]).expect("parse failed");
+        let cli = Cli::try_parse_from(["st", "-l", "pattern"]).expect("parse failed");
         assert!(cli.files_with_matches);
     }
 
     #[test]
     fn context_flag_sets_both_before_and_after() {
-        let cli = Cli::try_parse_from(["rl", "-C", "3", "pattern"]).expect("parse failed");
+        let cli = Cli::try_parse_from(["st", "-C", "3", "pattern"]).expect("parse failed");
         assert_eq!(cli.context, Some(3));
     }
 
     #[test]
     fn manage_index_subcommand_still_routes_correctly() {
-        let cli = Cli::try_parse_from(["rl", "index"]).expect("parse failed");
+        let cli = Cli::try_parse_from(["st", "index"]).expect("parse failed");
         assert!(cli.pattern.is_none());
         assert!(matches!(cli.command, Some(ManageCommand::Index { .. })));
     }

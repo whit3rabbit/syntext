@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use libfuzzer_sys::fuzz_target;
-use ripline::tokenizer::{build_all, build_covering, MIN_GRAM_LEN};
+use syntext::tokenizer::{build_all, build_covering, MIN_GRAM_LEN};
 
 /// Characters that always create gram boundaries (mirrors tokenizer logic).
 fn is_forced_boundary(byte: u8) -> bool {

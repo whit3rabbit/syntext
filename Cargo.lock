@@ -822,39 +822,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
-name = "ripline-rs"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "clap",
- "criterion",
- "fs2",
- "ignore",
- "memchr",
- "memmap2",
- "proptest",
- "rayon",
- "regex",
- "regex-syntax",
- "roaring",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tree-sitter",
- "tree-sitter-c",
- "tree-sitter-cpp",
- "tree-sitter-go",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
- "uuid",
- "xxhash-rust",
-]
-
-[[package]]
 name = "roaring"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1001,6 +968,39 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "syntext"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "clap",
+ "criterion",
+ "fs2",
+ "ignore",
+ "memchr",
+ "memmap2",
+ "proptest",
+ "rayon",
+ "regex",
+ "regex-syntax",
+ "roaring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tree-sitter",
+ "tree-sitter-c",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+ "uuid",
+ "xxhash-rust",
 ]
 
 [[package]]

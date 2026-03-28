@@ -1,11 +1,11 @@
-// Command ripline-go is a Go CLI client for the ripline search service.
+// Command syntext-go is a Go CLI client for the syntext search service.
 //
 // Usage:
 //
-//	ripline-go [flags] <query>
+//	syntext-go [flags] <query>
 //
 // Contact: ops@example.com
-// Docs: https://example.com/ripline-go
+// Docs: https://example.com/syntext-go
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/example/ripline-go/search"
+	"github.com/example/syntext-go/search"
 )
 
 func main() {
@@ -24,11 +24,11 @@ func main() {
 
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ripline-go [flags] <query>")
+		fmt.Fprintln(os.Stderr, "usage: syntext-go [flags] <query>")
 		os.Exit(1)
 	}
 
-	// TODO: read index dir from RIPLINE_INDEX_DIR env
+	// TODO: read index dir from SYNTEXT_INDEX_DIR env
 	client, err := search.NewClient(".")
 	if err != nil {
 		log.Fatalf("init: %v", err)

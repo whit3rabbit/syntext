@@ -1,6 +1,6 @@
 # Architecture: Sparse N-Gram Indexing
 
-This document explains the quantitative reasoning behind ripline's design decisions. The numbers drive the architecture; if you want to understand *why* something is built a certain way, start here.
+This document explains the quantitative reasoning behind syntext's design decisions. The numbers drive the architecture; if you want to understand *why* something is built a certain way, start here.
 
 ## The problem: repeated grep is slow
 
@@ -12,13 +12,13 @@ Traditional trigram indexes (Google Code Search, Zoekt) index every consecutive 
 
 Sparse n-grams reduce index size by choosing *where* to split. Assign a weight to each byte-pair based on how often it appears in source code. Common pairs (`re`, `er`, `in`) get low weights; rare pairs (`q_`, `xj`, `qz`) get high weights. Split at positions where the weight exceeds a threshold. The result is fewer, longer, more selective grams per document.
 
-ripline's weight table is a `[u16; 65536]` constant (128KB) trained on ~175MB of mixed-language open-source code. It ships compiled into the binary.
+syntext's weight table is a `[u16; 65536]` constant (128KB) trained on ~175MB of mixed-language open-source code. It ships compiled into the binary.
 
 ### Forced boundaries
 
 The original weight-only approach was context-sensitive: boundaries depended on surrounding bytes, so a query's edge grams could differ from the same bytes' grams in a document. Common separators like `space->letter` had weights below `BOUNDARY_THRESHOLD`, causing false negatives when the gram index was used for candidate narrowing.
 
-ripline solves this with two-tier boundary detection:
+syntext solves this with two-tier boundary detection:
 
 1. **Forced boundaries** (Tier 1): whitespace, brackets, operators, string delimiters, underscore, and control characters always create boundaries regardless of bigram weight. These are context-independent: the same byte always produces a boundary.
 2. **Weight-based boundaries** (Tier 2): within alphanumeric spans (letters and digits), the trained weight table provides additional subdivision at rare bigrams.
@@ -121,7 +121,7 @@ Each segment is a single mmap-friendly file:
 
 ```
 +-----------------------------+
-| Header (40 bytes)           |  magic b"RPLX", version, counts, offsets
+| Header (40 bytes)           |  magic b"SNTX", version, counts, offsets
 +-----------------------------+
 | Document Table              |  doc_id -> (path, content_hash, size)
 +-----------------------------+
@@ -139,7 +139,7 @@ Segments are immutable. A single-file design (vs. separate dictionary + postings
 
 ## Overlay and freshness
 
-Agent workflows require "read your writes": if an agent edits a file and searches for the edit, the search must find it. ripline uses a batch commit model:
+Agent workflows require "read your writes": if an agent edits a file and searches for the edit, the search must find it. syntext uses a batch commit model:
 
 - `notify_change(path)` marks files as dirty.
 - `commit_batch()` rebuilds a single merged in-memory overlay from all dirty files and atomically swaps it via `ArcSwap`.
@@ -223,4 +223,4 @@ The fuzz target (`fuzz/fuzz_targets/fuzz_coverage_invariant.rs`) generates rando
 - [GitHub Blackbird](https://github.blog/engineering/architecture-optimization/how-we-built-github-code-search/): sparse n-grams with frequency-weighted boundaries
 - Cursor fast regex search (2025): sparse n-grams, same core design
 
-ripline follows the same fundamental architecture (n-gram prefilter, candidate selection, verification) with specific tradeoffs for the agent-loop use case: in-process verification (no fork/exec), batch commit for read-your-writes, and Roaring bitmaps for the heavy tail of common grams.
+syntext follows the same fundamental architecture (n-gram prefilter, candidate selection, verification) with specific tradeoffs for the agent-loop use case: in-process verification (no fork/exec), batch commit for read-your-writes, and Roaring bitmaps for the heavy tail of common grams.

@@ -1,14 +1,15 @@
-# ripline-rs
+# syntext
 
 Hybrid code search index for agent workflows. Sparse n-gram content index + Roaring bitmap path index + optional Tree-sitter symbol index.
 
-> **Crate name:** `ripline-rs` (the name `ripline` was already taken on crates.io). Binary is still `ripline`.
+> **Crate name:** `syntext`. Binary: `st`.
+> **Upstream:** https://github.com/whit3rabbit/syntext.git
 
 - See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for quantitative design reasoning.
 
 ## Architecture
 
-- **Segment format**: immutable single-file segments (RPLX magic, TOC footer, page-aligned dictionary). Postings are delta-varint or Roaring bitmap depending on list size (threshold: 8K entries).
+- **Segment format**: immutable single-file segments (SNTX magic, TOC footer, page-aligned dictionary). Postings are delta-varint or Roaring bitmap depending on list size (threshold: 8K entries).
 - **Tokenizer**: two-tier boundary detection (forced boundaries at code delimiters + weight-based within alphanumeric spans). Lowercase normalization at index/query time. Weight table lives in `src/tokenizer/weights.rs`. Forced boundary set in `is_forced_boundary()` in `src/tokenizer/mod.rs`.
 - **Query router**: literal (`build_covering` + memchr::memmem) / indexed regex (`build_covering_inner` + HIR decomposition) / full scan. Cardinality-based intersection ordering in `query/mod.rs`. Fallback skips index when smallest posting list > 10% of total docs. Path filter always first.
 - **Overlay**: single merged in-memory OverlayView, rebuilt from all dirty files on each `commit_batch()`. ArcSwap<IndexSnapshot> for snapshot isolation. On-disk generations for crash recovery only.
@@ -54,7 +55,7 @@ These are non-negotiable ordering constraints:
 cargo test                    # unit + integration tests
 cargo clippy                  # lint, must pass with no warnings
 cargo bench                   # criterion benchmarks
-RIPLINE_LOG_SELECTIVITY=1 cargo test --test correctness -- --nocapture
+SYNTEXT_LOG_SELECTIVITY=1 cargo test --test correctness -- --nocapture
                               # show per-query selectivity stats
 cargo test --test tokenizer   # unit: tokenizer only
 cargo test --test posting     # unit: posting lists only
@@ -89,14 +90,14 @@ or commit-path performance. Record before/after results in
 
 ### External repository comparison harness
 
-Use the Python harness for `ripline` vs `rg` vs `grep` on a real repo:
+Use the Python harness for `syntext` vs `rg` vs `grep` on a real repo:
 
 ```sh
 python3 scripts/bench_compare.py --preset react_token_aligned
 python3 scripts/bench_compare.py --repo /path/to/repo --query literal:symbol
 ```
 
-Key flags: `--build-only` (index build timing only), `--ripline-search-mode both` (cold + hot),
+Key flags: `--build-only` (index build timing only), `--syntext-search-mode both` (cold + hot),
 `--build-iterations 1 --search-iterations 1 --warmups 0` (quick pass on large repos),
 `--json`, `--markdown-table-only --output /tmp/out.md`. Full option list: `--help`.
 
@@ -110,12 +111,12 @@ so runs are reproducible over time.
 Shallow clones are enough for search benchmarks:
 
 ```sh
-mkdir -p ./_ripline-bench
-git clone --depth 1 -b v6.8 https://github.com/torvalds/linux.git ./_ripline-bench/linux
-git clone --depth 1 -b 1.77.0 https://github.com/rust-lang/rust.git ./_ripline-bench/rust
-git clone --depth 1 -b v18.2.0 https://github.com/facebook/react.git ./_ripline-bench/react
-git clone --depth 1 -b v5.4.3 https://github.com/microsoft/TypeScript.git ./_ripline-bench/typescript
-git clone --depth 1 -b v20.12.0 https://github.com/nodejs/node.git ./_ripline-bench/node
+mkdir -p ./_syntext-bench
+git clone --depth 1 -b v6.8 https://github.com/torvalds/linux.git ./_syntext-bench/linux
+git clone --depth 1 -b 1.77.0 https://github.com/rust-lang/rust.git ./_syntext-bench/rust
+git clone --depth 1 -b v18.2.0 https://github.com/facebook/react.git ./_syntext-bench/react
+git clone --depth 1 -b v5.4.3 https://github.com/microsoft/TypeScript.git ./_syntext-bench/typescript
+git clone --depth 1 -b v20.12.0 https://github.com/nodejs/node.git ./_syntext-bench/node
 ```
 
 macOS warning: default APFS is case-insensitive. `linux` and `rust` have
@@ -136,12 +137,12 @@ python3 scripts/bench_compare.py --preset node_runtime
 
 ### Benchmark query rules
 
-- Prefer token-aligned literal queries. Current `ripline` coverage guarantees are
+- Prefer token-aligned literal queries. Current `syntext` coverage guarantees are
   strongest there.
 - Do not use substring-heavy literals like `ReactElement`, `useEffect`, or
   `TyCtxt` as headline benchmark terms unless exact count agreement has already
   been verified.
-- If `ripline`, `rg`, and `grep` counts differ, treat the timing comparison as
+- If `syntext`, `rg`, and `grep` counts differ, treat the timing comparison as
   suspect until the mismatch is explained.
 
 ## Weight Table Generation
@@ -217,14 +218,18 @@ All PRs must pass before merge:
 ```
 src/
   lib.rs                      # public API (Index, Config, SearchOptions)
-  main.rs                     # binary entry point
-  rl_main.rs                  # alternate entry point (delegates to cli::run)
+  main.rs                     # binary entry point (st)
   tokenizer/
     mod.rs                    # sparse n-gram extraction (build_all, build_covering)
     weights.rs                # pre-trained [u16; 65536] byte-pair frequency table
   index/
-    mod.rs                    # index builder + reader
-    segment.rs                # RPLX segment format (read/write)
+    mod.rs                    # Index struct, open, notify, commit_batch
+    build.rs                  # build pipeline (calibrate_threshold, build_index)
+    io_util.rs                # secure file-open helpers (O_NOFOLLOW, inode check)
+    snapshot.rs               # BaseSegments, IndexSnapshot, new_snapshot
+    segment/
+      mod.rs                  # SNTX segment format constants, DocEntry, MmapSegment
+      segment_writer.rs       # SegmentWriter (serialize to SNTX)
     overlay.rs                # OverlayView + ArcSwap<IndexSnapshot>
     manifest.rs               # manifest.json + atomic write-then-rename
     pending.rs                # PendingEdits buffer for incremental updates

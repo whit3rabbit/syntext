@@ -5,8 +5,8 @@
 use std::fs;
 use tempfile::TempDir;
 
-use ripline_rs::index::Index;
-use ripline_rs::{Config, SearchOptions};
+use syntext::index::Index;
+use syntext::{Config, SearchOptions};
 
 fn setup(dir: &TempDir) -> Config {
     let repo = dir.path().join("repo");

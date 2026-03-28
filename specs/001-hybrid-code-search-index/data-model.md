@@ -38,7 +38,7 @@ Immutable unit of the index, stored as a single mmap-friendly file.
 
 ```
 Header {
-    magic: [u8; 4],         // b"RPLX"
+    magic: [u8; 4],         // b"SNTX"
     version: u32,           // format version
     doc_count: u32,
     gram_count: u32,
@@ -311,7 +311,7 @@ QueryRoute -> GramQuery tree -> [Direct execution with early termination] -> [Ve
 ## Validation Rules
 
 1. **Document paths**: Must be valid UTF-8, relative (no leading `/`), no `..` components, no null bytes. Must pass `.gitignore` check.
-2. **Segment files**: Must start with magic bytes `b"RPLX"` and valid version. Reject/rebuild on mismatch.
+2. **Segment files**: Must start with magic bytes `b"SNTX"` and valid version. Reject/rebuild on mismatch.
 3. **Posting lists**: Must be sorted, no duplicate doc_ids within a list, all doc_ids < segment.doc_count.
 4. **Dictionary**: Must be sorted by gram_hash. No duplicate gram_hash entries within a segment.
 5. **Manifest**: segment filenames must exist on disk. Orphan files (not in manifest) are candidates for GC.

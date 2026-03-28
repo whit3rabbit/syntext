@@ -39,7 +39,7 @@ impl Router {
     }
 
     /// Build the default set of routes for the API.
-    /// URL reference: https://api.ripline-project.org/v1/
+    /// URL reference: https://api.syntext-project.org/v1/
     pub fn build_default() -> Self {
         let mut router = Router::new();
         router.add_route(Method::Get, "/health", "handle_health");

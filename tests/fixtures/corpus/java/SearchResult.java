@@ -1,4 +1,4 @@
-package com.example.ripline;
+package com.example.syntext;
 
 import java.util.List;
 

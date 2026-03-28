@@ -68,18 +68,18 @@
 
 **Goal**: Build path + content n-gram indexes for a repository. Completes in under 5s for typical repos. Skips binaries, respects .gitignore.
 
-**Independent Test**: Run `ripline index --stats` on fixture repo, verify all non-ignored text files are indexed and stats are printed.
+**Independent Test**: Run `st index --stats` on fixture repo, verify all non-ignored text files are indexed and stats are printed.
 
 ### Implementation for US5
 
-- [x] T021 [US5] Implement RPLX segment writer in src/index/segment.rs: write header, document table, postings section (delta-varint or Roaring per list), page-aligned dictionary section, TOC footer with xxhash64 checksum. Per contracts/segment-format.md.
-- [x] T022 [US5] Implement RPLX segment reader in src/index/segment.rs: mmap file, verify magic/version/checksum, binary search dictionary, read posting list at offset. Return CorruptIndex on validation failure.
+- [x] T021 [US5] Implement SNTX segment writer in src/index/segment.rs: write header, document table, postings section (delta-varint or Roaring per list), page-aligned dictionary section, TOC footer with xxhash64 checksum. Per contracts/segment-format.md.
+- [x] T022 [US5] Implement SNTX segment reader in src/index/segment.rs: mmap file, verify magic/version/checksum, binary search dictionary, read posting list at offset. Return CorruptIndex on validation failure.
 - [x] T023 [US5] Implement manifest read/write in src/index/manifest.rs: JSON serialization of Manifest struct, atomic write-then-rename, GC for orphan segment files. Per data-model.md Manifest entity.
 - [x] T024 [US5] Implement PathIndex builder in src/path/mod.rs: enumerate files via ignore crate walker, build sorted path list, populate extension_to_files and component_to_files Roaring bitmaps. Per data-model.md PathIndex entity.
 - [x] T025 [US5] Implement batched-segment build pipeline in src/index/mod.rs: split files into ~256MB batches, per batch: rayon parallel file read + lowercase + sparse gram extraction, sort (gram_hash, doc_id) pairs, sequential emit posting lists, write segment. Per research.md section 17.
 - [x] T026 [US5] Implement `Index::build()` in src/index/mod.rs: file enumeration via ignore crate (respects .gitignore, skips binaries, enforces max_file_size), batched-segment build, path index build, manifest write, post-build size assertion (warn if >0.5x corpus). Per library-api.md.
 - [x] T027 [US5] Implement `Index::open()` in src/index/mod.rs: load manifest, mmap base segments, rebuild path index, create initial empty IndexSnapshot via ArcSwap. Per library-api.md.
-- [x] T028 [US5] Write integration test in tests/integration/index_build.rs: build index on fixture repo, verify doc_count matches expected, verify binary files skipped, verify .gitignored files skipped, verify segment file exists with valid RPLX header.
+- [x] T028 [US5] Write integration test in tests/integration/index_build.rs: build index on fixture repo, verify doc_count matches expected, verify binary files skipped, verify .gitignored files skipped, verify segment file exists with valid SNTX header.
 
 **Checkpoint**: `Index::open()` and `Index::build()` work. Segments are written to disk and can be mmap'd and read back. Path index is populated.
 
@@ -100,7 +100,7 @@
 - [x] T033 [US1] Implement tiered verifier in src/search/verifier.rs: literal path uses memchr::memmem, regex path uses compiled regex crate Regex. Returns Vec<SearchMatch> with correct line numbers, line content, byte offsets. Per contracts/library-api.md SearchMatch.
 - [x] T034 [US1] Implement `Index::search()` in src/search/mod.rs: acquire ArcSwap snapshot, route query, execute gram query on base + overlay, subtract delete_set, union candidates, verify, sort by path then line number. Per library-api.md.
 - [x] T035 [US1] Write unit tests for regex decomposition in tests/unit/query.rs: literal "foo" -> Grams, `foo.*bar` -> And(Grams(foo), Grams(bar)), `(foo|bar)` -> Or(Grams(foo), Grams(bar)), `(foo)?bar` -> Grams(bar) only (CRITICAL: verify optional prefix does not contribute grams), `.*` -> All, `foo+` -> Grams(foo)
-- [x] T036 [US1] Run ripgrep correctness harness (T010-T011) against Index::search() in tests/integration/correctness.rs: for each test pattern, compare ripline output to stored ripgrep expected output. Fail on any difference in paths, line numbers, or line content.
+- [x] T036 [US1] Run ripgrep correctness harness (T010-T011) against Index::search() in tests/integration/correctness.rs: for each test pattern, compare syntext output to stored ripgrep expected output. Fail on any difference in paths, line numbers, or line content.
 
 **Checkpoint**: `Index::search()` returns correct results for literals and regex. Correctness validated against ripgrep oracle.
 
@@ -167,14 +167,14 @@
 
 **Purpose**: Wire library API to command-line interface per contracts/cli.md.
 
-- [x] T055 Implement `ripline index` subcommand in src/cli/mod.rs: parse --force, --stats, --quiet flags, call Index::open() + Index::build(). Print stats if requested. Per contracts/cli.md.
-- [x] T056 [P] Implement `ripline search` subcommand in src/cli/mod.rs: parse pattern, path args, -l/-i/-t/-T/-m/-c/--json/-q flags, call Index::search(). Format output as grep-compatible `path:line:content` or JSON. Exit codes 0/1/2 per contracts/cli.md.
-- [x] T057 [P] Implement `ripline status` subcommand in src/cli/mod.rs: call Index::stats(), format output (plain or --json). Per contracts/cli.md.
-- [x] T058 [P] Implement `ripline update` subcommand in src/cli/mod.rs: detect changed files via git diff against base_commit, call notify_change for each + commit_batch. --flush flag forces compact(). Per contracts/cli.md.
-- [x] T059 Implement global options in src/cli/mod.rs: --index-dir, --repo-root (auto-detect via .git), -v/--verbose, environment variable overrides (RIPLINE_INDEX_DIR, RIPLINE_MAX_FILE_SIZE). Per contracts/cli.md.
+- [x] T055 Implement `st index` subcommand in src/cli/mod.rs: parse --force, --stats, --quiet flags, call Index::open() + Index::build(). Print stats if requested. Per contracts/cli.md.
+- [x] T056 [P] Implement `st search` subcommand in src/cli/mod.rs: parse pattern, path args, -l/-i/-t/-T/-m/-c/--json/-q flags, call Index::search(). Format output as grep-compatible `path:line:content` or JSON. Exit codes 0/1/2 per contracts/cli.md.
+- [x] T057 [P] Implement `st status` subcommand in src/cli/mod.rs: call Index::stats(), format output (plain or --json). Per contracts/cli.md.
+- [x] T058 [P] Implement `st update` subcommand in src/cli/mod.rs: detect changed files via git diff against base_commit, call notify_change for each + commit_batch. --flush flag forces compact(). Per contracts/cli.md.
+- [x] T059 Implement global options in src/cli/mod.rs: --index-dir, --repo-root (auto-detect via .git), -v/--verbose, environment variable overrides (SYNTEXT_INDEX_DIR, SYNTEXT_MAX_FILE_SIZE). Per contracts/cli.md.
 - [x] T060 Implement main.rs binary entry point: parse clap commands, dispatch to subcommand handlers, handle errors with appropriate exit codes.
 
-**Checkpoint**: Full CLI works end-to-end. `ripline index && ripline search "pattern"` produces correct grep-compatible output.
+**Checkpoint**: Full CLI works end-to-end. `st index && st search "pattern"` produces correct grep-compatible output.
 
 ---
 
@@ -190,7 +190,7 @@
 - [x] T066 Run `cargo clippy` and fix all warnings per quality gate 2.
 - [x] T067 Verify no source file exceeds 400 lines (test files exempt) per constitution principle V.
 - [ ] T068 Run full correctness suite (T036) on a large real-world repo (e.g., ripgrep source, 50K+ LOC) to validate at scale. (DEFERRED: requires cloning external repos)
-- [x] T069 Add .ripline/ to default .gitignore template recommendations in README or docs.
+- [x] T069 Add .syntext/ to default .gitignore template recommendations in README or docs.
 
 ---
 
@@ -269,7 +269,7 @@ Agent 1: T054 - Integration test
 
 ### Remaining Work (MVP already complete)
 
-Phases 1-6 and Phase 8 are complete. The core `ripline index && ripline search "pattern"` workflow is functional and validated against ripgrep. Remaining work:
+Phases 1-6 and Phase 8 are complete. The core `st index && st search "pattern"` workflow is functional and validated against ripgrep. Remaining work:
 
 1. **Phase 7 (US4 Symbol)**: Full symbol-aware search via Tree-sitter + SQLite (T048-T054)
 2. **Phase 9 deferred**: Larger corpus benchmarks (T061-T063), segment merge (T064), large-scale correctness (T068), crash recovery (T042)

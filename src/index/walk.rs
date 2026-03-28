@@ -186,7 +186,7 @@ pub fn split_batches(files: &[FileRecord], batch_limit: u64) -> Vec<Vec<FileReco
 ///
 /// **Spec (CHK015):** A file is binary if any of the first 8192 bytes is a
 /// null byte (0x00). This matches git/grep behaviour and is the canonical
-/// definition for ripline's indexing pipeline. Binary files are never indexed.
+/// definition for syntext's indexing pipeline. Binary files are never indexed.
 pub fn is_binary(content: &[u8]) -> bool {
     let check = content.len().min(8192);
     content[..check].contains(&0u8)

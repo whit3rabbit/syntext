@@ -17,7 +17,7 @@ pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bo
     let index = match Index::build(config) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("rl index: {e}");
+            eprintln!("st index: {e}");
             return 2;
         }
     };
@@ -35,20 +35,22 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("rl status: {e}");
+            eprintln!("st status: {e}");
             return 2;
         }
     };
 
     let s = index.stats();
     if json {
-        println!(
-            "{{\"documents\":{},\"segments\":{},\"grams\":{},\"index_dir\":\"{}\"}}",
-            s.total_documents,
-            s.total_segments,
-            s.total_grams,
-            config.index_dir.display(),
-        );
+        // Use serde_json to avoid malformed output when index_dir contains
+        // characters that need JSON escaping (quotes, backslashes, etc.).
+        let obj = serde_json::json!({
+            "documents": s.total_documents,
+            "segments": s.total_segments,
+            "grams": s.total_grams,
+            "index_dir": config.index_dir.display().to_string(),
+        });
+        println!("{obj}");
     } else {
         println!("Index:     {}", config.index_dir.display());
         println!("Documents: {}", s.total_documents);
@@ -65,7 +67,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("rl update: {e}");
+            eprintln!("st update: {e}");
             return 2;
         }
     };
@@ -121,7 +123,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
 
     if changed.is_empty() {
         if !quiet {
-            println!("rl: no changes detected");
+            println!("st: no changes detected");
         }
         return 0;
     }
@@ -132,14 +134,14 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         let abs = config.repo_root.join(path);
         if abs.exists() {
             if let Err(e) = index.notify_change(&abs) {
-                eprintln!("rl update: {path}: {e}");
+                eprintln!("st update: {path}: {e}");
                 notify_errors += 1;
             } else {
                 count += 1;
             }
         } else {
             if let Err(e) = index.notify_delete(&abs) {
-                eprintln!("rl update: {path}: {e}");
+                eprintln!("st update: {path}: {e}");
                 notify_errors += 1;
             } else {
                 count += 1;
@@ -148,12 +150,12 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     }
 
     if let Err(e) = index.commit_batch() {
-        eprintln!("rl update: commit failed: {e}");
+        eprintln!("st update: commit failed: {e}");
         return 2;
     }
 
     if !quiet {
-        println!("rl: updated {} file(s)", count);
+        println!("st: updated {} file(s)", count);
     }
     if notify_errors > 0 { 1 } else { 0 }
 }

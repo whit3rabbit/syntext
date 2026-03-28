@@ -1,9 +1,9 @@
 //! Ripgrep correctness oracle tests.
 //!
-//! These tests compare ripline search results against `rg` (ripgrep) for
-//! the same patterns on the same fixture corpus. ripline must produce
+//! These tests compare syntext search results against `rg` (ripgrep) for
+//! the same patterns on the same fixture corpus. syntext must produce
 //! zero false negatives for all indexed patterns: every file that rg finds
-//! must also appear in ripline results.
+//! must also appear in syntext results.
 //!
 //! False positives (candidates filtered by the verifier) are acceptable
 //! at the index level but must not survive after verification.
@@ -32,7 +32,7 @@
 //! - Indexed regex repetition: `(fn_parse_filter_query)+` -- the required
 //!   repetition preserves grams from the inner literal, so this should narrow.
 //! - Dot-star fallback: `parse.*batch` -- no extractable grams spanning the
-//!   `.*`; query router must fall back to full scan. ripline must still find
+//!   `.*`; query router must fall back to full scan. syntext must still find
 //!   all rg matches.
 //! - Path filter: `parse_query` restricted to `*.py` files only
 //! - Gitignore: `parse_query` must NOT find `build/output.txt`
@@ -125,13 +125,13 @@ fn correctness_build_lock() -> &'static Mutex<()> {
 }
 
 // ---------------------------------------------------------------------------
-// ripline helpers
+// syntext helpers
 // ---------------------------------------------------------------------------
 
-use ripline_rs::index::Index;
-use ripline_rs::{Config, SearchOptions};
+use syntext::index::Index;
+use syntext::{Config, SearchOptions};
 
-/// Build a ripline index over the corpus in a temporary directory.
+/// Build a syntext index over the corpus in a temporary directory.
 /// Returns the temp dir (kept alive) and the index handle.
 fn build_test_index(corpus: &Path) -> (tempfile::TempDir, Index) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -144,8 +144,8 @@ fn build_test_index(corpus: &Path) -> (tempfile::TempDir, Index) {
     (tmp, index)
 }
 
-/// Run a ripline search and return `(relative_path, line_number)` pairs.
-fn ripline_matches(
+/// Run a syntext search and return `(relative_path, line_number)` pairs.
+fn syntext_matches(
     index: &Index,
     _corpus: &Path,
     pattern: &str,
@@ -175,44 +175,44 @@ fn ripline_matches(
         .collect()
 }
 
-/// Assert that ripline produces a superset of rg results (zero false negatives).
+/// Assert that syntext produces a superset of rg results (zero false negatives).
 ///
-/// ripline may return more candidates (false positives that survive to the
+/// syntext may return more candidates (false positives that survive to the
 /// result set indicate a verifier bug, not an index bug), but it must never
 /// miss a file that rg found.
 #[allow(dead_code)]
 fn assert_no_false_negatives(
     corpus: &Path,
     rg_result: &BTreeSet<(String, u32)>,
-    ripline_result: &BTreeSet<(String, u32)>,
+    syntext_result: &BTreeSet<(String, u32)>,
     pattern: &str,
 ) {
-    let missed: Vec<_> = rg_result.difference(ripline_result).collect();
+    let missed: Vec<_> = rg_result.difference(syntext_result).collect();
     assert!(
         missed.is_empty(),
-        "ripline missed {} matches for pattern {:?} on corpus {:?}.\n\
+        "syntext missed {} matches for pattern {:?} on corpus {:?}.\n\
          First missed: {:?}\n\
-         rg found {} total, ripline found {}.",
+         rg found {} total, syntext found {}.",
         missed.len(),
         pattern,
         corpus,
         missed.first(),
         rg_result.len(),
-        ripline_result.len(),
+        syntext_result.len(),
     );
 }
 
-/// Assert exact equality between rg and ripline results.
+/// Assert exact equality between rg and syntext results.
 #[allow(dead_code)]
 fn assert_exact_match(
     corpus: &Path,
     rg_result: &BTreeSet<(String, u32)>,
-    ripline_result: &BTreeSet<(String, u32)>,
+    syntext_result: &BTreeSet<(String, u32)>,
     pattern: &str,
 ) {
     assert_eq!(
-        rg_result, ripline_result,
-        "ripline results differ from rg for pattern {:?} on corpus {:?}",
+        rg_result, syntext_result,
+        "syntext results differ from rg for pattern {:?} on corpus {:?}",
         pattern, corpus
     );
 }
@@ -223,7 +223,7 @@ fn assert_exact_match(
 // These tests define the correctness contract. All tests are currently
 // SKIPPED if rg is unavailable. Once Index::build and search are
 // implemented (Phases 3-4), remove the early-return stubs and wire in
-// the real build_test_index / ripline_matches calls.
+// the real build_test_index / syntext_matches calls.
 // ---------------------------------------------------------------------------
 
 /// Exact literal: `parse_query` appears in 3+ files.
@@ -242,8 +242,8 @@ fn literal_parse_query() {
         rg_result.len()
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "parse_query", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "parse_query");
+    let syntext_result = syntext_matches(&index, &corpus, "parse_query", false, None);
+    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse_query");
 }
 
 /// Exact literal: `process_batch` appears in 2+ files.
@@ -262,8 +262,8 @@ fn literal_process_batch() {
         rg_result.len()
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "process_batch", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "process_batch");
+    let syntext_result = syntext_matches(&index, &corpus, "process_batch", false, None);
+    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "process_batch");
 }
 
 /// Literal with punctuation: `parse_query(` -- the `(` is part of the literal.
@@ -281,11 +281,11 @@ fn literal_with_punctuation() {
         !rg_result.is_empty(),
         "fixture invariant: parse_query( must appear in at least 1 file"
     );
-    // parse_query( contains '(' which is a regex metacharacter, so ripline
+    // parse_query( contains '(' which is a regex metacharacter, so syntext
     // treats it as regex. Use the escaped form for the regex engine.
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, r"parse_query\(", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "parse_query(");
+    let syntext_result = syntext_matches(&index, &corpus, r"parse_query\(", false, None);
+    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse_query(");
 }
 
 /// Regex alternation: `parse_query|process_batch`.
@@ -303,11 +303,11 @@ fn regex_alternation() {
         "fixture invariant: alternation must match at least one file"
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "parse_query|process_batch", false, None);
+    let syntext_result = syntext_matches(&index, &corpus, "parse_query|process_batch", false, None);
     assert_no_false_negatives(
         &corpus,
         &rg_result,
-        &ripline_result,
+        &syntext_result,
         "parse_query|process_batch",
     );
 }
@@ -327,8 +327,8 @@ fn regex_character_class() {
         "fixture invariant: character class must match at least 1 file"
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "parse_quer[yi]", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "parse_quer[yi]");
+    let syntext_result = syntext_matches(&index, &corpus, "parse_quer[yi]", false, None);
+    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse_quer[yi]");
 }
 
 /// Indexed regex repetition: `(fn_parse_filter_query)+`.
@@ -346,11 +346,11 @@ fn indexed_regex_repetition() {
         "fixture invariant: repetition pattern must match at least 1 file"
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "(fn_parse_filter_query)+", false, None);
+    let syntext_result = syntext_matches(&index, &corpus, "(fn_parse_filter_query)+", false, None);
     assert_no_false_negatives(
         &corpus,
         &rg_result,
-        &ripline_result,
+        &syntext_result,
         "(fn_parse_filter_query)+",
     );
 }
@@ -375,11 +375,11 @@ fn case_insensitive_literal() {
         "fixture invariant: case-insensitive ParseQuery must match at least 1 file"
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "ParseQuery", true, None);
+    let syntext_result = syntext_matches(&index, &corpus, "ParseQuery", true, None);
     assert_no_false_negatives(
         &corpus,
         &rg_ci,
-        &ripline_result,
+        &syntext_result,
         "ParseQuery (case-insensitive)",
     );
 }
@@ -399,12 +399,12 @@ fn no_match_pattern() {
         "sentinel pattern must not appear in any fixture file"
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result =
-        ripline_matches(&index, &corpus, "xyzzy_no_match_sentinel_42", false, None);
+    let syntext_result =
+        syntext_matches(&index, &corpus, "xyzzy_no_match_sentinel_42", false, None);
     assert!(
-        ripline_result.is_empty(),
-        "ripline must return empty for no-match sentinel, got {:?}",
-        ripline_result
+        syntext_result.is_empty(),
+        "syntext must return empty for no-match sentinel, got {:?}",
+        syntext_result
     );
 }
 
@@ -423,13 +423,13 @@ fn unicode_identifier() {
         "fixture invariant: unicode_identifiers.py must contain 'café'"
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "café", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "café");
+    let syntext_result = syntext_matches(&index, &corpus, "café", false, None);
+    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "café");
 }
 
 /// Optional prefix pattern: `(foo)?bar`
 ///
-/// IMPORTANT: ripline's HIR walker correctly extracts `Grams("bar")` only,
+/// IMPORTANT: syntext's HIR walker correctly extracts `Grams("bar")` only,
 /// NOT `And(Grams("foo"), Grams("bar"))`.
 ///
 /// Rationale: `foo` is optional. Requiring it in the gram query would
@@ -459,13 +459,13 @@ fn optional_prefix_pattern() {
     let _ = (bar_only, foobar); // checked for clarity
 
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "(foo)?bar", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "(foo)?bar");
+    let syntext_result = syntext_matches(&index, &corpus, "(foo)?bar", false, None);
+    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "(foo)?bar");
 }
 
 /// `parse.*batch`: the `.*` contributes All which simplifies away, leaving
 /// And(Grams("parse"), Grams("batch")) as an indexed regex query.
-/// ripline must find every file that rg finds -- no false negatives.
+/// syntext must find every file that rg finds -- no false negatives.
 #[test]
 fn dot_star_fallback_to_scan() {
     let _guard = correctness_build_lock().lock().unwrap();
@@ -481,8 +481,8 @@ fn dot_star_fallback_to_scan() {
          (long_line.txt has 'parse_query' and 'process_batch' on the same line)"
     );
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "parse.*batch", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &ripline_result, "parse.*batch");
+    let syntext_result = syntext_matches(&index, &corpus, "parse.*batch", false, None);
+    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse.*batch");
 }
 
 /// Path filter: `parse_query` restricted to `*.py` files.
@@ -512,19 +512,19 @@ fn path_filter_py_only() {
         );
     }
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "parse_query", false, Some("*.py"));
-    // ripline path_filter uses extension match; verify subset correctness.
-    for (path, _) in &ripline_result {
+    let syntext_result = syntext_matches(&index, &corpus, "parse_query", false, Some("*.py"));
+    // syntext path_filter uses extension match; verify subset correctness.
+    for (path, _) in &syntext_result {
         assert!(
             path.ends_with(".py"),
-            "ripline path filter returned non-.py file: {}",
+            "syntext path filter returned non-.py file: {}",
             path
         );
     }
     assert_no_false_negatives(
         &corpus,
         &rg_py,
-        &ripline_result,
+        &syntext_result,
         "parse_query (*.py filter)",
     );
 }
@@ -550,11 +550,11 @@ fn gitignore_excludes_build_dir() {
         );
     }
     let (_tmp, index) = build_test_index(&corpus);
-    let ripline_result = ripline_matches(&index, &corpus, "parse_query", false, None);
-    for (path, _) in &ripline_result {
+    let syntext_result = syntext_matches(&index, &corpus, "parse_query", false, None);
+    for (path, _) in &syntext_result {
         assert!(
             !path.starts_with("build/") && !path.contains("/build/"),
-            "ripline returned gitignored file: {}",
+            "syntext returned gitignored file: {}",
             path
         );
     }
@@ -580,7 +580,7 @@ fn search_finds_match_in_file_that_grew_beyond_max_size() {
         max_file_size: 1024,
         ..Config::default()
     };
-    let index = ripline_rs::index::Index::build(config.clone()).unwrap();
+    let index = syntext::index::Index::build(config.clone()).unwrap();
 
     // Baseline: found before growth.
     let opts = SearchOptions::default();
@@ -598,7 +598,7 @@ fn search_finds_match_in_file_that_grew_beyond_max_size() {
     std::fs::write(&file, &bloated).unwrap();
 
     // Re-open index (fresh snapshot) and search via truncated read.
-    let index2 = ripline_rs::index::Index::open(config).unwrap();
+    let index2 = syntext::index::Index::open(config).unwrap();
     let results2 = index2.search("unique_sentinel_xyzzy", &opts).unwrap();
     assert_eq!(
         results2.len(),

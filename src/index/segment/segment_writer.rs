@@ -1,7 +1,7 @@
-//! RPLX segment writer.
+//! SNTX segment writer.
 //!
 //! Accumulates documents and gram postings in memory, then serializes them
-//! to the RPLX on-disk format. See `segment.rs` for format constants and
+//! to the SNTX on-disk format. See `segment.rs` for format constants and
 //! shared types (`DocEntry`, `SegmentMeta`).
 
 use std::io;
@@ -18,7 +18,7 @@ use crate::posting::{roaring_util, varint_encode, ROARING_THRESHOLD};
 // T021: SegmentWriter
 // ---------------------------------------------------------------------------
 
-/// Accumulates documents and gram postings, then serializes to an RPLX file.
+/// Accumulates documents and gram postings, then serializes to an SNTX file.
 pub struct SegmentWriter {
     docs: Vec<DocEntry>,
     /// Unsorted `(gram_hash, doc_id)` pairs, aggregated at write time.
@@ -136,7 +136,7 @@ impl SegmentWriter {
             && self.postings.len() > self.initial_postings_capacity * 3
         {
             eprintln!(
-                "ripline: debug: SegmentWriter postings overshoot: hint={}, actual={}",
+                "syntext: debug: SegmentWriter postings overshoot: hint={}, actual={}",
                 self.initial_postings_capacity,
                 self.postings.len()
             );
@@ -169,7 +169,19 @@ impl SegmentWriter {
             buf.extend_from_slice(&doc.content_hash.to_le_bytes());
             buf.extend_from_slice(&doc.size_bytes.to_le_bytes());
             let pb = doc.path.as_bytes();
-            buf.extend_from_slice(&(pb.len() as u16).to_le_bytes());
+            // Security: reject paths that exceed the u16 length prefix to
+            // prevent silent truncation causing wrong-file attribution.
+            let path_len = u16::try_from(pb.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "path exceeds u16::MAX bytes ({}): {}",
+                        pb.len(),
+                        doc.path
+                    ),
+                )
+            })?;
+            buf.extend_from_slice(&path_len.to_le_bytes());
             buf.extend_from_slice(pb);
         }
         for (i, &abs_off) in doc_abs_offsets.iter().enumerate() {

@@ -45,17 +45,24 @@ impl SymbolIndex {
     }
 
     /// Delete all symbols for the given file_ids (used before re-indexing).
+    ///
+    /// Batches deletes in chunks of 999 to stay within SQLite's default
+    /// SQLITE_MAX_VARIABLE_NUMBER limit.
     pub fn delete_for_files(&self, file_ids: &[u32]) -> Result<(), IndexError> {
         if file_ids.is_empty() {
             return Ok(());
         }
+        const SQLITE_MAX_PARAMS: usize = 999;
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("DELETE FROM symbols WHERE file_id IN ({placeholders})");
-        let params: Vec<&dyn rusqlite::ToSql> =
-            file_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        conn.execute(&sql, params.as_slice())
-            .map_err(|e| IndexError::CorruptIndex(format!("symbol delete: {e}")))?;
+        for chunk in file_ids.chunks(SQLITE_MAX_PARAMS) {
+            let placeholders: String =
+                chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("DELETE FROM symbols WHERE file_id IN ({placeholders})");
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            conn.execute(&sql, params.as_slice())
+                .map_err(|e| IndexError::CorruptIndex(format!("symbol delete: {e}")))?;
+        }
         Ok(())
     }
 

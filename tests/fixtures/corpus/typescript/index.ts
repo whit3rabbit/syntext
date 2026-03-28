@@ -1,7 +1,7 @@
 /**
- * ripline TypeScript client
+ * syntext TypeScript client
  *
- * @see https://example.com/ripline-ts for full docs
+ * @see https://example.com/syntext-ts for full docs
  * @author support@example.com
  */
 

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use ripline_rs::index::Index;
-use ripline_rs::Config;
+use syntext::index::Index;
+use syntext::Config;
 
 pub fn create_synthetic_repo(file_count: usize) -> TempDir {
     let repo = tempfile::tempdir().unwrap();

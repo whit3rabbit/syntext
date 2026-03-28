@@ -164,7 +164,14 @@ impl Index {
                     all_paths.push(doc.path);
                 }
             }
-            next_global_id += seg.doc_count;
+            // Security: guard against u32 overflow when summing doc_counts
+            // from segments loaded via manifest (which could be crafted).
+            next_global_id = next_global_id.checked_add(seg.doc_count).ok_or(
+                IndexError::DocIdOverflow {
+                    base_doc_count: next_global_id,
+                    overlay_docs: 0,
+                },
+            )?;
             base_segments.push(seg);
         }
 
@@ -429,8 +436,8 @@ impl Index {
                 let ratio = overlay_count as f64 / base_count as f64;
                 if ratio > OVERLAY_WARN_THRESHOLD {
                     eprintln!(
-                        "ripline: warning: overlay is {:.0}% of base ({} overlay, {} base docs); \
-                         consider running `ripline index` to rebuild",
+                        "syntext: warning: overlay is {:.0}% of base ({} overlay, {} base docs); \
+                         consider running `st index` to rebuild",
                         ratio * 100.0,
                         overlay_count,
                         base_count
@@ -538,7 +545,7 @@ mod tests {
         let index = Index::build(config).unwrap();
 
         // Create a file outside the repo for the symlink to point to.
-        let target_outside = std::env::temp_dir().join("ripline_test_escape_target");
+        let target_outside = std::env::temp_dir().join("syntext_test_escape_target");
         std::fs::write(&target_outside, b"sensitive content").unwrap();
 
         // Create a symlink inside the repo pointing outside.

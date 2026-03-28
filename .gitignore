@@ -27,8 +27,8 @@ fuzz/target/
 fuzz/artifacts/
 fuzz/corpus/
 
-# Ripline index
-.ripline/
+# Syntext index
+.syntext/
 
 # Python
 __pycache__/

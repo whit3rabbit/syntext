@@ -1,6 +1,6 @@
 # Benchmarks
 
-This document explains how to set up, execution, methodology, and the findings of performance benchmarks for `ripline`. 
+This document explains how to set up, execution, methodology, and the findings of performance benchmarks for `syntext`. 
 
 ## Setup & Execution
 
@@ -9,12 +9,12 @@ This document explains how to set up, execution, methodology, and the findings o
 Shallow clones are enough for search benchmarks:
 
 ```sh
-mkdir -p ./_ripline-bench
-git clone --depth 1 -b v6.8 https://github.com/torvalds/linux.git ./_ripline-bench/linux
-git clone --depth 1 -b 1.77.0 https://github.com/rust-lang/rust.git ./_ripline-bench/rust
-git clone --depth 1 -b v18.2.0 https://github.com/facebook/react.git ./_ripline-bench/react
-git clone --depth 1 -b v5.4.3 https://github.com/microsoft/TypeScript.git ./_ripline-bench/typescript
-git clone --depth 1 -b v20.12.0 https://github.com/nodejs/node.git ./_ripline-bench/node
+mkdir -p ./_syntext-bench
+git clone --depth 1 -b v6.8 https://github.com/torvalds/linux.git ./_syntext-bench/linux
+git clone --depth 1 -b 1.77.0 https://github.com/rust-lang/rust.git ./_syntext-bench/rust
+git clone --depth 1 -b v18.2.0 https://github.com/facebook/react.git ./_syntext-bench/react
+git clone --depth 1 -b v5.4.3 https://github.com/microsoft/TypeScript.git ./_syntext-bench/typescript
+git clone --depth 1 -b v20.12.0 https://github.com/nodejs/node.git ./_syntext-bench/node
 ```
 
 > **macOS warning**: default APFS is case-insensitive. `linux` and `rust` have case-colliding paths, so Git will warn and only one path from each collision set will exist in the working tree. That is acceptable for rough performance work, but not for strict corpus-correctness claims.
@@ -33,7 +33,7 @@ cargo bench --bench selectivity -- --sample-size 10
 
 ### External Repository Comparison Harness
 
-Use the Python harness for `ripline` vs `rg` vs `grep` on a real repo. This tests end-to-end performance.
+Use the Python harness for `syntext` vs `rg` vs `grep` on a real repo. This tests end-to-end performance.
 
 ```sh
 python3 scripts/bench_compare.py \
@@ -72,25 +72,25 @@ python3 scripts/bench_compare.py \
   --output /tmp/react-bench.md
 ```
 
-Measure repeated queries against one already-opened `ripline` index in a single process:
+Measure repeated queries against one already-opened `syntext` index in a single process:
 
 ```sh
 python3 scripts/bench_compare.py \
   --preset react_token_aligned \
-  --ripline-search-mode persistent
+  --syntext-search-mode persistent
 ```
 
-Use `--ripline-search-mode persistent` when you want to measure query-time reuse, such as snapshot-scoped posting bitmap caches, without paying process startup and index open cost on every `ripline` search. Keep `fork` as the default for apples-to-apples CLI comparisons, since `rg` and `grep` still run one process per query in this harness.
+Use `--syntext-search-mode persistent` when you want to measure query-time reuse, such as snapshot-scoped posting bitmap caches, without paying process startup and index open cost on every `syntext` search. Keep `fork` as the default for apples-to-apples CLI comparisons, since `rg` and `grep` still run one process per query in this harness.
 
-Report both `ripline` modes side by side in one run:
+Report both `syntext` modes side by side in one run:
 
 ```sh
 python3 scripts/bench_compare.py \
   --preset react_token_aligned \
-  --ripline-search-mode both
+  --syntext-search-mode both
 ```
 
-Use `both` when you want one report that shows the gap between CLI-style cold searches (`ripline-fork`) and hot in-process searches (`ripline-persistent`).
+Use `both` when you want one report that shows the gap between CLI-style cold searches (`syntext-fork`) and hot in-process searches (`syntext-persistent`).
 
 For very large repos, or large-corpus preset:
 ```sh
@@ -115,9 +115,9 @@ Use `--build-only` when tokenizer, segment layout, or index construction is the 
 
 ## Testing Rules & Query Discipline
 
-- Prefer token-aligned literal queries. Current `ripline` coverage guarantees are strongest there.
+- Prefer token-aligned literal queries. Current `syntext` coverage guarantees are strongest there.
 - Do not use substring-heavy literals like `ReactElement`, `useEffect`, or `TyCtxt` as headline benchmark terms unless exact count agreement has already been verified, since real code might embed substrings (e.g. `ReactElement` inside `ReactElementPropsTypeDestructor`).
-- If `ripline`, `rg`, and `grep` counts differ, treat the timing comparison as suspect until the mismatch is explained.
+- If `syntext`, `rg`, and `grep` counts differ, treat the timing comparison as suspect until the mismatch is explained.
 
 ## Calibrated Scan Threshold (2026-03-27)
 
@@ -146,10 +146,10 @@ These points summarize current known testing observations against real code envi
 - **Commit Latency**: Single-file incremental commit is completely sub-millisecond, averaging `~135us` for single edits. 
 
 ### External Constraints
-- **Selectivity**: On a broad common literal (`workspace`), `rg` is slightly faster than `ripline` since the candidate set is huge and verification dominates execution. On more selective literals, e.g. `LanguageServerId`, `ripline` operates 5x-10x faster (e.g. `8ms` vs `45ms`).
-- **Compound literals**: Planner quality matters as much as raw index speed. A naive “smallest single posting list” fallback can misclassify compound identifiers like `irq_work_queue` because each component gram is common while their intersection is selective. The current planner probes a few smallest intersections before bailing to full scan, which restored `irq_work_queue` on the Linux preset from scan-like multi-second behavior to indexed behavior in local runs (`ripline-fork` about `196ms`, `ripline-persistent` about `114ms`, `rg` about `3.6s`).
-- Exact match preset counts are clean for queries like `useState`, `getDisplayNameForReactElement`, `rustc_middle`, and `mir::Body` on real codebases. Substring and suffix matches (such as `TyCtxt` or `useEffect`) will often undercount in `ripline` on big codebases and therefore serve as poor benchmark choices.
-- **Hot vs cold search**: `--ripline-search-mode both` is useful when measuring real agent loops. On the current Zed preset, `LanguageServerId` measured about `9ms` in fork mode and about `2ms` in persistent mode, with identical counts. Broad queries like `workspace` change much less, because verification still dominates.
+- **Selectivity**: On a broad common literal (`workspace`), `rg` is slightly faster than `syntext` since the candidate set is huge and verification dominates execution. On more selective literals, e.g. `LanguageServerId`, `syntext` operates 5x-10x faster (e.g. `8ms` vs `45ms`).
+- **Compound literals**: Planner quality matters as much as raw index speed. A naive “smallest single posting list” fallback can misclassify compound identifiers like `irq_work_queue` because each component gram is common while their intersection is selective. The current planner probes a few smallest intersections before bailing to full scan, which restored `irq_work_queue` on the Linux preset from scan-like multi-second behavior to indexed behavior in local runs (`syntext-fork` about `196ms`, `syntext-persistent` about `114ms`, `rg` about `3.6s`).
+- Exact match preset counts are clean for queries like `useState`, `getDisplayNameForReactElement`, `rustc_middle`, and `mir::Body` on real codebases. Substring and suffix matches (such as `TyCtxt` or `useEffect`) will often undercount in `syntext` on big codebases and therefore serve as poor benchmark choices.
+- **Hot vs cold search**: `--syntext-search-mode both` is useful when measuring real agent loops. On the current Zed preset, `LanguageServerId` measured about `9ms` in fork mode and about `2ms` in persistent mode, with identical counts. Broad queries like `workspace` change much less, because verification still dominates.
 - **Incremental parity**: Benchmark numbers are easier to trust when incremental updates match full builds. Incremental commits now reject lexical path traversal outside `repo_root` and skip binary files the same way full builds do, so “hot index” runs do not quietly benchmark a different visible corpus than fresh builds.
 - **Camel-case indexing tradeoff**: the `c671141` change set added exact-literal expansion for small regex alternations and extra camel-case-aware grams at index time. A direct before/after comparison against `2513d0e` showed modest on-disk growth but a non-trivial build-time bump in single local runs:
 

@@ -1,4 +1,4 @@
-# Quickstart: Ripline
+# Quickstart: Syntext
 
 ## Prerequisites
 
@@ -15,58 +15,58 @@ cargo build --release
 
 ```bash
 cd /path/to/your/repo
-ripline index --stats
+st index --stats
 ```
 
-This builds the full n-gram index in `.ripline/`. Typical time: 1-3 seconds for repositories under 500k LOC.
+This builds the full n-gram index in `.syntext/`. Typical time: 1-3 seconds for repositories under 500k LOC.
 
 ## Search
 
 ```bash
 # Literal search
-ripline search -l "fn parse_query"
+st search -l "fn parse_query"
 
 # Regex search
-ripline search "fn\s+\w+_query"
+st search "fn\s+\w+_query"
 
 # Restrict to Rust files
-ripline search -t rs "impl.*Iterator"
+st search -t rs "impl.*Iterator"
 
 # Restrict to a path
-ripline search "TODO" src/index/
+st search "TODO" src/index/
 
 # Case-insensitive
-ripline search -i "error"
+st search -i "error"
 
 # JSON output (for tooling integration)
-ripline search --json "fn main"
+st search --json "fn main"
 ```
 
 ## Update After Edits
 
 ```bash
 # Incremental update (fast, uses overlay)
-ripline update
+st update
 
 # Force full rebuild
-ripline index --force
+st index --force
 ```
 
 ## Check Status
 
 ```bash
-ripline status
+st status
 ```
 
 ## Use as a Library
 
 ```rust
-use ripline::{Config, Index, SearchOptions};
+use syntext::{Config, Index, SearchOptions};
 use std::path::PathBuf;
 
 let config = Config {
     repo_root: PathBuf::from("/path/to/repo"),
-    index_dir: PathBuf::from("/path/to/repo/.ripline"),
+    index_dir: PathBuf::from("/path/to/repo/.st"),
     ..Config::default()
 };
 
@@ -85,7 +85,7 @@ for m in &results {
 
 ## Agent Integration
 
-Ripline is designed for AI agent workflows. Key properties:
+Syntext is designed for AI agent workflows. Key properties:
 
 - **Fast**: sub-50ms warm queries. Agents can grep repeatedly without stalling.
 - **Fresh**: `notify_change()` updates the overlay instantly. Agents see code they just wrote.

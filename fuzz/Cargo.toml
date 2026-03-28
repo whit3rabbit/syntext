@@ -1,5 +1,5 @@
 [package]
-name = "ripline-fuzz"
+name = "syntext-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -10,9 +10,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
-[dependencies.ripline]
+[dependencies.syntext]
 path = ".."
-package = "ripline-rs"
+package = "syntext"
 
 [[bin]]
 name = "fuzz_coverage_invariant"

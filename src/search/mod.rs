@@ -66,8 +66,8 @@ pub fn search(
         _ => all_doc_ids(&snap),
     };
 
-    // Optional selectivity diagnostics (RIPLINE_LOG_SELECTIVITY=1).
-    if std::env::var_os("RIPLINE_LOG_SELECTIVITY").is_some() {
+    // Optional selectivity diagnostics (SYNTEXT_LOG_SELECTIVITY=1).
+    if std::env::var_os("SYNTEXT_LOG_SELECTIVITY").is_some() {
         let total = snap.all_doc_ids().len() as usize;
         let pct = if total > 0 {
             candidates.len() as f64 / total as f64 * 100.0

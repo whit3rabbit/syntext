@@ -62,7 +62,7 @@ pub(super) fn cmd_bench_search(
     warmups: usize,
 ) -> i32 {
     if iterations == 0 {
-        eprintln!("rl bench-search: iterations must be >= 1");
+        eprintln!("st bench-search: iterations must be >= 1");
         return 2;
     }
 
@@ -71,7 +71,7 @@ pub(super) fn cmd_bench_search(
     let parsed_queries = match parsed_queries {
         Ok(qs) => qs,
         Err(e) => {
-            eprintln!("rl bench-search: {e}");
+            eprintln!("st bench-search: {e}");
             return 2;
         }
     };
@@ -79,7 +79,7 @@ pub(super) fn cmd_bench_search(
     let index = match Index::open(config) {
         Ok(idx) => idx,
         Err(e) => {
-            eprintln!("rl bench-search: {e}");
+            eprintln!("st bench-search: {e}");
             return 2;
         }
     };
@@ -95,14 +95,14 @@ pub(super) fn cmd_bench_search(
         let count = match run_search(&index, &args) {
             Ok(r) => r.len(),
             Err(e) => {
-                eprintln!("rl bench-search: {e}");
+                eprintln!("st bench-search: {e}");
                 return 2;
             }
         };
 
         for _ in 0..warmups {
             if let Err(e) = run_search(&index, &args) {
-                eprintln!("rl bench-search: {e}");
+                eprintln!("st bench-search: {e}");
                 return 2;
             }
         }
@@ -111,7 +111,7 @@ pub(super) fn cmd_bench_search(
         for _ in 0..iterations {
             let start = Instant::now();
             if let Err(e) = run_search(&index, &args) {
-                eprintln!("rl bench-search: {e}");
+                eprintln!("st bench-search: {e}");
                 return 2;
             }
             samples.push(start.elapsed().as_secs_f64() * 1000.0);

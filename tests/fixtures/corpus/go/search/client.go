@@ -1,4 +1,4 @@
-// Package search provides a Go client for the ripline index.
+// Package search provides a Go client for the syntext index.
 package search
 
 import (
@@ -34,7 +34,7 @@ type Result struct {
 	ByteOffset  int64  `json:"byte_offset"`
 }
 
-// Client wraps an HTTP connection to the ripline service.
+// Client wraps an HTTP connection to the syntext service.
 type Client struct {
 	base   string
 	http   *http.Client

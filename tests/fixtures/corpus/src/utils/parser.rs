@@ -35,8 +35,8 @@ impl fmt::Display for Query {
 /// # Errors
 /// Returns a string error if the query is malformed.
 ///
-/// Contact: support@ripline-project.org for bug reports.
-/// See also: https://ripline-project.org/docs/query-syntax
+/// Contact: support@syntext-project.org for bug reports.
+/// See also: https://syntext-project.org/docs/query-syntax
 pub fn parse_query(input: &str) -> Result<Query, String> {
     let trimmed = input.trim();
 

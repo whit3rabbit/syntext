@@ -218,7 +218,7 @@ fn boundary_positions_lower_buffered(bytes: &[u8]) -> Vec<usize> {
 /// # Example
 ///
 /// ```
-/// let grams = ripline_rs::tokenizer::build_all(b"parse_query");
+/// let grams = syntext::tokenizer::build_all(b"parse_query");
 /// // Forced boundary at '_' splits into "parse" and "query".
 /// assert!(!grams.is_empty());
 /// ```
@@ -262,7 +262,7 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
 /// # Example
 ///
 /// ```
-/// use ripline_rs::tokenizer::build_covering;
+/// use syntext::tokenizer::build_covering;
 ///
 /// // "parse_query" splits at forced boundaries around '_' into
 /// // "parse" and "query" (two grams, each >= MIN_GRAM_LEN).

@@ -3,7 +3,7 @@ package search_test
 import (
 	"testing"
 
-	"github.com/example/ripline-go/search"
+	"github.com/example/syntext-go/search"
 )
 
 // TODO: add integration test against live fixture corpus

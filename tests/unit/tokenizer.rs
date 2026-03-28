@@ -8,7 +8,7 @@
 //! 4. Round-trip invariant: build_covering hashes ⊆ build_all hashes (same input)
 //! 5. Edge cases: empty, 1-byte, 2-byte, all-same, very-long
 
-use ripline_rs::tokenizer::{build_all, build_covering, gram_hash, MIN_GRAM_LEN};
+use syntext::tokenizer::{build_all, build_covering, gram_hash, MIN_GRAM_LEN};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -234,7 +234,7 @@ fn all_same_bytes() {
 #[test]
 fn input_exactly_max_gram_len() {
     // A MAX_GRAM_LEN-byte input with no internal boundaries should produce one gram.
-    let input = vec![b'a'; ripline_rs::tokenizer::MAX_GRAM_LEN];
+    let input = vec![b'a'; syntext::tokenizer::MAX_GRAM_LEN];
     let all = build_all(&input);
     // May or may not emit a gram; must not panic.
     let _ = all;
@@ -244,7 +244,7 @@ fn input_exactly_max_gram_len() {
 fn input_just_over_max_gram_len() {
     // Longer than MAX_GRAM_LEN with no internal boundaries: no gram emitted.
     // (Boundary positions: only 0 and MAX+1, span = MAX+1 > MAX.)
-    let input = vec![b'a'; ripline_rs::tokenizer::MAX_GRAM_LEN + 1];
+    let input = vec![b'a'; syntext::tokenizer::MAX_GRAM_LEN + 1];
     let all = build_all(&input);
     assert!(
         all.is_empty(),

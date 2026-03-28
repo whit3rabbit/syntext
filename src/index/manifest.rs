@@ -140,7 +140,7 @@ impl Manifest {
             let name_str = name.to_string_lossy();
             if name_str.ends_with(".seg") && !known.contains(name_str.as_ref()) {
                 if let Err(e) = std::fs::remove_file(entry.path()) {
-                    eprintln!("ripline: gc: could not remove {}: {e}", name_str);
+                    eprintln!("syntext: gc: could not remove {}: {e}", name_str);
                 }
             }
         }

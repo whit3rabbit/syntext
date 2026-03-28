@@ -1,5 +1,5 @@
 # Ignored by the fixture corpus .gitignore
-# Used to test that ripline respects .gitignore rules
+# Used to test that syntext respects .gitignore rules
 build/
 *.log
 *.tmp

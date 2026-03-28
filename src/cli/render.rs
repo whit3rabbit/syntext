@@ -60,7 +60,7 @@ pub(super) fn render_invert_match(
     {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("rl: invalid pattern: {e}");
+            eprintln!("st: invalid pattern: {e}");
             return 2;
         }
     };

@@ -102,7 +102,7 @@
   _Resolved_: US4 scenario 1 updated to explicitly require that the result is a structural definition, not a string literal or comment containing the symbol name.
 
 - [x] CHK027 — Is there a measurable acceptance criterion for the cardinality-based fallback (skip index when smallest posting list > 10% of total docs)? [Acceptance Criteria, Gap]
-  _Resolved_: "Cardinality-Based Fallback" section added with measurable criterion: for a known high-frequency gram query, results must be correct regardless of path taken. Observable via RIPLINE_LOG_SELECTIVITY=1.
+  _Resolved_: "Cardinality-Based Fallback" section added with measurable criterion: for a known high-frequency gram query, results must be correct regardless of path taken. Observable via SYNTEXT_LOG_SELECTIVITY=1.
 
 ---
 
@@ -172,7 +172,7 @@
   _Resolved_: Assumptions and SC-004 specify ripgrep 14.x. Test suite asserts version at runtime.
 
 - [x] CHK045 — Is the assumption "Git is available on the host" covered by a fallback requirement if git is absent? [Assumption, Spec §Assumptions]
-  _Resolved_: Assumptions updated: `ripline update` requires git; if absent, returns error. `ripline index` and `ripline search` function without git.
+  _Resolved_: Assumptions updated: `st update` requires git; if absent, returns error. `st index` and `st search` function without git.
 
 - [x] CHK046 — Are the tree-sitter grammar versions treated as dependencies with pinned versions in Cargo.toml, or only as optional runtime availability? [Dependency, Gap]
   _Resolved_: Assumptions updated: grammar versions are pinned Cargo dependencies under the `symbols` feature flag. Runtime-dynamic loading not supported in v1.

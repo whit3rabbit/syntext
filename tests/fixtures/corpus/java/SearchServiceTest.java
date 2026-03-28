@@ -1,4 +1,4 @@
-package com.example.ripline;
+package com.example.syntext;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,7 +16,7 @@ class SearchServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new SearchService(".ripline-test");
+        service = new SearchService(".syntext-test");
     }
 
     @Test

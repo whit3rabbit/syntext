@@ -1,18 +1,12 @@
 [package]
-name = "ripline-rs"
+name = "syntext"
 version = "0.1.0"
 edition = "2021"
 description = "Hybrid code search index for agent workflows"
 license = "MIT"
-# "ripline" was already taken on crates.io; published as ripline-rs, binary is still `ripline`.
-
 [[bin]]
-name = "ripline"
+name = "st"
 path = "src/main.rs"
-
-[[bin]]
-name = "rl"
-path = "src/rl_main.rs"
 
 [dependencies]
 # Regex and verification

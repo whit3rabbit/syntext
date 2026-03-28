@@ -24,7 +24,7 @@
       "name": "react_token_aligned",
       "display_name": "React",
       "repo_url": "https://github.com/facebook/react.git",
-      "suggested_local_path": "../_ripline-bench/react",
+      "suggested_local_path": "../_syntext-bench/react",
       "language_focus": "JavaScript + TypeScript",
       "scale": "medium",
       "build_iterations": 1,
@@ -43,7 +43,7 @@
       "name": "rust_token_aligned",
       "display_name": "Rust Compiler",
       "repo_url": "https://github.com/rust-lang/rust.git",
-      "suggested_local_path": "../_ripline-bench/rust",
+      "suggested_local_path": "../_syntext-bench/rust",
       "language_focus": "Rust",
       "scale": "xlarge",
       "build_iterations": 1,
@@ -62,14 +62,14 @@
       "name": "linux_token_aligned",
       "display_name": "Linux Kernel",
       "repo_url": "https://github.com/torvalds/linux.git",
-      "suggested_local_path": "../_ripline-bench/linux",
+      "suggested_local_path": "../_syntext-bench/linux",
       "language_focus": "C",
       "scale": "xxlarge",
       "build_iterations": 1,
       "search_iterations": 1,
       "warmups": 0,
       "tools": [
-        "ripline",
+        "syntext",
         "rg"
       ],
       "queries": [
@@ -79,14 +79,14 @@
       ],
       "notes": [
         "Kernel-sized corpus for stress testing.",
-        "Uses ripline plus rg only by default. grep is intentionally skipped because the full three-tool harness is too expensive here on this machine."
+        "Uses syntext plus rg only by default. grep is intentionally skipped because the full three-tool harness is too expensive here on this machine."
       ]
     },
     {
       "name": "typescript_compiler",
       "display_name": "TypeScript",
       "repo_url": "https://github.com/microsoft/TypeScript.git",
-      "suggested_local_path": "../_ripline-bench/typescript",
+      "suggested_local_path": "../_syntext-bench/typescript",
       "language_focus": "TypeScript",
       "scale": "large",
       "build_iterations": 1,
@@ -106,7 +106,7 @@
       "name": "node_runtime",
       "display_name": "Node.js",
       "repo_url": "https://github.com/nodejs/node.git",
-      "suggested_local_path": "../_ripline-bench/node",
+      "suggested_local_path": "../_syntext-bench/node",
       "language_focus": "C++ + JavaScript",
       "scale": "large",
       "build_iterations": 1,

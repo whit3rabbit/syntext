@@ -1,4 +1,4 @@
-//! RPLX segment format: writer and memory-mapped reader.
+//! SNTX segment format: writer and memory-mapped reader.
 //!
 //! File layout:
 //!   Header (40 bytes) | Document Table | Postings Section |
@@ -16,10 +16,10 @@ use xxhash_rust::xxh64::xxh64;
 use crate::posting::{roaring_util, PostingList};
 use crate::IndexError;
 
-/// Magic bytes identifying an RPLX segment file.
-pub const MAGIC: &[u8; 4] = b"RPLX";
+/// Magic bytes identifying an SNTX segment file.
+pub const MAGIC: &[u8; 4] = b"SNTX";
 /// Current segment format version.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// Page size for dictionary alignment.
 pub const PAGE_SIZE: usize = 4096;
 pub(super) const HEADER_SIZE: usize = 40;
@@ -67,7 +67,7 @@ pub use segment_writer::SegmentWriter;
 // T022: MmapSegment (reader)
 // ---------------------------------------------------------------------------
 
-/// Memory-mapped read-only RPLX segment.
+/// Memory-mapped read-only SNTX segment.
 ///
 /// Retains the open `File` handle so the OS keeps the inode alive even if the
 /// directory entry is removed (e.g. by GC). `expected_len` enables O(1)
@@ -102,7 +102,14 @@ impl MmapSegment {
         // the mmap, keeping the inode alive even if the directory entry is removed.
         // The mmap is read-only. The checksum verified above detects corruption
         // introduced by non-cooperating processes; the advisory file lock only
-        // prevents concurrent writes by other ripline instances.
+        // prevents concurrent writes by other syntext instances.
+        //
+        // Security note (false positive): a non-cooperating process with write
+        // access to the index directory could mutate the file after the checksum
+        // passes. MAP_PRIVATE (map_copy) would isolate us, but at the cost of
+        // CoW page faults. All downstream reads use .get() bounds checks, so the
+        // worst case is a panic or incorrect results, not memory-safety violations.
+        // Mitigation: the index directory should be writable only by trusted users.
         let mmap = unsafe { Mmap::map(&file)? };
         let len = mmap.len();
 
@@ -420,7 +427,7 @@ mod tests {
         // Overwrite the file with fewer bytes to simulate truncation.
         // The OS may or may not update the mmap view, but expected_len
         // will no longer match if the kernel reflects the new size.
-        std::fs::write(tmp.path(), b"RPLX_truncated").unwrap();
+        std::fs::write(tmp.path(), b"SNTX_truncated").unwrap();
 
         // verify_integrity should detect the size change or checksum mismatch.
         // On some OSes the mmap retains the old pages; on others it reflects

@@ -1,5 +1,5 @@
 /**
- * Shared TypeScript types for ripline client.
+ * Shared TypeScript types for syntext client.
  */
 
 export interface SearchResult {
