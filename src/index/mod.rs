@@ -693,6 +693,9 @@ impl Index {
             posting_bitmap_cache: OnceLock::new(),
         });
 
+        // Pre-populate all_doc_ids so the first post-commit query doesn't pay rebuild cost.
+        new_snap.all_doc_ids();
+
         self.snapshot.store(new_snap);
         // TODO(overlay-backpressure): call self.pending.reset() here when full reindex is triggered.
         if self.config.verbose {
