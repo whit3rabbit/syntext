@@ -48,7 +48,11 @@ pub struct Manifest {
     pub base_commit: Option<String>,
     /// All active base segments; GC removes any `.seg` files not listed here.
     pub segments: Vec<SegmentRef>,
-    /// Monotonically increasing counter incremented on each overlay commit.
+    /// Generation counter for overlay crash recovery. Reserved for future use;
+    /// always written as 0 by the current implementation. On-disk generation
+    /// files described in research.md §12 are not yet written (deferred to a
+    /// later milestone). Do not remove: older manifest files include this field
+    /// and removing it would silently corrupt them during deserialization.
     pub overlay_gen: u64,
     /// Filename of the on-disk overlay gram index, if present.
     pub overlay_file: Option<String>,
