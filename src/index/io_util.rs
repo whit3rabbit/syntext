@@ -15,34 +15,43 @@ use std::path::Path;
 /// swaps that occur between the `stat()` call and the `open()` call.
 /// Call `verify_fd_matches_stat` after opening to ensure the fd refers to the
 /// same inode that was stat'd before the open.
+///
+/// # Security: why `libc::O_NOFOLLOW` and not a hardcoded constant
+///
+/// The numeric value of `O_NOFOLLOW` is NOT uniform across Linux architectures:
+///   - x86-64 and AArch64 Linux: 0x20000 (0o400000)
+///   - MIPS Linux:                0x400
+///   - SPARC Linux:               0x20
+///   - macOS / *BSD:              0x100
+///
+/// A hardcoded constant (e.g. `0o400000`) compiles silently with the wrong
+/// value on MIPS cross-compile targets, disabling the symlink guard with no
+/// warning or error. `libc::O_NOFOLLOW` is always the correct value for the
+/// compilation target ABI.
 #[cfg(unix)]
 pub fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    #[cfg(target_os = "linux")]
-    const O_NOFOLLOW_FLAG: i32 = 0o400000;
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "dragonfly",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    ))]
-    const O_NOFOLLOW_FLAG: i32 = 0x100;
-
     std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(O_NOFOLLOW_FLAG)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
 }
 
 /// Opens a file for reading without following symlinks on the final path component.
 ///
-/// On non-Unix systems, `O_NOFOLLOW` is not available, so this falls back to
-/// `File::open`. Callers must implement their own symlink checks if needed.
+/// On non-Unix systems, `O_NOFOLLOW` is not available. We reject symlinks
+/// explicitly via `symlink_metadata` before opening to block symlink-
+/// substitution attacks on the final path component.
 #[cfg(not(unix))]
 pub fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing to open symlink",
+        ));
+    }
     std::fs::File::open(path)
 }
 

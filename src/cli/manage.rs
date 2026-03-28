@@ -91,12 +91,34 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
 
     let mut changed: HashSet<String> = HashSet::new();
 
+    // Security: canonicalize repo_root before passing it to `git -C`.
+    //
+    // `git -C <path>` changes into the given directory before running. If
+    // <path> points to an attacker-controlled directory (e.g. --repo-root
+    // sourced from an untrusted environment variable or container bind-mount),
+    // git will execute hooks in that directory's .git/config (core.hooksPath,
+    // post-checkout, etc.) with the invoking user's privileges. Canonicalize
+    // resolves symlinks and produces an absolute path, eliminating relative-path
+    // tricks and final-component symlink redirections.
+    //
+    // Note: this does not prevent a user who deliberately passes a malicious
+    // path as --repo-root from triggering git hooks in that directory;
+    // --repo-root is trusted input and must not be sourced from untrusted data
+    // (e.g. artifact paths from untrusted CI jobs, user-supplied config).
+    let canonical_root = match config.repo_root.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("st update: invalid repo root \'{}\': {e}", config.repo_root.display());
+            return 2;
+        }
+    };
+
     // Detect changed files via git diff against HEAD.
     // This fails on repos with no commits, which is fine -- we fall through
     // to untracked file detection below.
     if let Ok(diff_output) = std::process::Command::new("git")
         .arg("-C")
-        .arg(&config.repo_root)
+        .arg(&canonical_root)
         .args(["diff", "--name-only", "HEAD"])
         .output()
     {
@@ -115,7 +137,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // doesn't exist yet).
     if let Ok(staged_output) = std::process::Command::new("git")
         .arg("-C")
-        .arg(&config.repo_root)
+        .arg(&canonical_root)
         .args(["diff", "--name-only", "--cached"])
         .output()
     {
@@ -128,7 +150,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // Pick up new untracked files that git-diff doesn't report.
     if let Ok(ut_output) = std::process::Command::new("git")
         .arg("-C")
-        .arg(&config.repo_root)
+        .arg(&canonical_root)
         .args(["ls-files", "--others", "--exclude-standard"])
         .output()
     {

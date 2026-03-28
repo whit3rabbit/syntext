@@ -979,6 +979,7 @@ dependencies = [
  "criterion",
  "fs2",
  "ignore",
+ "libc",
  "memchr",
  "memmap2",
  "proptest",

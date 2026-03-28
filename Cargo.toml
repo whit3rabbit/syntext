@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Hybrid code search index for agent workflows"
 license = "MIT"
+repository = "https://github.com/whit3rabbit/syntext"
 [[bin]]
 name = "st"
 path = "src/main.rs"
@@ -16,6 +17,10 @@ memchr = "2"
 
 # Memory-mapped I/O
 memmap2 = "0.9"
+# POSIX constants (O_NOFOLLOW). libc compiles on all targets; usage is gated
+# by #[cfg(unix)] in io_util.rs. See io_util.rs for why the old hardcoded
+# constants were wrong on MIPS/SPARC Linux.
+libc = "0.2"
 
 # Bitmap posting lists
 roaring = "0.11"
