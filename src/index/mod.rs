@@ -378,10 +378,12 @@ impl Index {
         // Drop exclusive lock before open() acquires shared lock.
         // Another process can grab exclusive in the gap; retry with backoff.
         drop(lock_file);
+        // Retry open() if a competing process grabbed the exclusive lock in the gap
+        // between our drop and open()'s try_lock_shared.
         let mut delay = std::time::Duration::from_millis(10);
-        for attempt in 0..5u32 {
+        for _ in 0..4u32 {
             match Self::open(config.clone()) {
-                Err(IndexError::LockConflict(_)) if attempt < 4 => {
+                Err(IndexError::LockConflict(_)) => {
                     std::thread::sleep(delay);
                     delay = delay.saturating_mul(2);
                 }
