@@ -6,6 +6,10 @@
 //! `Index::open()` loads the manifest, mmaps existing segments, and makes the
 //! index ready for search.
 
+mod io_util;
+pub(crate) use io_util::open_readonly_nofollow;
+#[cfg(unix)]
+pub(crate) use io_util::verify_fd_matches_stat;
 pub mod manifest;
 pub mod overlay;
 pub mod pending;
@@ -27,9 +31,6 @@ use arc_swap::ArcSwap;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use xxhash_rust::xxh64::xxh64;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 use crate::index::manifest::{Manifest, SegmentRef};
 use crate::index::overlay::{compute_delete_set, OverlayView, PendingEdits};
@@ -151,44 +152,6 @@ fn calibrate_threshold(indexed_paths: &[String], config: &Config) -> f64 {
     //   threshold = scan_ns_per_doc / (scan_ns_per_doc + posting_ns_per_entry)
     let threshold = scan_ns_per_doc as f64 / (scan_ns_per_doc + posting_ns_per_entry) as f64;
     threshold.clamp(0.01, 0.50)
-}
-
-#[cfg(unix)]
-pub(crate) fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
-    #[cfg(target_os = "linux")]
-    const O_NOFOLLOW_FLAG: i32 = 0o400000;
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "dragonfly",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    ))]
-    const O_NOFOLLOW_FLAG: i32 = 0x100;
-
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(O_NOFOLLOW_FLAG)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::File::open(path)
-}
-
-// Verify that the fd we just opened refers to the same inode we stat'd
-// before the open. This catches directory-component symlink swaps that
-// happen in the window between canonicalize() and open(): O_NOFOLLOW only
-// blocks the final path component, not intermediate ones.
-#[cfg(unix)]
-pub(crate) fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match file.metadata() {
-        Ok(fd_meta) => fd_meta.dev() == pre_open_meta.dev() && fd_meta.ino() == pre_open_meta.ino(),
-        Err(_) => false,
-    }
 }
 
 /// Shared base segments (Arc-shared across snapshot swaps).
@@ -759,9 +722,9 @@ impl Index {
             // Enforce the same max_file_size limit used during full builds.
             // Use bounded read to eliminate TOCTOU race: file can grow between
             // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
-            let file = open_readonly_nofollow(&resolved)?;
+            let file = io_util::open_readonly_nofollow(&resolved)?;
             #[cfg(unix)]
-            if !verify_fd_matches_stat(&file, &pre_open_meta) {
+            if !io_util::verify_fd_matches_stat(&file, &pre_open_meta) {
                 return Err(IndexError::PathOutsideRepo(abs.clone()));
             }
             let mut reader = file.take(self.config.max_file_size + 1);
