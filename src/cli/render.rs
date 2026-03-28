@@ -207,7 +207,90 @@ pub(super) fn render_with_context_to(
     }
 }
 
-// Task 5 not yet implemented: fall back to flat output.
-pub(super) fn render_json(_config: &Config, matches: &[crate::SearchMatch], args: &SearchArgs) {
-    render_flat(matches, args);
+/// Format a single SearchMatch as a rg-compatible JSON `match` message.
+/// Returns a single NDJSON line (no trailing newline).
+pub(super) fn format_match_json(m: &crate::SearchMatch) -> String {
+    let path_str = m.path.to_string_lossy();
+    // rg appends \n to lines.text
+    let line_text = format!("{}\n", m.line_content);
+    let start = m.byte_offset as usize;
+    let end = start + m.line_content.len();
+
+    serde_json::json!({
+        "type": "match",
+        "data": {
+            "path": { "text": path_str },
+            "lines": { "text": line_text },
+            "line_number": m.line_number,
+            "absolute_offset": 0,
+            "submatches": [{
+                "match": { "text": &m.line_content },
+                "start": start,
+                "end": end
+            }]
+        }
+    })
+    .to_string()
+}
+
+/// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
+pub(super) fn render_json(config: &Config, matches: &[crate::SearchMatch], args: &SearchArgs) {
+    use std::collections::BTreeMap;
+    let _ = config;
+    let _ = args;
+
+    let mut by_file: BTreeMap<String, Vec<&crate::SearchMatch>> = BTreeMap::new();
+    for m in matches {
+        by_file
+            .entry(m.path.to_string_lossy().into_owned())
+            .or_default()
+            .push(m);
+    }
+
+    let total_matches: usize = matches.len();
+    let zero_stats = serde_json::json!({
+        "elapsed": {"secs": 0, "nanos": 0, "human": "0s"},
+        "searches": 1,
+        "searches_with_match": if total_matches > 0 { 1 } else { 0 },
+        "bytes_searched": 0,
+        "bytes_printed": 0,
+        "matched_lines": total_matches,
+        "matches": total_matches
+    });
+
+    for (path_str, file_matches) in &by_file {
+        // begin
+        println!(
+            "{}",
+            serde_json::json!({"type":"begin","data":{"path":{"text": path_str}}})
+        );
+        // match lines
+        for m in file_matches {
+            println!("{}", format_match_json(m));
+        }
+        // end
+        println!(
+            "{}",
+            serde_json::json!({
+                "type": "end",
+                "data": {
+                    "path": {"text": path_str},
+                    "binary_offset": null,
+                    "stats": zero_stats
+                }
+            })
+        );
+    }
+
+    // summary
+    println!(
+        "{}",
+        serde_json::json!({
+            "type": "summary",
+            "data": {
+                "elapsed_total": {"secs": 0, "nanos": 0, "human": "0s"},
+                "stats": zero_stats
+            }
+        })
+    );
 }

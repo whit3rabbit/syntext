@@ -434,6 +434,22 @@ mod tests {
     }
 
     #[test]
+    fn json_output_is_ndjson_with_type_envelope() {
+        let m = crate::SearchMatch {
+            path: std::path::PathBuf::from("src/foo.rs"),
+            line_number: 5,
+            line_content: "fn foo() {}".to_string(),
+            byte_offset: 3,
+        };
+        let line = super::render::format_match_json(&m);
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("must be valid JSON");
+        assert_eq!(parsed["type"], "match");
+        assert_eq!(parsed["data"]["line_number"], 5);
+        assert_eq!(parsed["data"]["lines"]["text"], "fn foo() {}\n");
+        assert_eq!(parsed["data"]["path"]["text"], "src/foo.rs");
+    }
+
+    #[test]
     fn cmd_update_on_repo_with_no_commits() {
         let repo = tempfile::TempDir::new().unwrap();
         let index_dir = tempfile::TempDir::new().unwrap();
