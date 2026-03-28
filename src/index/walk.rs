@@ -111,7 +111,19 @@ fn collect_symlink_entry(
         return;
     }
 
-    if target_meta.is_file() {
+    // Guard against TOCTOU: re-stat the canonical path after canonicalize().
+    // A concurrent symlink swap between symlink_metadata() and canonicalize()
+    // could redirect to a symlink that passes starts_with(canonical_root).
+    // If the canonical path is itself a symlink, reject it.
+    let canonical_meta = match fs::symlink_metadata(&canonical_target) {
+        Ok(meta) => meta,
+        Err(_) => return,
+    };
+    if canonical_meta.file_type().is_symlink() {
+        return;
+    }
+
+    if canonical_meta.is_file() {
         push_file_record(
             canonical_target,
             symlink_path,
@@ -122,7 +134,7 @@ fn collect_symlink_entry(
         return;
     }
 
-    if !target_meta.is_dir() {
+    if !canonical_meta.is_dir() {
         return;
     }
 
@@ -218,6 +230,45 @@ mod tests {
                 .iter()
                 .any(|(_, rel, _)| rel == &PathBuf::from("alias/nested.rs")),
             "symlinked directory contents should be indexed via the symlink path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_symlink_entry_rejects_canonical_symlink() {
+        // Simulates: symlink in repo -> dir inside repo, but that dir was
+        // replaced with a symlink to an outside location (post-canonicalize race).
+        // We test the defense: after canonicalize, if the result is itself a
+        // symlink, it must be rejected.
+        use std::os::unix::fs::symlink;
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+
+        // real file outside repo
+        std::fs::write(outside.path().join("secret.rs"), b"secret").unwrap();
+
+        // link_b inside repo -> outside/secret.rs (so canonical_target is outside root)
+        symlink(outside.path().join("secret.rs"), repo.path().join("link_b")).unwrap();
+
+        // link_a -> link_b (a chain: canonicalize of link_a resolves to outside/secret.rs)
+        symlink(repo.path().join("link_b"), repo.path().join("link_a")).unwrap();
+
+        let config = crate::Config {
+            repo_root: repo.path().to_path_buf(),
+            ..crate::Config::default()
+        };
+
+        let files = enumerate_files(&config).unwrap();
+        // Neither link_a nor link_b should appear in results (both lead outside repo).
+        let found: Vec<_> = files
+            .iter()
+            .filter(|(_, rel, _)| rel.starts_with("link_a") || rel.starts_with("link_b"))
+            .collect();
+        assert!(
+            found.is_empty(),
+            "symlinks pointing outside repo must be rejected, found: {:?}",
+            found
         );
     }
 
