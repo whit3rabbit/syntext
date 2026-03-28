@@ -460,3 +460,35 @@ fn concurrent_commit_batch_returns_lock_conflict() {
     lock_file.unlock().unwrap();
     index.commit_batch().unwrap();
 }
+
+/// A full build must reject an in-flight incremental writer.
+#[test]
+fn build_returns_lock_conflict_while_writer_lock_is_held() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+
+    fs::write(repo.path().join("a.rs"), "fn aaa() {}\n").unwrap();
+
+    let lock_path = index_dir.path().join("write.lock");
+    let lock_file = std::fs::File::create(&lock_path).unwrap();
+    use fs2::FileExt;
+    lock_file.lock_exclusive().unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let result = Index::build(config);
+    let err = match result {
+        Ok(_) => panic!("build should fail when writer lock is held"),
+        Err(err) => err,
+    };
+    let err_str = format!("{err}");
+    assert!(
+        err_str.contains("lock") || err_str.contains("Lock"),
+        "error should mention lock conflict: {err_str}"
+    );
+
+    lock_file.unlock().unwrap();
+}

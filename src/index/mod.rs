@@ -48,6 +48,20 @@ const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
 /// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
 const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
 
+fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
+    let write_lock_path = index_dir.join("write.lock");
+    let write_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&write_lock_path)?;
+    write_lock
+        .try_lock_exclusive()
+        .map_err(|_| IndexError::LockConflict(index_dir.to_path_buf()))?;
+    Ok(write_lock)
+}
+
 fn projected_overlay_doc_count(
     old_overlay: &OverlayView,
     visible_changed: &HashSet<String>,
@@ -341,6 +355,9 @@ impl Index {
         lock_file
             .try_lock_exclusive()
             .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+        // Full builds and incremental commits both rewrite shared index state,
+        // so they must serialize on the same writer lock.
+        let write_lock = acquire_writer_lock(&config.index_dir)?;
 
         // Enumerate all candidate files, sorted by relative path.
         let file_list = enumerate_files(&config)?;
@@ -478,6 +495,7 @@ impl Index {
 
         // Drop exclusive lock before open() acquires shared lock.
         // Another process can grab exclusive in the gap; retry with backoff.
+        drop(write_lock);
         drop(lock_file);
         // Retry open() if a competing process grabbed the exclusive lock in the gap
         // between our drop and open()'s try_lock_shared.
@@ -662,11 +680,7 @@ impl Index {
         // Serialize concurrent writers. _write_lock is held until end of
         // function (underscore prefix suppresses unused-variable lint without
         // triggering the immediate-drop behaviour of bare `_`).
-        let write_lock_path = self.config.index_dir.join("write.lock");
-        let _write_lock = std::fs::File::create(&write_lock_path)?;
-        _write_lock
-            .try_lock_exclusive()
-            .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+        let _write_lock = acquire_writer_lock(&self.config.index_dir)?;
 
         let old_snap = self.snapshot.load_full();
         let take = self.pending.take_for_commit();
