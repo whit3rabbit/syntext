@@ -250,10 +250,12 @@ fn resolve_config(cli: &Cli) -> Config {
         .clone()
         .unwrap_or_else(|| repo_root.join(".syntext"));
 
+    // Clamp to 1 GB: prevents take(0) overflow when SYNTEXT_MAX_FILE_SIZE=u64::MAX.
     let max_file_size = std::env::var("SYNTEXT_MAX_FILE_SIZE")
         .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10 * 1024 * 1024);
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10 * 1024 * 1024)
+        .min(1024 * 1024 * 1024);
 
     Config {
         max_file_size,
@@ -321,7 +323,6 @@ mod tests {
         assert!(matches!(cli.command, Some(ManageCommand::Index { .. })));
     }
 
-    #[ignore = "TODO(Task 4): postings now in .post file; re-enable after open_split is implemented"]
     #[test]
     fn cmd_index_rebuilds_existing_index_without_force() {
         let repo = tempfile::TempDir::new().unwrap();

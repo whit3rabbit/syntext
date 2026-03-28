@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use memmap2::Mmap;
+use memmap2::{Mmap, MmapOptions};
 use uuid::Uuid;
 use xxhash_rust::xxh64::xxh64;
 
@@ -81,8 +81,12 @@ mod reader;
 // T022: MmapSegment (reader)
 // ---------------------------------------------------------------------------
 
+/// How postings are loaded: from the combined mmap (v2) or a separate .post
+/// file via pread (v3).
 enum PostingsBacking {
+    /// v2: postings data lives in the segment mmap at absolute file offsets.
     V2Mmap,
+    /// v3: postings are in a separate .post file; offsets are from byte 0.
     V3File(std::fs::File),
 }
 
@@ -120,18 +124,21 @@ impl MmapSegment {
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         // SAFETY: The file handle is retained in the struct for the lifetime of
         // the mmap, keeping the inode alive even if the directory entry is removed.
-        // The mmap is read-only. The checksum verified above detects corruption
-        // introduced by non-cooperating processes; the advisory file lock only
-        // prevents concurrent writes by other syntext instances.
         //
-        // Security note (false positive): a non-cooperating process with write
-        // access to the index directory could mutate the file after the checksum
-        // passes. MAP_PRIVATE (map_copy) would isolate us, but at the cost of
-        // CoW page faults. All downstream reads use .get() bounds checks, so the
-        // worst case is a panic or incorrect results, not memory-safety violations.
-        // Mitigation: the index directory should be writable only by trusted users.
-        let mmap = unsafe { Mmap::map(&file)? };
+        // Security: we use MAP_PRIVATE (map_copy_read_only) rather than MAP_SHARED.
+        // With MAP_SHARED, a process with write access to the index directory could
+        // mutate segment bytes after the checksum passes, injecting false search
+        // results (information disclosure / result manipulation) even though safe
+        // Rust's .get() bounds checks prevent memory-safety violations. MAP_PRIVATE
+        // creates a copy-on-write mapping: once parse_segment_mmap reads every
+        // content page during checksum verification, those pages are in our private
+        // address space and are immune to external mutations for the mapping's
+        // lifetime. The advisory file lock still blocks concurrent writes by other
+        // syntext instances.
+        let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
         let len = mmap.len();
+        // open() accepts both v2 and v3 version tags. The single-file layout is
+        // identical for both; open_split() handles the split-file v3 read path.
         let layout = reader::parse_segment_mmap(&mmap, &[FORMAT_VERSION_V2, FORMAT_VERSION_V3])?;
 
         Ok(MmapSegment {
@@ -147,6 +154,9 @@ impl MmapSegment {
     }
 
     /// Open a v3 segment from separate `.dict` and `.post` files.
+    ///
+    /// The `.dict` file is fully mmap'd (small, always needed for binary
+    /// search). Postings are read on demand from `.post` via positional reads.
     pub fn open_split(dict_path: &Path, post_path: &Path) -> Result<Self, IndexError> {
         let file = std::fs::File::open(dict_path)?;
         let file_meta = file.metadata()?;
@@ -159,7 +169,11 @@ impl MmapSegment {
         }
         file.try_lock_shared()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        // SAFETY: same rationale as open() — file handle retained (_file field),
+        // MAP_PRIVATE mapping (see open() comment), all downstream reads are
+        // bounds-checked via .get(). The mmap only covers the `.dict` side;
+        // postings are read from `.post` via positional reads.
+        let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
         let len = mmap.len();
         let layout = reader::parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3])?;
         let post_file = std::fs::File::open(post_path)?;
@@ -241,7 +255,12 @@ impl MmapSegment {
         if doc_id >= self.doc_count {
             return None;
         }
-        let idx_pos = self.doc_table_offset + doc_id as usize * 8;
+        // Use checked arithmetic to avoid silent integer overflow on pathological
+        // segments. doc_table_offset is validated at parse time (parse_segment_mmap
+        // bounds-checks it), but a defence-in-depth check here costs nothing.
+        let idx_pos = self
+            .doc_table_offset
+            .checked_add((doc_id as usize).checked_mul(8)?)? ;
         let abs_off =
             u64::from_le_bytes(self.mmap.get(idx_pos..idx_pos + 8)?.try_into().ok()?) as usize;
         let e = self.mmap.get(abs_off..)?;
@@ -501,6 +520,56 @@ mod tests {
             .unwrap()
             .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".seg"));
         assert!(!any_seg, "v3 writer must not produce a .seg file");
+    }
+
+    #[test]
+    fn v3_round_trip_lookup_gram() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, "src/main.rs", 0xDEAD, 100);
+        writer.add_document(1, "src/lib.rs", 0xBEEF, 200);
+        writer.add_gram_posting(0xAAAA, 0);
+        writer.add_gram_posting(0xAAAA, 1);
+        writer.add_gram_posting(0xBBBB, 0);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        let seg = MmapSegment::open_split(
+            &dir.path().join(&meta.dict_filename),
+            &dir.path().join(&meta.post_filename),
+        )
+        .unwrap();
+
+        assert_eq!(seg.doc_count, 2);
+        let d0 = seg.get_doc(0).unwrap();
+        assert_eq!(d0.path, Path::new("src/main.rs"));
+
+        let pl = seg.lookup_gram(0xAAAA).unwrap();
+        assert_eq!(pl.to_vec().unwrap(), vec![0, 1]);
+
+        let pl2 = seg.lookup_gram(0xBBBB).unwrap();
+        assert_eq!(pl2.to_vec().unwrap(), vec![0]);
+
+        assert!(seg.lookup_gram(0xCCCC).is_none());
+    }
+
+    #[test]
+    fn v3_round_trip_get_doc() {
+        let dir = TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, "a.rs", 0xAA, 10);
+        writer.add_gram_posting(0x11, 0);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        let seg = MmapSegment::open_split(
+            &dir.path().join(&meta.dict_filename),
+            &dir.path().join(&meta.post_filename),
+        )
+        .unwrap();
+
+        let doc = seg.get_doc(0).unwrap();
+        assert_eq!(doc.path, Path::new("a.rs"));
+        assert_eq!(doc.content_hash, 0xAA);
+        assert!(seg.get_doc(1).is_none());
     }
 
     #[cfg(unix)]

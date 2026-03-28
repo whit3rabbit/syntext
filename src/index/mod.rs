@@ -138,6 +138,7 @@ impl Index {
 
         for seg_ref in &manifest.segments {
             let seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty() {
+                // v3: split .dict + .post files. Validate both filenames.
                 for filename in [&seg_ref.dict_filename, &seg_ref.post_filename] {
                     if filename.contains('/')
                         || filename.contains('\\')
@@ -154,7 +155,13 @@ impl Index {
                 let post_path = config.index_dir.join(&seg_ref.post_filename);
                 MmapSegment::open_split(&dict_path, &post_path)?
             } else {
-                let open_filename = &seg_ref.filename;
+                // v2: single combined .seg file. Accept `dict_filename` as a
+                // compatibility fallback for older transitional manifests.
+                let open_filename = if !seg_ref.filename.is_empty() {
+                    &seg_ref.filename
+                } else {
+                    &seg_ref.dict_filename
+                };
                 if open_filename.contains('/')
                     || open_filename.contains('\\')
                     || open_filename.contains("..")
