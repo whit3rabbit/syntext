@@ -1,6 +1,6 @@
 //! Output rendering: flat, heading, invert-match, context, and JSON formats.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::Config;
@@ -160,15 +160,25 @@ pub(super) fn render_invert_match(
             .strip_prefix(&config.repo_root)
             .unwrap_or(abs_path);
 
-        let file = match std::fs::File::open(abs_path) {
-            Ok(_) => match std::fs::read(abs_path) {
-                Ok(content) => content,
-                Err(_) => continue,
-            },
+        #[cfg(unix)]
+        let pre_open_meta = match std::fs::metadata(abs_path) {
+            Ok(meta) => meta,
             Err(_) => continue,
         };
+        let mut file = match crate::index::open_readonly_nofollow(abs_path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        #[cfg(unix)]
+        if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
+            continue;
+        }
+        let mut file_bytes = Vec::new();
+        if file.read_to_end(&mut file_bytes).is_err() {
+            continue;
+        }
 
-        for_each_line(&file, |line_num, _line_start, line| {
+        for_each_line(&file_bytes, |line_num, _line_start, line| {
             if !re.is_match(line) {
                 found_any = true;
                 if !args.quiet {
@@ -228,10 +238,23 @@ pub(super) fn render_with_context_to(
     for (rel_path, match_lines) in &by_file {
         let abs_path = config.repo_root.join(rel_path);
 
-        let file_content = match std::fs::read(&abs_path) {
-            Ok(content) => content,
+        #[cfg(unix)]
+        let pre_open_meta = match std::fs::metadata(&abs_path) {
+            Ok(meta) => meta,
             Err(_) => continue,
         };
+        let mut file = match crate::index::open_readonly_nofollow(&abs_path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        #[cfg(unix)]
+        if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
+            continue;
+        }
+        let mut file_content = Vec::new();
+        if file.read_to_end(&mut file_content).is_err() {
+            continue;
+        }
         let mut file_lines: Vec<Vec<u8>> = Vec::new();
         for_each_line(&file_content, |_, _, line| file_lines.push(line.to_vec()));
 

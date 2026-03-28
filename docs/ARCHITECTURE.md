@@ -137,6 +137,10 @@ Each segment is a single mmap-friendly file:
 
 Segments are immutable. A single-file design (vs. separate dictionary + postings files) simplifies atomic replacement. Zoekt uses the same approach.
 
+### Hash-collision safety
+
+The dictionary stores `gram_hash` values (xxhash64, seed 0), not raw gram bytes. Hash collisions are safe by construction: a collision between gram A and gram B means B's posting list is merged into A's, widening the candidate set. The verifier (`memchr::memmem` for literals, `regex` for patterns) then eliminates false positives. Collisions cannot produce false negatives. This property holds as long as gram hashes are computed with the same function and seed at both index time and query time.
+
 ## Overlay and freshness
 
 Agent workflows require "read your writes": if an agent edits a file and searches for the edit, the search must find it. syntext uses a batch commit model:
@@ -216,11 +220,42 @@ cargo +nightly fuzz run fuzz_coverage_invariant -- -max_len=4096
 
 The fuzz target (`fuzz/fuzz_targets/fuzz_coverage_invariant.rs`) generates random documents, computes forced boundary positions, extracts token-aligned substrings, and panics on any coverage violation. It runs at ~25K executions/second.
 
+## Comparison with Cursor fast regex search
+
+Cursor published a detailed description of their regex search architecture in [Fast Regex Search (2025)](https://cursor.com/blog/fast-regex-search). Both systems descend from the same lineage (Google Code Search trigram prefilter, GitHub Blackbird sparse n-grams) and share the core loop: extract grams from query, intersect posting lists, verify candidates. The comparison below is based on Cursor's published blog post; implementation details may differ.
+
+| Design axis | syntext | Cursor |
+|---|---|---|
+| Boundary detection | Two-tier: forced boundaries (whitespace, operators, brackets, underscore) are context-independent; weight-based boundaries subdivide alphanumeric spans. CamelCase extra pass. | CRC32 hash as weight function, optimized with character-pair frequency table. Boundary where boundary weight > interior weight (context-dependent). |
+| Training corpus | ~175 MB from the-stack-smol (13 languages). | "Terabytes of open-source code." |
+| Storage layout | Single mmap'd segment file (SNTX header, doc table, postings, page-aligned dictionary, footer with xxhash64 checksum). | Two files: mmap'd lookup table (sorted hash-to-offset, binary search) + on-disk postings file (read on demand). |
+| Posting encoding | Hybrid: delta-varint for <8,192 entries, Roaring bitmap for >=8,192. | Not detailed publicly. |
+| Probabilistic masks | Rejected. 8-bit masks saturate after ~12 occurrences (birthday problem). | Discussed but not adopted. Same saturation concern noted. |
+| Regex decomposition | HIR walker producing GramQuery tree (And/Or/Grams/All/None). `build_covering_inner` rejects synthetic edge grams to prevent false negatives. | Parse regex syntax, extract literals as overlapping n-grams. Alternation to OR. Character class expansion per element. |
+| Freshness model | File-watcher + single merged in-memory overlay via ArcSwap. Rebuilt on `commit_batch()`. Stable file IDs across generations. | Git-commit anchored base index + layer for user/agent changes. |
+| Scan threshold | Calibrated at build time via microbenchmark, stored in manifest. | Not described. |
+
+### Where syntext diverges
+
+1. **Context-independent forced boundaries.** Forced boundaries at whitespace, operators, brackets, and underscore always produce a split regardless of surrounding bytes. Cursor's CRC32-based boundaries depend on neighbor context. syntext's approach eliminates an entire class of false negatives for token-aligned queries: the boundary set at query time is guaranteed to be a subset of the boundary set at index time.
+2. **Explicit false-negative prevention for regex.** `build_covering_inner()` rejects grams whose boundaries rely on synthetic fragment edges (position 0 or `len`). When a regex literal ends mid-token (e.g., `parse_quer[yi]`), this prevents the query planner from emitting a gram that would not appear in the document's index. Cursor's blog does not describe an equivalent mechanism.
+3. **Hybrid posting encoding with adaptive threshold.** Delta-varint for sparse lists (<8,192 entries) keeps storage compact. Roaring bitmap for dense lists (>=8,192 entries) provides fast intersection via galloping. The threshold is chosen where Roaring's per-container overhead is amortized and varint intersection becomes O(n) slow. Cursor does not detail their posting encoding.
+4. **Calibrated scan threshold.** The index-vs-scan crossover point is measured at build time by timing file reads and posting-list intersections on the actual corpus and hardware. The result is stored in the manifest and used at query time. This adapts automatically rather than relying on a hardcoded fraction.
+5. **CamelCase boundary detection.** A second pass detects lowercase-to-uppercase transitions and emits additional grams (e.g., `XMLHttpRequest` splits at `XML`, `Http`, `Request`). This improves gram selectivity for Java, C#, and TypeScript codebases where CamelCase identifiers dominate.
+6. **Formally validated coverage invariant.** The token-aligned coverage invariant (every gram in `build_covering(Q)` appears in `build_all(D)`) is validated by proptest (5,000 structured cases) and cargo-fuzz (1.45M arbitrary byte sequences) with zero violations. Cursor does not describe formal correctness testing of their gram extraction.
+
+### Potential improvements inspired by Cursor
+
+1. **Two-file storage for large indexes.** Cursor mmaps only the lookup table and reads postings on demand from a separate file. syntext mmaps the entire segment. For multi-GB indexes on memory-constrained machines, separating the dictionary (small, always hot) from postings (large, accessed sparsely) would reduce resident memory. Requires a new segment format version.
+2. **Larger training corpus.** Cursor trained on terabytes of code; syntext uses ~175 MB. A larger, language-stratified corpus could improve weight quality for underrepresented languages. The training pipeline (`scripts/weights_gen.py`) already exists, only the input dataset needs to change.
+3. **Git-commit anchored freshness.** Cursor anchors index state to git commits, making cold-start faster (diff from last indexed commit rather than walking all files). syntext's overlay model handles live edits well but requires a full directory walk on cold start. Git integration for diff-based incremental rebuild is a natural extension.
+4. **Hash-collision safety** is now documented in the segment format section above. Both systems rely on the same property (collisions widen candidates, never cause misses), it was previously undocumented in syntext.
+
 ## Prior art
 
 - [Google Code Search (Russ Cox, 2012)](https://swtch.com/~rsc/regexp/regexp4.html): trigram index + regex verification
 - [Zoekt](https://github.com/sourcegraph/zoekt): trigram index with single-file segments
 - [GitHub Blackbird](https://github.blog/engineering/architecture-optimization/how-we-built-github-code-search/): sparse n-grams with frequency-weighted boundaries
-- Cursor fast regex search (2025): sparse n-grams, same core design
+- [Cursor fast regex search (2025)](https://cursor.com/blog/fast-regex-search): sparse n-grams, CRC32-weighted boundaries, two-file storage
 
 syntext follows the same fundamental architecture (n-gram prefilter, candidate selection, verification) with specific tradeoffs for the agent-loop use case: in-process verification (no fork/exec), batch commit for read-your-writes, and Roaring bitmaps for the heavy tail of common grams.
