@@ -402,7 +402,13 @@ impl Index {
                                         .iter()
                                         .position(|p| p == rel_path)
                                         .unwrap_or(0) as u32;
-                                    let _ = sym_idx.index_file(file_id, rel_path, &content);
+                                    if let Err(e) = sym_idx.index_file(file_id, rel_path, &content) {
+                                        if config.verbose {
+                                            eprintln!(
+                                                "ripline: warning: symbol index failed for {rel_path}: {e}"
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
