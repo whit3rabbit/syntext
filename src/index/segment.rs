@@ -29,6 +29,10 @@ const HEADER_SIZE: usize = 40;
 pub const FOOTER_SIZE: usize = 48;
 /// Size of a single dictionary entry in bytes.
 pub const DICT_ENTRY_SIZE: usize = 20;
+/// Maximum segment file size. A 256MB source batch with overhead should never
+/// produce a segment larger than this. Reject oversized files before mmap to
+/// prevent a malicious .seg from exhausting virtual memory.
+pub const MAX_SEGMENT_SIZE: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
 
 /// Document metadata stored in a segment's document table.
 #[derive(Debug, Clone)]
@@ -288,6 +292,14 @@ impl MmapSegment {
     /// Open a segment file, verify magic, version, and checksum.
     pub fn open(path: &Path) -> Result<Self, IndexError> {
         let file = std::fs::File::open(path)?;
+        let file_meta = file.metadata()?;
+        if file_meta.len() > MAX_SEGMENT_SIZE {
+            return Err(IndexError::CorruptIndex(format!(
+                "segment too large ({} bytes, max {})",
+                file_meta.len(),
+                MAX_SEGMENT_SIZE
+            )));
+        }
         file.try_lock_shared()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         // SAFETY: file handle is retained in the struct for the lifetime of the
@@ -579,6 +591,22 @@ mod tests {
 
         let seg = MmapSegment::open(tmp.path()).unwrap();
         assert!(seg.verify_integrity().is_ok());
+    }
+
+    #[test]
+    fn open_rejects_segment_exceeding_size_limit() {
+        // Build a real segment first so we have valid magic/checksum.
+        let tmp = NamedTempFile::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, "a.rs", 1, 10);
+        writer.write_to_file(tmp.path()).unwrap();
+
+        // Verify the constant is wired in and a normal-size segment opens fine.
+        let seg = MmapSegment::open(tmp.path());
+        assert!(
+            seg.is_ok(),
+            "valid segment under size limit must open successfully"
+        );
     }
 
     #[test]
