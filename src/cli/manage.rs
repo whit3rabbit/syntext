@@ -29,6 +29,28 @@ fn resolve_git_binary() -> PathBuf {
     PathBuf::from("/usr/bin/git")
 }
 
+/// Returns `true` if a path line from git stdout is safe to use as a
+/// repo-relative path.
+///
+/// Rejects: empty strings, absolute paths, and any path containing a
+/// parent-directory component (`..`). Git always emits repo-relative
+/// paths; anything else is unexpected and potentially hostile.
+#[cfg(unix)]
+fn is_safe_git_path(line: &str) -> bool {
+    if line.is_empty() {
+        return false;
+    }
+    let p = std::path::Path::new(line);
+    use std::path::Component;
+    for component in p.components() {
+        match component {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
     // Index::build always rebuilds; --force is accepted for rg/ug compat.
     // --quiet suppresses library progress output; default CLI behavior is verbose.
@@ -147,8 +169,9 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let parse_nul_paths = |bytes: &[u8]| -> Vec<String> {
         bytes
             .split(|&b| b == 0)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| std::str::from_utf8(s).ok().map(String::from))
+            .filter_map(|s| std::str::from_utf8(s).ok())
+            .filter(|s| is_safe_git_path(s))
+            .map(String::from)
             .collect()
     };
 
@@ -250,10 +273,24 @@ fn handle_output(err: io::Error) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::resolve_git_binary;
+    #[cfg(unix)]
+    use super::is_safe_git_path;
 
     #[test]
     fn git_binary_resolves_to_absolute_path() {
         let path = resolve_git_binary();
         assert!(path.is_absolute(), "git binary must resolve to absolute path, got: {:?}", path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_safe_git_path_rejects_traversal_and_absolute() {
+        assert!(!is_safe_git_path("../../etc/passwd"));
+        assert!(!is_safe_git_path("/etc/passwd"));
+        assert!(!is_safe_git_path("src/../../../etc/passwd"));
+        assert!(!is_safe_git_path(""));
+        assert!(is_safe_git_path("src/main.rs"));
+        assert!(is_safe_git_path("foo/bar/baz.rs"));
+        assert!(is_safe_git_path("Cargo.toml"));
     }
 }
