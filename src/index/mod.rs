@@ -1,6 +1,7 @@
 //! Index builder (`Index::build`) and reader (`Index::open`).
 
 mod build;
+pub(crate) mod encoding;
 mod io_util;
 pub(crate) use io_util::open_readonly_nofollow;
 #[cfg(unix)]
