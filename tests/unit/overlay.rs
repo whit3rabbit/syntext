@@ -369,7 +369,7 @@ fn delta_posting_lists_sorted_after_new_doc() {
     // Same base_doc_count => routes to delta path via build_incremental.
     let inc = OverlayView::build_incremental(0, &old, new_files, &newly_changed, &removed);
 
-    for (_, ids) in &inc.gram_index {
+    for ids in inc.gram_index.values() {
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         assert_eq!(ids, &sorted, "posting list must be sorted");

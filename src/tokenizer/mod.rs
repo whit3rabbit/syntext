@@ -165,12 +165,20 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
         return Vec::new();
     }
 
-    // Keep the original lowercase-token grams for the token-aligned coverage
-    // invariant, and add case-aware spans so CamelCase literals become indexable.
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
+    let lower_boundaries = boundary_positions(&lower);
     let mut hashes = Vec::new();
-    append_grams_for_boundaries(&mut hashes, &lower, &boundary_positions(&lower));
-    append_grams_for_boundaries(&mut hashes, &lower, &boundary_positions(input));
+    append_grams_for_boundaries(&mut hashes, &lower, &lower_boundaries);
+
+    // Preserve the token-aligned lowercase spans, then add only the extra
+    // spans unlocked by lowercase->uppercase transitions in CamelCase tokens.
+    let camel_boundaries = camel_case_boundaries(input);
+    if camel_boundaries.is_empty() {
+        return hashes;
+    }
+
+    let merged_boundaries = merge_boundaries(&lower_boundaries, &camel_boundaries);
+    append_new_grams_for_boundaries(&mut hashes, &lower, &lower_boundaries, &merged_boundaries);
 
     hashes
 }
@@ -293,6 +301,87 @@ fn append_grams_for_boundaries(hashes: &mut Vec<u64>, lower: &[u8], boundaries: 
     }
 }
 
+fn camel_case_boundaries(bytes: &[u8]) -> Vec<usize> {
+    let mut positions = Vec::new();
+    for i in 1..bytes.len() {
+        if bytes[i - 1].is_ascii_lowercase() && bytes[i].is_ascii_uppercase() {
+            positions.push(i);
+        }
+    }
+    positions
+}
+
+fn merge_boundaries(base: &[usize], extra: &[usize]) -> Vec<usize> {
+    let mut merged = Vec::with_capacity(base.len() + extra.len());
+    let mut base_i = 0;
+    let mut extra_i = 0;
+
+    while base_i < base.len() || extra_i < extra.len() {
+        let next = match (base.get(base_i), extra.get(extra_i)) {
+            (Some(&base_pos), Some(&extra_pos)) if base_pos <= extra_pos => {
+                base_i += 1;
+                if base_pos == extra_pos {
+                    extra_i += 1;
+                }
+                base_pos
+            }
+            (Some(&_base_pos), Some(&extra_pos)) => {
+                extra_i += 1;
+                extra_pos
+            }
+            (Some(&base_pos), None) => {
+                base_i += 1;
+                base_pos
+            }
+            (None, Some(&extra_pos)) => {
+                extra_i += 1;
+                extra_pos
+            }
+            (None, None) => break,
+        };
+
+        if merged.last().copied() != Some(next) {
+            merged.push(next);
+        }
+    }
+
+    merged
+}
+
+fn append_new_grams_for_boundaries(
+    hashes: &mut Vec<u64>,
+    lower: &[u8],
+    base_boundaries: &[usize],
+    merged_boundaries: &[usize],
+) {
+    let mut base_windows = base_boundaries.windows(2);
+    let mut current_base = base_windows.next();
+
+    for merged in merged_boundaries.windows(2) {
+        let merged_pair = (merged[0], merged[1]);
+        while let Some(base) = current_base {
+            let base_pair = (base[0], base[1]);
+            if base_pair < merged_pair {
+                current_base = base_windows.next();
+            } else {
+                break;
+            }
+        }
+
+        if current_base
+            .map(|base| (base[0], base[1]) == merged_pair)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let span = merged_pair.1 - merged_pair.0;
+        if (MIN_GRAM_LEN..=MAX_GRAM_LEN).contains(&span) {
+            hashes.push(gram_hash(&lower[merged_pair.0..merged_pair.1]));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests (T015 live in tests/unit/tokenizer.rs)
 // ---------------------------------------------------------------------------
@@ -341,6 +430,21 @@ mod tests {
         assert!(
             grams.len() >= 2,
             "camel-case identifiers should contribute extra indexed grams"
+        );
+    }
+
+    #[test]
+    fn build_all_skips_redundant_second_pass_without_camel_case() {
+        let input = b"parse_query";
+        let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
+        let boundaries = boundary_positions(&lower);
+        let mut expected = Vec::new();
+        append_grams_for_boundaries(&mut expected, &lower, &boundaries);
+
+        assert_eq!(
+            build_all(input),
+            expected,
+            "non-camel inputs should not pay for a duplicate case-aware pass"
         );
     }
 
