@@ -7,15 +7,13 @@
 //! All integers are little-endian. The xxhash64 checksum in the footer
 //! covers all bytes before the footer (file_len - 48 bytes).
 
-use std::io;
 use std::path::Path;
 
 use memmap2::Mmap;
-use roaring::RoaringBitmap;
 use uuid::Uuid;
 use xxhash_rust::xxh64::xxh64;
 
-use crate::posting::{roaring_util, varint_encode, PostingList, ROARING_THRESHOLD};
+use crate::posting::{roaring_util, PostingList};
 use crate::IndexError;
 
 /// Magic bytes identifying an RPLX segment file.
@@ -24,7 +22,7 @@ pub const MAGIC: &[u8; 4] = b"RPLX";
 pub const FORMAT_VERSION: u32 = 1;
 /// Page size for dictionary alignment.
 pub const PAGE_SIZE: usize = 4096;
-const HEADER_SIZE: usize = 40;
+pub(super) const HEADER_SIZE: usize = 40;
 /// Size of the segment footer in bytes.
 pub const FOOTER_SIZE: usize = 48;
 /// Size of a single dictionary entry in bytes.
@@ -62,245 +60,8 @@ pub struct SegmentMeta {
     pub gram_count: u32,
 }
 
-// ---------------------------------------------------------------------------
-// T021: SegmentWriter
-// ---------------------------------------------------------------------------
-
-/// Accumulates documents and gram postings, then serializes to an RPLX file.
-pub struct SegmentWriter {
-    docs: Vec<DocEntry>,
-    /// Unsorted `(gram_hash, doc_id)` pairs, aggregated at write time.
-    postings: Vec<(u64, u32)>,
-    /// Capacity hint recorded at construction for debug overshoot detection.
-    initial_postings_capacity: usize,
-}
-
-impl Default for SegmentWriter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SegmentWriter {
-    /// Create a new segment writer.
-    pub fn new() -> Self {
-        SegmentWriter {
-            docs: Vec::new(),
-            postings: Vec::new(),
-            initial_postings_capacity: 0,
-        }
-    }
-
-    /// Create a segment writer with pre-allocated capacity.
-    ///
-    /// `doc_hint`: expected number of documents.
-    /// `grams_per_doc_hint`: estimated grams per document (typically 80-150).
-    pub fn with_capacity(doc_hint: usize, grams_per_doc_hint: usize) -> Self {
-        let cap = doc_hint * grams_per_doc_hint;
-        SegmentWriter {
-            docs: Vec::with_capacity(doc_hint),
-            postings: Vec::with_capacity(cap),
-            initial_postings_capacity: cap,
-        }
-    }
-
-    /// Number of documents added to this writer.
-    pub fn doc_count(&self) -> usize {
-        self.docs.len()
-    }
-
-    /// Add a document to the segment.
-    pub fn add_document(&mut self, doc_id: u32, path: &str, content_hash: u64, size_bytes: u64) {
-        self.docs.push(DocEntry {
-            doc_id,
-            content_hash,
-            size_bytes,
-            path: path.to_owned(),
-        });
-    }
-
-    /// Add a gram posting for a given document.
-    pub fn add_gram_posting(&mut self, gram_hash: u64, doc_id: u32) {
-        self.postings.push((gram_hash, doc_id));
-    }
-
-    /// Write segment into `dir`, naming it `{uuid}.seg`.
-    ///
-    /// Returns metadata whose `filename` matches the file created on disk.
-    /// Use this in production code so the manifest is always consistent.
-    pub fn write_to_dir(&mut self, dir: &Path) -> io::Result<SegmentMeta> {
-        let segment_id = Uuid::new_v4();
-        let filename = format!("{}.seg", segment_id);
-        let path = dir.join(&filename);
-        let (bytes, doc_count, gram_count) = self.serialize()?;
-        std::fs::write(&path, &bytes)?;
-        Ok(SegmentMeta {
-            segment_id,
-            filename,
-            doc_count,
-            gram_count,
-        })
-    }
-
-    /// Write segment to an explicit `path` (used in unit tests with `NamedTempFile`).
-    ///
-    /// The `SegmentMeta.filename` reflects the actual `path.file_name()`.
-    pub fn write_to_file(&mut self, path: &Path) -> io::Result<SegmentMeta> {
-        let segment_id = Uuid::new_v4();
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("segment.seg")
-            .to_owned();
-        let (bytes, doc_count, gram_count) = self.serialize()?;
-        std::fs::write(path, &bytes)?;
-        Ok(SegmentMeta {
-            segment_id,
-            filename,
-            doc_count,
-            gram_count,
-        })
-    }
-
-    /// Build the on-disk byte representation. Returns `(bytes, doc_count, gram_count)`.
-    fn serialize(&mut self) -> io::Result<(Vec<u8>, u32, u32)> {
-        self.docs.sort_by_key(|d| d.doc_id);
-
-        // Validate that doc_ids are strictly increasing after sort.
-        // Duplicates or gaps would corrupt the positional doc table index used by get_doc().
-        if let Some(w) = self.docs.windows(2).find(|w| w[0].doc_id >= w[1].doc_id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "duplicate or non-increasing doc_ids: {} followed by {}",
-                    w[0].doc_id, w[1].doc_id
-                ),
-            ));
-        }
-
-        self.postings.sort_unstable();
-        #[cfg(debug_assertions)]
-        if self.initial_postings_capacity > 0
-            && self.postings.len() > self.initial_postings_capacity * 3
-        {
-            eprintln!(
-                "ripline: debug: SegmentWriter postings overshoot: hint={}, actual={}",
-                self.initial_postings_capacity,
-                self.postings.len()
-            );
-        }
-        self.postings.dedup();
-
-        let doc_count = self.docs.len() as u32;
-        let mut buf: Vec<u8> = Vec::new();
-
-        // Header (40 bytes) -- gram_count placeholder patched after postings loop.
-        buf.extend_from_slice(MAGIC);
-        buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-        buf.extend_from_slice(&doc_count.to_le_bytes());
-        let gram_count_pos = buf.len();
-        buf.extend_from_slice(&0u32.to_le_bytes()); // gram_count placeholder
-        let hdr_offsets_pos = buf.len();
-        buf.extend_from_slice(&0u64.to_le_bytes()); // doc_table_offset placeholder
-        buf.extend_from_slice(&0u64.to_le_bytes()); // postings_offset placeholder
-        buf.extend_from_slice(&0u64.to_le_bytes()); // dict_offset placeholder
-        debug_assert_eq!(buf.len(), HEADER_SIZE);
-
-        // Document Table
-        let doc_table_offset = buf.len() as u64;
-        let idx_base = buf.len();
-        buf.resize(idx_base + doc_count as usize * 8, 0u8);
-        let mut doc_abs_offsets: Vec<u64> = Vec::with_capacity(self.docs.len());
-        for doc in &self.docs {
-            doc_abs_offsets.push(buf.len() as u64);
-            buf.extend_from_slice(&doc.doc_id.to_le_bytes());
-            buf.extend_from_slice(&doc.content_hash.to_le_bytes());
-            buf.extend_from_slice(&doc.size_bytes.to_le_bytes());
-            let pb = doc.path.as_bytes();
-            buf.extend_from_slice(&(pb.len() as u16).to_le_bytes());
-            buf.extend_from_slice(pb);
-        }
-        for (i, &abs_off) in doc_abs_offsets.iter().enumerate() {
-            let p = idx_base + i * 8;
-            buf[p..p + 8].copy_from_slice(&abs_off.to_le_bytes());
-        }
-
-        // Postings Section
-        let postings_offset = buf.len() as u64;
-        let mut dict_entries: Vec<(u64, u64, u32)> = Vec::new();
-        let mut posting_idx = 0usize;
-        while posting_idx < self.postings.len() {
-            let gram_hash = self.postings[posting_idx].0;
-            let group_start = posting_idx;
-            posting_idx += 1;
-            while posting_idx < self.postings.len() && self.postings[posting_idx].0 == gram_hash {
-                posting_idx += 1;
-            }
-
-            let posting_abs_off = buf.len() as u64;
-            let doc_ids: Vec<u32> = self.postings[group_start..posting_idx]
-                .iter()
-                .map(|(_, doc_id)| *doc_id)
-                .collect();
-            let entry_count = doc_ids.len() as u32;
-            if doc_ids.len() >= ROARING_THRESHOLD {
-                let bm: RoaringBitmap = doc_ids.iter().copied().collect();
-                let rbytes = roaring_util::serialize(&bm);
-                buf.push(1u8);
-                buf.extend_from_slice(&entry_count.to_le_bytes());
-                buf.extend_from_slice(&(rbytes.len() as u32).to_le_bytes());
-                buf.extend_from_slice(&rbytes);
-            } else {
-                let encoded = varint_encode(&doc_ids).map_err(|msg| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("segment postings for gram {gram_hash:#x}: {msg}"),
-                    )
-                })?;
-                buf.push(0u8);
-                buf.extend_from_slice(&entry_count.to_le_bytes());
-                buf.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
-                buf.extend_from_slice(&encoded);
-            }
-            dict_entries.push((gram_hash, posting_abs_off, entry_count));
-        }
-        let gram_count = dict_entries.len() as u32;
-        buf[gram_count_pos..gram_count_pos + 4].copy_from_slice(&gram_count.to_le_bytes());
-
-        // Page-align for dictionary
-        let dict_offset = {
-            let aligned = buf.len().div_ceil(PAGE_SIZE) * PAGE_SIZE;
-            buf.resize(aligned, 0u8);
-            aligned as u64
-        };
-
-        // Dictionary Section (sorted by gram_hash via BTreeMap iteration)
-        for (gram_hash, abs_off, count) in &dict_entries {
-            buf.extend_from_slice(&gram_hash.to_le_bytes());
-            buf.extend_from_slice(&abs_off.to_le_bytes());
-            buf.extend_from_slice(&count.to_le_bytes());
-        }
-
-        // Patch header offsets
-        buf[hdr_offsets_pos..hdr_offsets_pos + 8].copy_from_slice(&doc_table_offset.to_le_bytes());
-        buf[hdr_offsets_pos + 8..hdr_offsets_pos + 16]
-            .copy_from_slice(&postings_offset.to_le_bytes());
-        buf[hdr_offsets_pos + 16..hdr_offsets_pos + 24].copy_from_slice(&dict_offset.to_le_bytes());
-
-        // TOC Footer
-        let checksum = xxh64(&buf, 0);
-        buf.extend_from_slice(&doc_table_offset.to_le_bytes()); // -48
-        buf.extend_from_slice(&postings_offset.to_le_bytes()); // -40
-        buf.extend_from_slice(&dict_offset.to_le_bytes()); // -32
-        buf.extend_from_slice(&doc_count.to_le_bytes()); // -24
-        buf.extend_from_slice(&gram_count.to_le_bytes()); // -20
-        buf.extend_from_slice(&checksum.to_le_bytes()); // -16
-        buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes()); // -8
-        buf.extend_from_slice(MAGIC); // -4
-
-        Ok((buf, doc_count, gram_count))
-    }
-}
+mod segment_writer;
+pub use segment_writer::SegmentWriter;
 
 // ---------------------------------------------------------------------------
 // T022: MmapSegment (reader)
