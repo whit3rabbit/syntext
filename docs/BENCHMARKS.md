@@ -191,3 +191,27 @@ reflects reduced tokenization work; the gain grows with overlay size.
 
 The `full_build_300_files` benchmark exercises the initial segment build path,
 which is unaffected by the overlay change.
+
+---
+
+### Two-file storage — baseline (before v3 format)
+
+Date: 2026-03-28
+Commit: 8096ba4
+
+#### index_build
+
+| Benchmark | Time (mean) | Range |
+|---|---|---|
+| `full_build_300_files` | 17.608 ms | [17.516 ms – 17.761 ms] |
+| `commit_batch_single_edit` | 130.01 µs | [128.06 µs – 133.80 µs] |
+
+#### query_latency
+
+| Benchmark | Time (mean) | Range |
+|---|---|---|
+| `literal_common` | 4.1599 ms | [4.1444 ms – 4.1778 ms] |
+| `indexed_regex_rare` | 136.88 µs | [136.08 µs – 138.23 µs] |
+| `full_scan_regex` | 4.2456 ms | [4.2213 ms – 4.2826 ms] |
+
+Criterion noted regressions on `literal_common` (+28%) and `full_scan_regex` (+23%) and `full_build_300_files` (+13%) relative to prior stored baseline, and an improvement on `indexed_regex_rare` (-9%). These are the pre-v3-format reference numbers.
