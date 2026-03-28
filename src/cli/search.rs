@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::index::Index;
 use crate::{Config, SearchOptions};
 
+#[derive(Default)]
 pub(super) struct SearchArgs {
     pub pattern: String,
     pub paths: Vec<PathBuf>,
@@ -28,6 +29,12 @@ pub(super) struct SearchArgs {
 }
 
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
+    if args.paths.len() > 1 {
+        eprintln!(
+            "rl: warning: multiple path arguments not yet supported; using only {:?}",
+            args.paths[0]
+        );
+    }
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         Err(e) => {
@@ -84,7 +91,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let has_context = args.after_context > 0 || args.before_context > 0;
 
     if args.json {
-        super::render::render_json(&config, &results, args);
+        super::render::render_json(&results);
     } else if has_context {
         super::render::render_with_context(&config, &results, args);
     } else if args.heading {
@@ -129,12 +136,6 @@ pub(super) fn run_search(
 }
 
 pub(super) fn paths_to_glob(paths: &[PathBuf]) -> Option<String> {
-    if paths.len() > 1 {
-        eprintln!(
-            "rl: warning: multiple path arguments not yet supported; using only {:?}",
-            paths[0]
-        );
-    }
     let first = paths.first()?;
     let s = first.to_string_lossy();
     if first.is_dir() {

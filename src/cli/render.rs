@@ -4,18 +4,20 @@ use crate::Config;
 
 use super::search::{SearchArgs, build_effective_pattern};
 
+/// Format a single output line respecting --no-filename and --no-line-number flags.
+fn format_line(no_path: bool, no_num: bool, path: &str, line_num: usize, sep: char, content: &str) -> String {
+    match (no_path, no_num) {
+        (true, true) => content.to_string(),
+        (true, false) => format!("{line_num}{sep}{content}"),
+        (false, true) => format!("{path}{sep}{content}"),
+        (false, false) => format!("{path}{sep}{line_num}{sep}{content}"),
+    }
+}
+
 pub(super) fn render_flat(matches: &[crate::SearchMatch], args: &SearchArgs) {
     for m in matches {
-        let path = m.path.display();
-        if args.no_filename && args.no_line_number {
-            println!("{}", m.line_content);
-        } else if args.no_filename {
-            println!("{}:{}", m.line_number, m.line_content);
-        } else if args.no_line_number {
-            println!("{path}:{}", m.line_content);
-        } else {
-            println!("{path}:{}:{}", m.line_number, m.line_content);
-        }
+        let path = m.path.to_string_lossy();
+        println!("{}", format_line(args.no_filename, args.no_line_number, &path, m.line_number as usize, ':', &m.line_content));
     }
 }
 
@@ -87,16 +89,8 @@ pub(super) fn render_invert_match(
             if !re.is_match(&line) {
                 found_any = true;
                 if !args.quiet {
-                    let line_num = idx + 1;
-                    if args.no_filename && args.no_line_number {
-                        println!("{line}");
-                    } else if args.no_filename {
-                        println!("{line_num}:{line}");
-                    } else if args.no_line_number {
-                        println!("{}:{line}", rel_path.display());
-                    } else {
-                        println!("{}:{line_num}:{line}", rel_path.display());
-                    }
+                    let path = rel_path.to_string_lossy();
+                    println!("{}", format_line(args.no_filename, args.no_line_number, &path, idx + 1, ':', &line));
                 }
             }
         }
@@ -192,15 +186,7 @@ pub(super) fn render_with_context_to(
             let is_match = match_set.contains(&idx);
             let sep = if is_match { ':' } else { '-' };
 
-            if args.no_filename && args.no_line_number {
-                let _ = writeln!(out, "{content}");
-            } else if args.no_filename {
-                let _ = writeln!(out, "{line_num}{sep}{content}");
-            } else if args.no_line_number {
-                let _ = writeln!(out, "{rel_path_str}{sep}{content}");
-            } else {
-                let _ = writeln!(out, "{rel_path_str}{sep}{line_num}{sep}{content}");
-            }
+            let _ = writeln!(out, "{}", format_line(args.no_filename, args.no_line_number, rel_path_str, line_num, sep, content));
 
             prev = Some(idx);
         }
@@ -234,10 +220,8 @@ pub(super) fn format_match_json(m: &crate::SearchMatch) -> String {
 }
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
-pub(super) fn render_json(config: &Config, matches: &[crate::SearchMatch], args: &SearchArgs) {
+pub(super) fn render_json(matches: &[crate::SearchMatch]) {
     use std::collections::BTreeMap;
-    let _ = config;
-    let _ = args;
 
     let mut by_file: BTreeMap<String, Vec<&crate::SearchMatch>> = BTreeMap::new();
     for m in matches {

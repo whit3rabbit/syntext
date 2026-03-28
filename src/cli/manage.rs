@@ -1,11 +1,12 @@
 //! Management subcommand handlers: index, status, update.
 
+use std::collections::HashSet;
+
 use crate::index::Index;
 use crate::Config;
 
-pub(super) fn cmd_index(mut config: Config, force: bool, stats: bool, quiet: bool) -> i32 {
-    // Index::build always rebuilds; --force is redundant but accepted for rg/ug compat.
-    let _ = force;
+pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
+    // Index::build always rebuilds; --force is accepted for rg/ug compat.
     // --quiet suppresses library progress output; default CLI behavior is verbose.
     if quiet {
         config.verbose = false;
@@ -69,7 +70,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         }
     };
 
-    let mut changed: Vec<String> = Vec::new();
+    let mut changed: HashSet<String> = HashSet::new();
 
     // Detect changed files via git diff against HEAD.
     // This fails on repos with no commits, which is fine -- we fall through
@@ -101,11 +102,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     {
         if staged_output.status.success() {
             let staged_stdout = String::from_utf8_lossy(&staged_output.stdout);
-            for line in staged_stdout.lines().filter(|l| !l.is_empty()) {
-                if !changed.iter().any(|c| c == line) {
-                    changed.push(line.to_string());
-                }
-            }
+            changed.extend(staged_stdout.lines().filter(|l| !l.is_empty()).map(String::from));
         }
     }
 
@@ -118,11 +115,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     {
         if ut_output.status.success() {
             let ut_stdout = String::from_utf8_lossy(&ut_output.stdout);
-            for line in ut_stdout.lines().filter(|l| !l.is_empty()) {
-                if !changed.iter().any(|c| c == line) {
-                    changed.push(line.to_string());
-                }
-            }
+            changed.extend(ut_stdout.lines().filter(|l| !l.is_empty()).map(String::from));
         }
     }
 
