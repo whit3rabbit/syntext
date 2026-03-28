@@ -311,3 +311,93 @@ fn build_indexes_files_under_symlinked_directory_path() {
         "symlinked directory contents should be searchable through the symlink path"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T048: v3 two-file segment format end-to-end integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v3_format_produces_dict_and_post_files() {
+    use std::collections::HashSet;
+
+    let repo_dir = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    // Write a small corpus
+    std::fs::write(
+        repo_dir.path().join("main.rs"),
+        b"fn main() { println!(\"hello_syntext\"); }",
+    )
+    .unwrap();
+    std::fs::write(
+        repo_dir.path().join("lib.rs"),
+        b"pub fn hello_syntext() -> String { String::from(\"hello_syntext\") }",
+    )
+    .unwrap();
+
+    let config = Config {
+        repo_root: repo_dir.path().to_path_buf(),
+        index_dir: index_dir.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    // Build index
+    Index::build(config.clone()).expect("v3 build should succeed");
+
+    // Verify file layout: .dict and .post must exist; .seg must not
+    let entries: Vec<_> = std::fs::read_dir(index_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    let extensions: HashSet<&str> = entries
+        .iter()
+        .filter_map(|n| n.rsplit('.').next())
+        .collect();
+
+    assert!(
+        extensions.contains("dict"),
+        "v3 build must produce .dict files; found: {:?}",
+        entries
+    );
+    assert!(
+        extensions.contains("post"),
+        "v3 build must produce .post files; found: {:?}",
+        entries
+    );
+    assert!(
+        !extensions.contains("seg"),
+        "v3 build must not produce legacy .seg files; found: {:?}",
+        entries
+    );
+
+    // Search on the built index
+    let index = Index::open(config.clone()).expect("v3 open should succeed");
+    let opts = SearchOptions::default();
+    let results = index
+        .search("hello_syntext", &opts)
+        .expect("search should succeed");
+    assert!(
+        !results.is_empty(),
+        "search must find 'hello_syntext' in v3 index"
+    );
+
+    // Incremental update: add a new file, notify, commit, search
+    std::fs::write(
+        repo_dir.path().join("new_file.rs"),
+        b"fn new_function_xyz() {}",
+    )
+    .unwrap();
+    index
+        .notify_change(&repo_dir.path().join("new_file.rs"))
+        .expect("notify_change should succeed");
+    index.commit_batch().expect("commit_batch should succeed");
+
+    let results2 = index
+        .search("new_function_xyz", &opts)
+        .expect("search after incremental update should succeed");
+    assert!(
+        !results2.is_empty(),
+        "incremental update must find 'new_function_xyz' after commit_batch"
+    );
+}
