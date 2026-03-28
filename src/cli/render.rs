@@ -8,6 +8,7 @@ use crate::path_util::path_bytes;
 
 use super::search::{SearchArgs, build_effective_pattern};
 use crate::search::lines::for_each_line;
+use crate::search::REGEX_SIZE_LIMIT;
 
 fn write_formatted_line(
     out: &mut dyn Write,
@@ -138,6 +139,8 @@ pub(super) fn render_invert_match(
     let pattern = build_effective_pattern(args);
     let re = match regex::bytes::RegexBuilder::new(&pattern)
         .case_insensitive(args.ignore_case)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_SIZE_LIMIT)
         .build()
     {
         Ok(r) => r,

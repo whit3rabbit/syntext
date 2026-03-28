@@ -26,6 +26,9 @@ use crate::path::filter::{build_filter, matches_path_filter};
 use crate::query::{literal_grams, route_query, GramQuery, QueryRoute};
 use crate::{Config, IndexError, SearchMatch, SearchOptions};
 
+/// 10 MiB cap on regex NFA/DFA size: prevents ReDoS during compilation (not just matching).
+pub(crate) const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
+
 use verifier::{verify_literal, verify_regex};
 
 /// Run a search against the given snapshot.
@@ -45,6 +48,8 @@ pub fn search(
         _ => {
             let re = RegexBuilder::new(pattern)
                 .case_insensitive(opts.case_insensitive)
+                .size_limit(REGEX_SIZE_LIMIT)
+                .dfa_size_limit(REGEX_SIZE_LIMIT)
                 .build()
                 .map_err(|e| IndexError::InvalidPattern(e.to_string()))?;
             Some(re)
