@@ -30,11 +30,7 @@ pub(crate) fn normalize_encoding(content: &[u8]) -> Cow<'_, [u8]> {
 }
 
 fn decode_utf16(bytes: &[u8], from_bytes: fn([u8; 2]) -> u16) -> Vec<u8> {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| from_bytes([c[0], c[1]]))
-        .collect();
-    char::decode_utf16(units)
+    char::decode_utf16(bytes.chunks_exact(2).map(|c| from_bytes([c[0], c[1]])))
         .map(|r| r.unwrap_or('\u{FFFD}'))
         .collect::<String>()
         .into_bytes()
