@@ -132,22 +132,30 @@ impl Index {
             .try_lock_shared()
             .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
 
-        // Security: warn when the index directory is readable or writable by
-        // group/other. Permissive modes allow concurrent ftruncate() races
+        // Security: reject (or warn about) index directories readable/writable
+        // by group/other. Permissive modes allow concurrent ftruncate() races
         // (SIGBUS DoS) and crafted-file injection. New builds enforce 0700 via
-        // build_index(); this check catches pre-existing indexes and warns the
-        // operator without failing the open.
+        // build_index(); this check catches pre-existing indexes.
         #[cfg(unix)]
-        if config.verbose {
+        {
             use std::os::unix::fs::MetadataExt;
             if let Ok(meta) = std::fs::metadata(&config.index_dir) {
                 if meta.mode() & 0o077 != 0 {
-                    eprintln!(
-                        "syntext: warning: index dir {:?} has mode {:04o}; \
-                         recommend chmod 700 to prevent injection and SIGBUS DoS",
-                        config.index_dir,
-                        meta.mode() & 0o777
-                    );
+                    if config.strict_permissions {
+                        return Err(IndexError::CorruptIndex(format!(
+                            "index dir has mode {:04o}; expected 0700 (no group/other bits). \
+                             Fix with: chmod 700 {:?}",
+                            meta.mode() & 0o777,
+                            config.index_dir,
+                        )));
+                    } else if config.verbose {
+                        eprintln!(
+                            "syntext: warning: index dir {:?} has mode {:04o}; \
+                             recommend chmod 700 to prevent injection and SIGBUS DoS",
+                            config.index_dir,
+                            meta.mode() & 0o777,
+                        );
+                    }
                 }
             }
         }
@@ -809,5 +817,81 @@ mod tests {
         };
         let result = Index::build(config);
         assert!(result.is_ok(), "build() must succeed: {:?}", result.err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_permissive_index_dir_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("lib.rs"), b"fn f() {}").unwrap();
+
+        // Build the index first (build sets 0700 internally).
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        Index::build(config).unwrap();
+
+        // Widen permissions to simulate a pre-existing permissive directory.
+        std::fs::set_permissions(
+            index_dir.path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            strict_permissions: true,
+            ..Config::default()
+        };
+        let result = Index::open(config);
+        match &result {
+            Err(IndexError::CorruptIndex(msg)) => {
+                assert!(msg.contains("0755"), "error message should mention mode 0755: {msg}");
+            }
+            Err(e) => panic!("expected CorruptIndex, got: {e}"),
+            Ok(_) => panic!("open() must reject permissive dir mode"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_allows_permissive_mode_when_strict_permissions_disabled() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("lib.rs"), b"fn f() {}").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        Index::build(config).unwrap();
+
+        std::fs::set_permissions(
+            index_dir.path(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            strict_permissions: false,
+            ..Config::default()
+        };
+        let result = Index::open(config);
+        assert!(
+            result.is_ok(),
+            "open() must succeed when strict_permissions is false, got: {}",
+            result.err().map(|e| e.to_string()).unwrap_or_default()
+        );
     }
 }

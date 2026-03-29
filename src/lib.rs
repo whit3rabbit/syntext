@@ -31,6 +31,10 @@ pub struct Config {
     pub repo_root: PathBuf,
     /// Emit progress messages to stderr. Default: false (silent for library consumers).
     pub verbose: bool,
+    /// Reject index directories with group/other permission bits (unix only).
+    /// Permissive modes allow SIGBUS DoS via concurrent ftruncate on mmap'd
+    /// segment files. Default: true.
+    pub strict_permissions: bool,
 }
 
 impl Default for Config {
@@ -41,6 +45,7 @@ impl Default for Config {
             index_dir: PathBuf::from(".syntext"),
             repo_root: PathBuf::from("."),
             verbose: false,
+            strict_permissions: true,
         }
     }
 }

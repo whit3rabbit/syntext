@@ -273,6 +273,7 @@ fn resolve_config(cli: &Cli) -> Config {
         index_dir,
         repo_root,
         verbose: false,
+        strict_permissions: true,
     }
 }
 
