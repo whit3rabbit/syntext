@@ -45,7 +45,9 @@ pub struct Cli {
     #[arg(short = 'w', long = "word-regexp")]
     pub word_regexp: bool,
 
-    /// Invert matching: print lines that do NOT match.
+    /// Invert matching: print lines that do NOT match the pattern within candidate files.
+    /// Unlike grep -v and rg -v, this only examines files identified by the index as containing
+    /// the pattern; non-candidate files are not searched (v1 limitation).
     #[arg(short = 'v', long = "invert-match")]
     pub invert_match: bool,
 
