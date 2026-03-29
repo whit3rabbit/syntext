@@ -21,25 +21,23 @@ owner-level compromise.
 
 **Identification:** The symlink validation in `collect_symlink_entry` spans
 multiple syscalls: `read_link`, `symlink_metadata`, `canonicalize`, and a
-second `symlink_metadata`. Between the final validation and the nested
-`WalkBuilder` iteration (for directory symlinks) or the build-time file read
-(for file symlinks), a concurrent symlink swap could redirect to an
-out-of-scope target.
+second `symlink_metadata`. Between the final validation and the build-time
+file read for an in-repo file symlink, a concurrent symlink swap could
+redirect to an out-of-scope target. Directory symlinks are now skipped during
+repository enumeration, which removes the nested-walk portion of this risk.
 
 **Remediation:**
-1. Added `O_NOFOLLOW` open on the canonical directory target immediately before
-   `WalkBuilder` iteration. If the path was swapped to a symlink between
-   validation and iteration, the open fails with `ELOOP`, aborting the walk.
+1. Directory symlinks are skipped during repository enumeration, so the walker
+   no longer performs nested sub-walks through symlink aliases.
 2. The build pipeline (`src/index/build.rs`) already applies per-file
    `open_readonly_nofollow` + `verify_fd_matches_stat` inode verification,
    catching any remaining swaps between walk discovery and content read.
-3. The nested `WalkBuilder` uses `follow_links(false)`, preventing recursive
-   symlink chasing within the sub-walk.
+3. File symlinks still require the target to resolve inside the repo root, and
+   multi-hop symlink chains are rejected before indexing.
 
-**Residual risk:** A narrow window remains between the `O_NOFOLLOW` directory
-open and `WalkBuilder` iteration. Eliminating this entirely requires
-`openat2(RESOLVE_BENEATH)` (Linux 5.6+), which is not yet available on macOS.
-The build-time inode check is the backstop.
+**Residual risk:** The remaining window is between validation and the later
+file open for an accepted in-repo file symlink. The build-time inode check is
+the backstop.
 
 ### SA-002: V2 Posting Offset Lower Bound Too Permissive
 
@@ -98,8 +96,8 @@ These were fixed in earlier commits and verified during this audit:
 - **TOCTOU file reads** (c492ea4): `open_readonly_nofollow` + inode
   verification in `build.rs`, `commit_batch`, and the resolver hot path.
 
-- **Symlink dedup** (0f3b6d9): `seen_canonical` set prevents N symlinks to
-  the same directory from producing N full sub-walks.
+- **Symlink dedup** (0f3b6d9): `seen_canonical` set prevents duplicate file
+  records when N symlinks point to the same in-repo file target.
 
 ## Verified Clean Areas
 

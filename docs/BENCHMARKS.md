@@ -248,4 +248,69 @@ Commit: 0d1a0d0
 - `full_scan_regex`: 4.4819 ms vs baseline 4.2456 ms (+5.6% improvement within noise; reported as "+1% change" by Criterion). Full-scan queries do not use posting lists, so file layout is irrelevant.
 
 **Resident memory benefit:**
-The two-file split (dictionary separate from postings) reduces working set for large indexes. This benefit is not measured here because the synthetic corpus is ~300 files (~60 KB on disk). The improvement is only visible at multi-GB index scale where keeping postings out of the dictionary cache avoids thrashing. Upcoming external-repo benchmarking (`linux`, `react`, etc.) will measure this quantitatively.
+The two-file split (dictionary separate from postings) reduces working set for large indexes. This benefit is not measured here because the synthetic corpus is ~300 files (~60 KB on disk). The improvement is only visible at multi-GB index scale where keeping postings out of the dictionary cache avoids thrashing. Current external-repo spot checks are recorded below.
+
+### Current snapshot
+
+Date: 2026-03-29  
+Commit base: `d7b10f8` (dirty worktree during the run)
+
+#### Synthetic corpus
+
+`cargo bench --bench query_latency -- --sample-size 10`
+
+| Benchmark | Time (estimate) | Range |
+|---|---|---|
+| `literal_common` | 4.1273 ms | [4.0932 ms – 4.1584 ms] |
+| `indexed_regex_rare` | 158.53 µs | [156.61 µs – 160.38 µs] |
+| `full_scan_regex` | 4.2382 ms | [4.1932 ms – 4.3026 ms] |
+
+`cargo bench --bench index_build -- --sample-size 10`
+
+| Benchmark | Time (estimate) | Range |
+|---|---|---|
+| `full_build_300_files` | 28.139 ms | [28.041 ms – 28.201 ms] |
+| `commit_batch_single_edit` | 158.04 µs | [156.01 µs – 160.07 µs] |
+
+`cargo bench --bench selectivity -- --sample-size 10`
+
+| Benchmark | Time (estimate) | Range |
+|---|---|---|
+| `literal_no_match` | 4.1824 ms | [4.1625 ms – 4.1962 ms] |
+| `indexed_regex_selective` | 138.22 µs | [137.47 µs – 139.85 µs] |
+| `literal_broad` | 4.2022 ms | [4.1809 ms – 4.2264 ms] |
+
+Compared with the last recorded v3 synthetic snapshot from 2026-03-28, the current search path is modestly better across all three `query_latency` cases (`literal_common` -9.7%, `indexed_regex_rare` -1.8%, `full_scan_regex` -5.4%), and `commit_batch_single_edit` improved from 183.22 µs to 158.04 µs (-13.7%).
+
+`full_build_300_files` moved the other direction, from 18.275 ms to 28.139 ms (+54.0%). The Criterion benchmark source for this synthetic workload has not changed since the last recorded v3 entry, so treat this as the new current full-build baseline rather than a documentation artifact.
+
+Criterion's stored local baselines also report statistically significant improvements for `commit_batch_single_edit`, `literal_no_match`, and `indexed_regex_selective`, while `query_latency` remained within noise.
+
+#### External repo spot checks
+
+These runs used the current local `react` and `linux` clones available on the benchmarking machine, not the older pinned corpus snapshots from the setup section. Treat them as present-day spot checks, not strict before/after regressions against earlier external tables.
+
+Build-only runs (`python3 scripts/bench_compare.py --repo ... --build-only --build-iterations 3 --json`):
+
+| Repo | Commit | Tracked files | Build median | Build min | Build max | Index bytes |
+|---|---|---|---|---|---|---|
+| `react` | `3cb2c42` | 6,840 | 399.999 ms | 394.152 ms | 754.734 ms | 6,553,661 |
+| `linux` | `46b513250-dirty` | 93,018 | 7,567.240 ms | 6,425.960 ms | 7,776.493 ms | 85,405,469 |
+
+Search spot checks (`python3 scripts/bench_compare.py --repo ... --preset ... --syntext-search-mode both --json`):
+
+React (`3cb2c42`), exact count parity across all tools:
+
+| Query | `syntext-persistent` | `syntext-fork` | `rg` | `grep` |
+|---|---|---|---|---|
+| `useState` | 11.914 ms (2,708 hits) | 26.349 ms (2,708 hits) | 105.563 ms (2,708 hits) | 291.980 ms (2,708 hits) |
+| `getDisplayNameForReactElement` | 0.190 ms (13 hits) | 12.777 ms (13 hits) | 103.005 ms (13 hits) | 335.028 ms (13 hits) |
+
+Linux (`46b513250-dirty`), exact count parity on the queries below:
+
+| Query | `syntext-persistent` | `syntext-fork` | `rg` |
+|---|---|---|---|
+| `irq_work_queue` | 40.373 ms (128 hits) | 167.834 ms (128 hits) | 3,601.184 ms (128 hits) |
+| `raw_spin_lock` | 26.242 ms (2,321 hits) | 154.834 ms (2,321 hits) | 3,583.117 ms (2,321 hits) |
+
+Earlier local runs showed a `sched_clock` mismatch (`syntext` 818 vs default `rg` 817) caused by indexing `scripts/dtc/include-prefixes/arm/rockchip/rk3xxx.dtsi:84` through the symlinked directory `scripts/dtc/include-prefixes/arm -> ../../../arch/arm/boot/dts`. The current branch now skips directory symlinks during repository enumeration, so `sched_clock` has returned to default-`rg` count parity on the same Linux corpus (`817` vs `817`).

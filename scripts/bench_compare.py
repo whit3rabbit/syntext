@@ -236,10 +236,9 @@ def syntext_search_cmd(
         str(repo_root),
         "--index-dir",
         str(index_dir),
-        "search",
     ]
     if query.mode == "literal":
-        cmd.append("--literal")
+        cmd.append("-F")
     cmd.append(query.pattern)
     return cmd
 

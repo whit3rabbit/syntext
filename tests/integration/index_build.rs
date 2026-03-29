@@ -287,7 +287,7 @@ fn search_exclude_type_omits_matching_extension() {
 
 #[cfg(unix)]
 #[test]
-fn build_indexes_files_under_symlinked_directory_path() {
+fn build_skips_files_under_symlinked_directory_path() {
     use std::os::unix::fs::symlink;
 
     let repo = TempDir::new().unwrap();
@@ -310,8 +310,8 @@ fn build_indexes_files_under_symlinked_directory_path() {
     assert!(
         results
             .iter()
-            .any(|m| m.path.to_string_lossy() == "alias/nested.rs"),
-        "symlinked directory contents should be searchable through the symlink path"
+            .all(|m| m.path.to_string_lossy() != "alias/nested.rs"),
+        "directory symlink contents must not be indexed through the alias path"
     );
 }
 

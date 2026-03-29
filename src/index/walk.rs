@@ -8,12 +8,6 @@ use ignore::WalkBuilder;
 
 use crate::{Config, IndexError};
 
-/// Maximum number of distinct symlinked directories resolved during a single
-/// `enumerate_files` call. Each symlinked directory spawns a nested sub-walk;
-/// an unbounded number of distinct symlinks to distinct directories could
-/// stall indexing indefinitely. This cap prevents that.
-pub(crate) const MAX_SYMLINK_WALKERS: usize = 256;
-
 /// A record of a scanned file pending indexing: `(absolute_path, relative_path, size_bytes)`.
 pub type FileRecord = (PathBuf, PathBuf, u64);
 
@@ -92,14 +86,18 @@ fn push_file_record(
 
 /// Resolve a symlink entry and add it to the file list if it points inside the repo.
 ///
+/// Directory symlinks are skipped. This keeps the default indexed corpus aligned
+/// with default `rg`, which does not recurse through symlinked directories unless
+/// `-L/--follow` is requested.
+///
 /// Security audit (symlink escape): three-layer defense prevents indexing files
 /// outside the repository root:
 ///   1. `canonicalize(target)` resolves the full chain, then `starts_with(canonical_root)`
 ///      rejects targets outside the repo.
 ///   2. Post-canonicalize TOCTOU guard: `symlink_metadata(canonical_target)` re-stats
 ///      the resolved path and rejects it if it is itself a symlink (concurrent swap).
-///   3. `seen_canonical` deduplication prevents N symlinks to the same directory from
-///      producing N sub-walks, bounding traversal cost.
+///   3. `seen_canonical` deduplication prevents N symlinks to the same file target from
+///      producing duplicate file records.
 ///
 /// Multi-hop symlink chains are rejected at step 1 (the initial `symlink_metadata`
 /// check rejects targets that are themselves symlinks, limiting to one level of
@@ -150,7 +148,7 @@ fn collect_symlink_entry(
         return;
     }
 
-    // Without this, N symlinks to the same directory produce N full sub-walks.
+    // Without this, N symlinks to the same file target produce duplicate records.
     if seen_canonical.contains(&canonical_target) {
         return;
     }
@@ -165,47 +163,6 @@ fn collect_symlink_entry(
             files,
         );
         return;
-    }
-
-    if !canonical_meta.is_dir() {
-        return;
-    }
-
-    // Cap the number of distinct directory sub-walks to prevent pathological
-    // repos with many symlinks from stalling indexing indefinitely.
-    if seen_canonical.len() >= MAX_SYMLINK_WALKERS {
-        return;
-    }
-    seen_canonical.insert(canonical_target.clone());
-    let nested = WalkBuilder::new(&canonical_target)
-        .hidden(false)
-        .git_ignore(true)
-        .follow_links(false)
-        .build();
-
-    for result in nested {
-        let entry = match result {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_file() {
-            continue;
-        }
-
-        let Ok(suffix) = entry.path().strip_prefix(&canonical_target) else {
-            continue;
-        };
-        let display_path = symlink_path.join(suffix);
-        push_file_record(
-            entry.path().to_path_buf(),
-            &display_path,
-            repo_root,
-            max_file_size,
-            files,
-        );
     }
 }
 
@@ -249,19 +206,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn enumerate_files_deduplicates_multiple_symlinks_to_same_dir() {
+    fn enumerate_files_skips_symlinked_directories() {
         use std::os::unix::fs::symlink;
 
         let repo = TempDir::new().unwrap();
         let real_dir = repo.path().join("real");
         fs::create_dir_all(&real_dir).unwrap();
-        for i in 0..5u8 {
-            fs::write(real_dir.join(format!("file{i}.rs")), b"fn f() {}").unwrap();
-        }
-        // 10 symlinks all pointing at the same 5-file directory
-        for i in 0..10u8 {
-            symlink(&real_dir, repo.path().join(format!("alias{i}"))).unwrap();
-        }
+        fs::write(real_dir.join("nested.rs"), b"fn linked() {}\n").unwrap();
+        symlink(&real_dir, repo.path().join("alias")).unwrap();
 
         let config = Config {
             repo_root: repo.path().to_path_buf(),
@@ -269,37 +221,10 @@ mod tests {
         };
 
         let files = enumerate_files(&config).unwrap();
-        // Without dedup we'd get 5 + 10*5 = 55; with dedup exactly 10.
         assert_eq!(
-            files.len(),
-            10,
-            "5 real + 5 via alias0, got {}",
-            files.len()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn enumerate_files_follows_symlinked_directory_one_level() {
-        use std::os::unix::fs::symlink;
-
-        let repo = TempDir::new().unwrap();
-        let nested_dir = repo.path().join("real");
-        fs::create_dir_all(&nested_dir).unwrap();
-        fs::write(nested_dir.join("nested.rs"), b"fn linked() {}\n").unwrap();
-        symlink(&nested_dir, repo.path().join("alias")).unwrap();
-
-        let config = Config {
-            repo_root: repo.path().to_path_buf(),
-            ..Config::default()
-        };
-
-        let files = enumerate_files(&config).unwrap();
-        assert!(
-            files
-                .iter()
-                .any(|(_, rel, _)| rel == &PathBuf::from("alias/nested.rs")),
-            "symlinked directory contents should be indexed via the symlink path"
+            files.iter().map(|(_, rel, _)| rel).collect::<Vec<_>>(),
+            vec![&PathBuf::from("real/nested.rs")],
+            "directory symlink contents must not be indexed through alias paths"
         );
     }
 
@@ -370,16 +295,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn enumerate_files_caps_symlink_walkers() {
+    fn enumerate_files_deduplicates_multiple_symlinks_to_same_file() {
         use std::os::unix::fs::symlink;
 
         let repo = TempDir::new().unwrap();
-        let n = super::MAX_SYMLINK_WALKERS + 5;
-        for i in 0..n {
-            let dir = repo.path().join(format!("real_dir_{i}"));
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("f.rs"), b"fn f() {}").unwrap();
-            symlink(&dir, repo.path().join(format!("link_{i}"))).unwrap();
+        let real = repo.path().join("real.rs");
+        fs::write(&real, b"fn visible() {}\n").unwrap();
+        for i in 0..10u8 {
+            symlink(&real, repo.path().join(format!("alias{i}.rs"))).unwrap();
         }
 
         let config = Config {
@@ -388,14 +311,14 @@ mod tests {
         };
 
         let files = enumerate_files(&config).unwrap();
-        let symlinked: Vec<_> = files
+        let symlinked_files: Vec<_> = files
             .iter()
-            .filter(|(_, rel, _)| rel.to_str().unwrap_or("").starts_with("link_"))
+            .filter(|(_, rel, _)| rel.to_str().unwrap_or("").starts_with("alias"))
             .collect();
         assert!(
-            symlinked.len() <= super::MAX_SYMLINK_WALKERS,
-            "must not process more than MAX_SYMLINK_WALKERS symlinked dirs, got {}",
-            symlinked.len()
+            symlinked_files.len() <= 1,
+            "multiple symlinks to the same file target must not create duplicates, got {}",
+            symlinked_files.len()
         );
     }
 }
