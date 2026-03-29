@@ -90,6 +90,9 @@ jobs:
           VER="${VERSION#v}"
           mkdir -p dist
           cp "target/${TARGET}/release/st" "dist/st-${VER}-${SUFFIX}"
+          # zip for Homebrew cask; archive must contain a file named "st" so brew links it correctly
+          cp "target/${TARGET}/release/st" dist/st
+          cd dist && zip "st-${VER}-${SUFFIX}.zip" st && rm st
 
       - uses: actions/upload-artifact@v4
         with:
@@ -132,3 +135,72 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish
+
+  update-homebrew-cask:
+    name: Update Homebrew Cask
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set version
+        id: ver
+        run: echo "VER=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64
+          path: zips/arm64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-x86_64
+          path: zips/x86_64/
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          VER="${{ steps.ver.outputs.VER }}"
+          ARM_SHA=$(sha256sum "zips/arm64/st-${VER}-macos-arm64.zip" | awk '{print $1}')
+          X86_SHA=$(sha256sum "zips/x86_64/st-${VER}-macos-x86_64.zip" | awk '{print $1}')
+          echo "arm=${ARM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "x86=${X86_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          repository: whit3rabbit/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Generate cask
+        env:
+          VER: ${{ steps.ver.outputs.VER }}
+          ARM: ${{ steps.sha.outputs.arm }}
+          X86: ${{ steps.sha.outputs.x86 }}
+        run: |
+          mkdir -p homebrew-tap/Casks
+          cat > homebrew-tap/Casks/syntext.rb <<'CASK'
+          cask "syntext" do
+            arch arm: "arm64", intel: "x86_64"
+
+            version "VER_PLACEHOLDER"
+            sha256 arm:   "ARM_PLACEHOLDER",
+                   intel: "X86_PLACEHOLDER"
+
+            url "https://github.com/whit3rabbit/syntext/releases/download/v#{version}/st-#{version}-macos-#{arch}.zip"
+            name "syntext"
+            desc "Hybrid code search index for agent workflows"
+            homepage "https://github.com/whit3rabbit/syntext"
+
+            binary "st"
+          end
+          CASK
+          sed -i "s/VER_PLACEHOLDER/${VER}/g; s/ARM_PLACEHOLDER/${ARM}/g; s/X86_PLACEHOLDER/${X86}/g" homebrew-tap/Casks/syntext.rb
+
+      - name: Commit and push cask
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/syntext.rb
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "Update syntext cask to ${{ steps.ver.outputs.VER }}"
+          git push origin main

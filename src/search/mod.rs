@@ -457,6 +457,39 @@ mod tests {
     }
 
     #[test]
+    fn posting_bitmap_cache_clears_when_cap_is_exceeded() {
+        use roaring::RoaringBitmap;
+
+        let index_dir = TempDir::new().unwrap();
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/corpus"),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let snap = index.snapshot();
+
+        for gram_hash in 0..crate::index::snapshot::POSTING_BITMAP_CACHE_MAX_ENTRIES as u64 {
+            let bitmap = Arc::new(RoaringBitmap::from_iter([gram_hash as u32]));
+            snap.store_posting_bitmap(gram_hash, bitmap);
+        }
+        assert_eq!(
+            snap.posting_bitmap_cache_len(),
+            crate::index::snapshot::POSTING_BITMAP_CACHE_MAX_ENTRIES
+        );
+
+        let overflow_gram = crate::index::snapshot::POSTING_BITMAP_CACHE_MAX_ENTRIES as u64;
+        let overflow_bitmap = Arc::new(RoaringBitmap::from_iter([overflow_gram as u32]));
+        snap.store_posting_bitmap(overflow_gram, Arc::clone(&overflow_bitmap));
+
+        assert_eq!(snap.posting_bitmap_cache_len(), 1);
+        let cached = snap
+            .cached_posting_bitmap(overflow_gram)
+            .expect("overflow insert should remain cached");
+        assert!(Arc::ptr_eq(&cached, &overflow_bitmap));
+    }
+
+    #[test]
     fn should_use_index_very_selective_term() {
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();

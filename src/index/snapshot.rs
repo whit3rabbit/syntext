@@ -16,6 +16,13 @@ use crate::index::overlay::OverlayView;
 use crate::index::segment::MmapSegment;
 use crate::path::PathIndex;
 
+/// Hard cap for cached merged posting bitmaps per snapshot.
+///
+/// When the cache reaches this size and a new gram is inserted, we clear the
+/// whole cache and keep only the newest entry. This is intentionally coarse:
+/// it bounds memory without adding LRU bookkeeping to the search hot path.
+pub(crate) const POSTING_BITMAP_CACHE_MAX_ENTRIES: usize = 1024;
+
 /// Shared base segments (Arc-shared across snapshot swaps).
 pub struct BaseSegments {
     /// The memory mapped segments.
@@ -102,6 +109,9 @@ impl IndexSnapshot {
             .posting_bitmap_cache()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !cache.contains_key(&gram_hash) && cache.len() >= POSTING_BITMAP_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
         cache
             .entry(gram_hash)
             .or_insert_with(|| Arc::clone(&bitmap))

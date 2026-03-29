@@ -86,7 +86,7 @@ pub struct SearchMatch {
     pub line_number: u32,
     /// Full bytes of the matching line (without trailing newline).
     pub line_content: Vec<u8>,
-    /// Byte offset of the start of the first match on the line.
+    /// Absolute byte offset of the start of the first match within the file.
     pub byte_offset: u64,
     /// Byte offset of the first match within `line_content`.
     pub submatch_start: usize,

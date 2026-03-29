@@ -1,8 +1,11 @@
 //! Management subcommand handlers: index, status, update.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io::{self, Write};
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 use crate::index::Index;
 use crate::Config;
@@ -49,13 +52,12 @@ fn resolve_git_binary() -> PathBuf {
 /// parent-directory component (`..`). Git always emits repo-relative
 /// paths; anything else is unexpected and potentially hostile.
 #[cfg(unix)]
-fn is_safe_git_path(line: &str) -> bool {
-    if line.is_empty() {
+fn is_safe_git_path(path: &Path) -> bool {
+    if path.as_os_str().is_empty() {
         return false;
     }
-    let p = std::path::Path::new(line);
     use std::path::Component;
-    for component in p.components() {
+    for component in path.components() {
         match component {
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
             _ => {}
@@ -155,7 +157,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // string literals. The only injection surface would be `--repo-root`, which
     // is documented as trusted input.
     let git = resolve_git_binary();
-    let mut changed: HashSet<String> = HashSet::new();
+    let mut changed: HashSet<PathBuf> = HashSet::new();
 
     // Security: canonicalize repo_root before passing it to `git -C`.
     //
@@ -189,12 +191,11 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // contain literal newline bytes. Splitting on '\n' would produce two tokens
     // from such a name, treating the spurious second token as a changed path
     // and yielding exit code 1 on every update, masking real errors.
-    let parse_nul_paths = |bytes: &[u8]| -> Vec<String> {
+    let parse_nul_paths = |bytes: &[u8]| -> Vec<PathBuf> {
         bytes
             .split(|&b| b == 0)
-            .filter_map(|s| std::str::from_utf8(s).ok())
-            .filter(|s| is_safe_git_path(s))
-            .map(String::from)
+            .map(|s| PathBuf::from(OsStr::from_bytes(s)))
+            .filter(|path| is_safe_git_path(path))
             .collect()
     };
 
@@ -254,14 +255,14 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
         let abs = config.repo_root.join(path);
         if abs.exists() {
             if let Err(e) = index.notify_change(&abs) {
-                eprintln!("st update: {path}: {e}");
+                eprintln!("st update: {}: {e}", path.display());
                 notify_errors += 1;
             } else {
                 count += 1;
             }
         } else {
             if let Err(e) = index.notify_delete(&abs) {
-                eprintln!("st update: {path}: {e}");
+                eprintln!("st update: {}: {e}", path.display());
                 notify_errors += 1;
             } else {
                 count += 1;
@@ -300,6 +301,13 @@ fn handle_output(err: io::Error) -> i32 {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    use std::ffi::OsStr;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+    #[cfg(unix)]
+    use std::path::{Path, PathBuf};
+
+    #[cfg(unix)]
     use super::is_safe_git_path;
     use super::resolve_git_binary;
 
@@ -316,12 +324,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn is_safe_git_path_rejects_traversal_and_absolute() {
-        assert!(!is_safe_git_path("../../etc/passwd"));
-        assert!(!is_safe_git_path("/etc/passwd"));
-        assert!(!is_safe_git_path("src/../../../etc/passwd"));
-        assert!(!is_safe_git_path(""));
-        assert!(is_safe_git_path("src/main.rs"));
-        assert!(is_safe_git_path("foo/bar/baz.rs"));
-        assert!(is_safe_git_path("Cargo.toml"));
+        assert!(!is_safe_git_path(Path::new("../../etc/passwd")));
+        assert!(!is_safe_git_path(Path::new("/etc/passwd")));
+        assert!(!is_safe_git_path(Path::new("src/../../../etc/passwd")));
+        assert!(!is_safe_git_path(Path::new("")));
+        assert!(is_safe_git_path(Path::new("src/main.rs")));
+        assert!(is_safe_git_path(Path::new("foo/bar/baz.rs")));
+        assert!(is_safe_git_path(Path::new("Cargo.toml")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_safe_git_path_accepts_non_utf8_relative_paths() {
+        let path = PathBuf::from(OsStr::from_bytes(b"src/\xff.rs"));
+        assert!(is_safe_git_path(&path));
     }
 }

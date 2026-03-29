@@ -9,6 +9,34 @@ A hybrid code search index for agent workflows, built in Rust. Indexes repositor
 
 **Status: stable (v1.0).** See [Project status](#project-status) below.
 
+## Installation
+
+### macOS (Homebrew)
+
+```bash
+brew tap whit3rabbit/tap
+brew install --cask syntext
+```
+
+### Linux
+
+Download the latest `.deb` or raw binary from the [releases page](https://github.com/whit3rabbit/syntext/releases).
+
+```bash
+# Debian/Ubuntu
+sudo dpkg -i syntext_<version>_amd64.deb
+
+# Any Linux (x86_64)
+curl -L https://github.com/whit3rabbit/syntext/releases/latest/download/st-<version>-linux-amd64 -o st
+chmod +x st && sudo mv st /usr/local/bin/
+```
+
+### From source
+
+```bash
+cargo install syntext
+```
+
 ## Why this exists
 
 AI coding agents call grep dozens of times per task. On large monorepos, each `rg` invocation touches every file. Those calls compound into significant stalled agent time per coding session.
@@ -19,8 +47,7 @@ syntext builds a content index so queries only touch candidate files, not all fi
 
 Real-world benchmark runs are tracked in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The table below is
-the current snapshot of preset-backed external runs from the local
-`/Users/whit3rabbit/Documents/GitHub/_ripline-bench` corpus using the shared harness
+the current snapshot of preset-backed external runs using the shared harness
 `scripts/bench_compare.py`.
 
 ### Search latency
@@ -72,16 +99,14 @@ Method:
 - Times below are single-shot preset runs on macOS unless noted otherwise.
 - `syntext` search time excludes index build time. Build time is shown separately.
 - Linux uses the cheaper shared large-corpus mode (`syntext` + `rg`) because the
-  full `syntext` vs `rg` vs `grep` run is too expensive on this machine.
+  full three-tool run is too expensive on the benchmark machine.
 
 Notes:
 
 - Latency grows ~log-linearly for scan tools as repo size increases, while syntext remains effectively constant due to indexing.
 - The exact-count validated preset terms are documented in
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-- This refreshed matrix covers the local `_ripline-bench` corpus currently on
-  the machine: React, Rust, TypeScript, Node.js, and Linux. Zed was not rerun
-  because it is not present in that local corpus directory.
+- This refreshed matrix covers React, Rust, TypeScript, Node.js, and Linux.
 - Linux now matches default `rg` counts on all three preset queries after the
   directory-symlink fixes in both full builds and incremental updates.
 - Substring-heavy terms such as `ReactElement`, `useEffect`, and `TyCtxt` are

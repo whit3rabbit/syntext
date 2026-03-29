@@ -46,7 +46,7 @@
   _Resolved_: SC-002 now specifies: same hardware as SC-001; rayon default thread pool (all cores); measured from Index::build() call to return; single worst-case measurement.
 
 - [x] CHK011 — Is "identical to ripgrep" (SC-004) scoped to a specific ripgrep version and flag set? Without pinning, the baseline can shift. [Clarity, Spec §SC-004]
-  _Resolved_: SC-004 specifies ripgrep 14.x; test suite pins version via `rg --version` assertion in correctness.rs and fails on mismatch.
+  _Resolved_: SC-004 specifies ripgrep 15.1.0; test suite pins version via `rg --version` assertion in correctness.rs and fails on mismatch.
 
 - [x] CHK012 — Does SC-004 apply to case-sensitive queries only, or also case-insensitive? Given lowercase normalization at index time, case-insensitive parity requires clarification. [Clarity, Spec §SC-004]
   _Resolved_: SC-004 explicitly applies to case-sensitive queries (zero false negatives). For case-insensitive queries, results must be a superset (no false negatives); false positives from lowercase normalization are eliminated by the verifier.
@@ -169,7 +169,7 @@
 ## Dependencies & Assumptions
 
 - [x] CHK044 — Is the assumption that ripgrep is available for correctness testing pinned to a minimum version? [Assumption, Spec §Assumptions]
-  _Resolved_: Assumptions and SC-004 specify ripgrep 14.x. Test suite asserts version at runtime.
+  _Resolved_: Assumptions and SC-004 specify ripgrep 15.1.0. Test suite asserts version at runtime.
 
 - [x] CHK045 — Is the assumption "Git is available on the host" covered by a fallback requirement if git is absent? [Assumption, Spec §Assumptions]
   _Resolved_: Assumptions updated: `st update` requires git; if absent, returns error. `st index` and `st search` function without git.
