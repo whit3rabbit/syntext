@@ -22,6 +22,20 @@ use crate::{Config, IndexError};
 /// Target batch size (content bytes) before flushing a segment.
 pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
+pub(super) fn compact_batch_size_for(config: &Config) -> Result<u64, IndexError> {
+    let total_bytes: u64 = enumerate_files(config)?
+        .iter()
+        .map(|(_, _, size)| *size)
+        .sum();
+    if total_bytes == 0 {
+        return Ok(BATCH_SIZE_BYTES);
+    }
+
+    let target_segments = u64::try_from(config.max_segments.max(1)).unwrap_or(u64::MAX);
+    let target = total_bytes.saturating_add(target_segments - 1) / target_segments;
+    Ok(target.max(BATCH_SIZE_BYTES).max(1))
+}
+
 /// Measure the crossover fraction where index lookup becomes cheaper than a
 /// full scan for this repository.
 ///
@@ -106,6 +120,13 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
 /// Full-corpus index build. Called by `Index::build()`; returns a ready-to-use
 /// `Index` by delegating to `Index::open()` after writing all segments.
 pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
+    build_index_with_batch_size(config, BATCH_SIZE_BYTES)
+}
+
+pub(super) fn build_index_with_batch_size(
+    config: Config,
+    batch_size_bytes: u64,
+) -> Result<super::Index, IndexError> {
     fs::create_dir_all(&config.index_dir)?;
     // Security: restrict the index directory to owner-only access. A group- or
     // world-writable index directory allows an unprivileged process to replace
@@ -150,7 +171,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     }
 
     // Split into ~256MB batches and process each.
-    let batches = split_batches(&file_list, BATCH_SIZE_BYTES);
+    let batches = split_batches(&file_list, batch_size_bytes.max(1));
     let mut seg_refs: Vec<SegmentRef> = Vec::new();
     let mut indexed_paths: Vec<PathBuf> = Vec::new();
     let mut next_doc_id: u32 = 0;
@@ -248,6 +269,7 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     }
     // Write manifest.
     let mut manifest = Manifest::new(seg_refs, total_indexed);
+    manifest.base_commit = super::current_repo_head(&config.repo_root)?;
     manifest.scan_threshold_fraction = Some(scan_threshold);
     manifest.save(&config.index_dir)?;
     // Post-build GC: delete segments from the previous build that are no

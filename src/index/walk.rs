@@ -94,6 +94,7 @@ fn push_file_record(
 ///      the resolved path and rejects it if it is itself a symlink (concurrent swap).
 ///   3. `seen_canonical` deduplication prevents N symlinks to the same directory from
 ///      producing N sub-walks, bounding traversal cost.
+///
 /// Multi-hop symlink chains are rejected at step 1 (the initial `symlink_metadata`
 /// check rejects targets that are themselves symlinks, limiting to one level of
 /// indirection). Tests: `enumerate_files_skips_symlink_outside_repo`,

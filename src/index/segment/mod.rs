@@ -458,20 +458,18 @@ mod tests {
         assert!(dir.path().join(&meta.dict_filename).exists());
         assert!(dir.path().join(&meta.post_filename).exists());
 
-        // get_doc reads from the doc table in the .dict file; open() accepts v3.
         let dict_path = dir.path().join(&meta.dict_filename);
-        let seg = MmapSegment::open(&dict_path).unwrap();
+        let post_path = dir.path().join(&meta.post_filename);
+        let seg = MmapSegment::open_split(&dict_path, &post_path).unwrap();
         assert_eq!(seg.doc_count, 2);
 
         let d0 = seg.get_doc(0).unwrap();
         assert_eq!(d0.path, Path::new("src/main.rs"));
         assert_eq!(d0.content_hash, 0xDEAD);
 
-        // TODO(Task 4): re-enable lookup_gram assertions after open_split is implemented.
-        // lookup_gram uses offsets relative to the .post file, not the .dict file.
-        // let pl = seg.lookup_gram(0xAAAA).unwrap();
-        // let ids = pl.to_vec().unwrap();
-        // assert_eq!(ids, vec![0, 1]);
+        let pl = seg.lookup_gram(0xAAAA).unwrap();
+        let ids = pl.to_vec().unwrap();
+        assert_eq!(ids, vec![0, 1]);
     }
 
     #[test]
@@ -489,10 +487,10 @@ mod tests {
         assert!(dir.path().join(&meta.dict_filename).exists());
         assert!(dir.path().join(&meta.post_filename).exists());
 
-        // TODO(Task 4): re-enable lookup_gram assertions after open_split is implemented.
-        // let dict_path = dir.path().join(&meta.dict_filename);
-        // let seg = MmapSegment::open(&dict_path).unwrap();
-        // assert_eq!(seg.gram_cardinality(0xAAAA), Some(2));
+        let dict_path = dir.path().join(&meta.dict_filename);
+        let post_path = dir.path().join(&meta.post_filename);
+        let seg = MmapSegment::open_split(&dict_path, &post_path).unwrap();
+        assert_eq!(seg.gram_cardinality(0xAAAA), Some(2));
     }
 
     #[test]

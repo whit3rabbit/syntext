@@ -33,6 +33,7 @@ use crate::{Config, IndexError, SearchMatch, SearchOptions};
 ///      invalid syntax before the main `RegexBuilder` sees the pattern.
 ///   2. `RegexBuilder::size_limit` + `dfa_size_limit` (set here) cap the NFA/DFA
 ///      automaton size at compilation time, bounding both memory and CPU.
+///
 /// Together these prevent catastrophic backtracking and unbounded automaton growth
 /// from adversarial patterns. The `regex` crate's RE2-style engine guarantees
 /// linear-time matching once compiled, so matching itself is not a ReDoS vector.

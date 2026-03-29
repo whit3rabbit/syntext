@@ -22,6 +22,7 @@ pub use walk::is_binary;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path};
+use std::process::Command;
 use std::sync::Arc;
 
 use fs2::FileExt;
@@ -48,6 +49,44 @@ const MAX_TOTAL_DOCS: u32 = 50_000_000;
 
 /// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
 const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
+
+fn resolve_git_binary() -> std::path::PathBuf {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("git");
+            if candidate.is_file() {
+                if let Ok(resolved) = candidate.canonicalize() {
+                    return resolved;
+                }
+            }
+        }
+    }
+    std::path::PathBuf::from("/usr/bin/git")
+}
+
+fn current_repo_head(repo_root: &Path) -> Result<Option<String>, IndexError> {
+    let canonical_root = std::fs::canonicalize(repo_root)?;
+    let output = match Command::new(resolve_git_binary())
+        .arg("-C")
+        .arg(&canonical_root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(None),
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if head.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(head))
+    }
+}
 
 fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
     let write_lock_path = index_dir.join("write.lock");
@@ -94,6 +133,37 @@ pub struct Index {
 }
 
 impl Index {
+    fn install_rebuilt_index(&self, rebuilt: &Index) -> Result<IndexStats, IndexError> {
+        self.snapshot.store(rebuilt.snapshot());
+        self.pending.reset();
+        #[cfg(feature = "symbols")]
+        if let Some(symbol_index) = &self.symbol_index {
+            symbol_index.reopen(&self.config.index_dir.join("symbols.db"))?;
+        }
+        Ok(self.stats())
+    }
+
+    fn rebuild_with(
+        &self,
+        build_fn: impl FnOnce(Config) -> Result<Index, IndexError>,
+    ) -> Result<IndexStats, IndexError> {
+        self._dir_lock.unlock()?;
+        let rebuilt = match build_fn(self.config.clone()) {
+            Ok(rebuilt) => rebuilt,
+            Err(err) => {
+                self._dir_lock
+                    .try_lock_shared()
+                    .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+                return Err(err);
+            }
+        };
+        self._dir_lock
+            .try_lock_shared()
+            .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+
+        self.install_rebuilt_index(&rebuilt)
+    }
+
     fn repo_relative_path(&self, path: &Path) -> Result<std::path::PathBuf, IndexError> {
         let rel = path
             .strip_prefix(&self.config.repo_root)
@@ -325,7 +395,11 @@ impl Index {
     /// Return index statistics from the current snapshot.
     pub fn stats(&self) -> IndexStats {
         let snap = self.snapshot.load();
-        stats::compute_stats(snap.as_ref(), &self.config)
+        stats::compute_stats(
+            snap.as_ref(),
+            &self.config,
+            self.pending.uncommitted_count(),
+        )
     }
 
     /// Search for a pattern (literal or regex) across the indexed repository.
@@ -547,12 +621,97 @@ impl Index {
         self.notify_change(path)?;
         self.commit_batch()
     }
+
+    /// Trigger compaction when the current snapshot exceeds simple thresholds.
+    ///
+    /// Returns `true` when a blocking compaction rebuild ran.
+    pub fn maybe_compact(&self) -> Result<bool, IndexError> {
+        if self.pending.has_uncommitted() {
+            self.commit_batch()?;
+        }
+
+        let snap = self.snapshot.load();
+        let base_docs: usize = snap.base_segments().iter().map(|s| s.doc_count as usize).sum();
+        let overlay_docs = snap.overlay.docs.len();
+        let overlay_ratio_exceeded = if base_docs == 0 {
+            overlay_docs > 0
+        } else {
+            overlay_docs as f64 / base_docs as f64 > 0.10
+        };
+        let segment_limit_exceeded = snap.base.segments.len() > self.config.max_segments.max(1);
+        drop(snap);
+
+        if !overlay_ratio_exceeded && !segment_limit_exceeded {
+            return Ok(false);
+        }
+
+        self.compact()?;
+        Ok(true)
+    }
+
+    /// Blocking compaction path.
+    ///
+    /// The current implementation rebuilds the index from the working tree with
+    /// a larger target batch size so the resulting base segment count is driven
+    /// back down toward `config.max_segments`.
+    pub fn compact(&self) -> Result<(), IndexError> {
+        if self.pending.has_uncommitted() {
+            self.commit_batch()?;
+        }
+
+        let batch_size = build::compact_batch_size_for(&self.config)?;
+        self.rebuild_with(|config| build::build_index_with_batch_size(config, batch_size))?;
+        Ok(())
+    }
+
+    pub fn rebuild_if_stale(&self) -> Result<Option<IndexStats>, IndexError> {
+        if self.pending.has_uncommitted() {
+            self.commit_batch()?;
+        }
+
+        let manifest = Manifest::load(&self.config.index_dir)?;
+        let current_head = current_repo_head(&self.config.repo_root)?;
+        if manifest.base_commit == current_head {
+            return Ok(None);
+        }
+
+        self.rebuild_with(build::build_index).map(Some)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn git(args: &[&str], repo: &std::path::Path) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {:?} failed", args);
+    }
+
+    fn init_git_repo(repo: &std::path::Path) {
+        git(&["init"], repo);
+        git(&["config", "user.name", "Syntext Tests"], repo);
+        git(&["config", "user.email", "syntext@example.com"], repo);
+    }
+
+    fn commit_all(repo: &std::path::Path, message: &str) -> String {
+        git(&["add", "."], repo);
+        git(&["commit", "-m", message], repo);
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git rev-parse HEAD failed");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
 
     #[test]
     fn build_produces_calibrated_threshold_in_valid_range() {
@@ -843,7 +1002,6 @@ mod tests {
         let index_dir = TempDir::new().unwrap();
         std::fs::write(repo.path().join("lib.rs"), b"fn f() {}").unwrap();
 
-        // Build the index first (build sets 0700 internally).
         let config = Config {
             index_dir: index_dir.path().to_path_buf(),
             repo_root: repo.path().to_path_buf(),
@@ -851,7 +1009,6 @@ mod tests {
         };
         Index::build(config).unwrap();
 
-        // Widen permissions to simulate a pre-existing permissive directory.
         std::fs::set_permissions(
             index_dir.path(),
             std::fs::Permissions::from_mode(0o755),
@@ -889,6 +1046,27 @@ mod tests {
         assert!(snap.base_segments().iter().map(|s| s.doc_count).sum::<u32>() > 0);
     }
 
+    #[test]
+    fn maintenance_apis_are_noops_when_no_work_is_needed() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        std::fs::write(repo.path().join("main.rs"), b"fn main() {}\n").unwrap();
+        init_git_repo(repo.path());
+        commit_all(repo.path(), "initial");
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        assert!(!index.maybe_compact().unwrap());
+        index.compact().unwrap();
+        assert!(index.rebuild_if_stale().unwrap().is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn open_allows_permissive_mode_when_strict_permissions_disabled() {
@@ -923,5 +1101,156 @@ mod tests {
             "open() must succeed when strict_permissions is false, got: {}",
             result.err().map(|e| e.to_string()).unwrap_or_default()
         );
+    }
+
+    #[test]
+    fn compact_reduces_segment_count_to_config_limit() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..6 {
+            std::fs::write(
+                repo.path().join(format!("file_{i}.rs")),
+                format!("fn marker_{i}() {{ println!(\"{i}\"); }}\n"),
+            )
+            .unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            max_segments: 2,
+            ..Config::default()
+        };
+        let index = build::build_index_with_batch_size(config, 1).unwrap();
+        assert!(
+            index.stats().total_segments > 2,
+            "test fixture must start fragmented"
+        );
+
+        index.compact().unwrap();
+
+        let stats = index.stats();
+        assert!(
+            stats.total_segments <= 2,
+            "compact() must reduce segment count to config.max_segments, got {}",
+            stats.total_segments
+        );
+        assert!(
+            index
+                .search("marker_5", &SearchOptions::default())
+                .unwrap()
+                .iter()
+                .any(|m| m.path == std::path::Path::new("file_5.rs")),
+            "search results must survive compaction"
+        );
+        assert_eq!(index.snapshot().overlay.docs.len(), 0);
+    }
+
+    #[test]
+    fn maybe_compact_rebuilds_when_overlay_ratio_exceeds_threshold() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        init_git_repo(repo.path());
+        for i in 0..10 {
+            std::fs::write(
+                repo.path().join(format!("base_{i}.rs")),
+                format!("fn base_{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        commit_all(repo.path(), "initial");
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            max_segments: 10,
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        for i in 0..4 {
+            let path = repo.path().join(format!("base_{i}.rs"));
+            std::fs::write(&path, format!("fn updated_{i}() {{}}\n")).unwrap();
+            index.notify_change(&path).unwrap();
+        }
+        index.commit_batch().unwrap();
+        assert_eq!(index.snapshot().overlay.docs.len(), 4);
+
+        let snap = index.snapshot();
+        let base_docs: usize = snap
+            .base_segments()
+            .iter()
+            .map(|s| s.doc_count as usize)
+            .sum();
+        let overlay_docs = snap.overlay.docs.len();
+        let total_segments = snap.base.segments.len();
+        drop(snap);
+
+        assert!(
+            index.maybe_compact().unwrap(),
+            "overlay ratio > 10% should compact (base_docs={base_docs}, overlay_docs={overlay_docs}, total_segments={total_segments})"
+        );
+        assert_eq!(
+            index.snapshot().overlay.docs.len(),
+            0,
+            "compaction must fold overlay docs back into the base index"
+        );
+        assert!(
+            index
+                .search("updated_1", &SearchOptions::default())
+                .unwrap()
+                .iter()
+                .any(|m| m.path == std::path::Path::new("base_1.rs")),
+            "compaction must preserve the updated working tree content"
+        );
+    }
+
+    #[test]
+    fn rebuild_if_stale_refreshes_snapshot_after_head_change() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        init_git_repo(repo.path());
+        let file = repo.path().join("main.rs");
+        std::fs::write(&file, b"fn old_name() {}\n").unwrap();
+        let first_head = commit_all(repo.path(), "first");
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        assert_eq!(
+            index.stats().base_commit.as_deref(),
+            Some(first_head.as_str())
+        );
+
+        std::fs::write(&file, b"fn new_name() {}\n").unwrap();
+        let second_head = commit_all(repo.path(), "second");
+
+        let stats = index
+            .rebuild_if_stale()
+            .unwrap()
+            .expect("HEAD changed, rebuild must run");
+        assert_eq!(stats.base_commit.as_deref(), Some(second_head.as_str()));
+        assert!(
+            index
+                .search("new_name", &SearchOptions::default())
+                .unwrap()
+                .iter()
+                .any(|m| m.path == std::path::Path::new("main.rs")),
+            "rebuilt snapshot must include the new committed content"
+        );
+        assert!(
+            index
+                .search("old_name", &SearchOptions::default())
+                .unwrap()
+                .is_empty(),
+            "rebuilt snapshot must stop returning content from the old HEAD"
+        );
+        assert_eq!(index.stats().pending_edits, 0);
     }
 }

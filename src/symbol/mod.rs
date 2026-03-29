@@ -19,29 +19,45 @@ pub struct SymbolIndex {
     conn: Mutex<Connection>,
 }
 
+fn initialize_schema(conn: &Connection) -> Result<(), IndexError> {
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         CREATE TABLE IF NOT EXISTS symbols (
+             id      INTEGER PRIMARY KEY,
+             name    TEXT NOT NULL,
+             kind    TEXT NOT NULL,
+             file_id INTEGER NOT NULL,
+             path    TEXT NOT NULL,
+             line    INTEGER NOT NULL,
+             col     INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(name);
+         CREATE INDEX IF NOT EXISTS idx_sym_kn      ON symbols(kind, name);
+         CREATE INDEX IF NOT EXISTS idx_sym_file_id ON symbols(file_id);",
+    )
+    .map_err(|e| IndexError::CorruptIndex(format!("symbol db schema: {e}")))
+}
+
 impl SymbolIndex {
     /// Open or create a symbol index at `db_path`.
     pub fn open(db_path: &Path) -> Result<Self, IndexError> {
         let conn = Connection::open(db_path)
             .map_err(|e| IndexError::CorruptIndex(format!("symbol db: {e}")))?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
-             CREATE TABLE IF NOT EXISTS symbols (
-                 id      INTEGER PRIMARY KEY,
-                 name    TEXT NOT NULL,
-                 kind    TEXT NOT NULL,
-                 file_id INTEGER NOT NULL,
-                 path    TEXT NOT NULL,
-                 line    INTEGER NOT NULL,
-                 col     INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(name);
-             CREATE INDEX IF NOT EXISTS idx_sym_kn      ON symbols(kind, name);
-             CREATE INDEX IF NOT EXISTS idx_sym_file_id ON symbols(file_id);",
-        )
-        .map_err(|e| IndexError::CorruptIndex(format!("symbol db schema: {e}")))?;
+        initialize_schema(&conn)?;
         Ok(SymbolIndex { conn: Mutex::new(conn) })
+    }
+
+    pub(crate) fn reopen(&self, db_path: &Path) -> Result<(), IndexError> {
+        let conn = Connection::open(db_path)
+            .map_err(|e| IndexError::CorruptIndex(format!("symbol db: {e}")))?;
+        initialize_schema(&conn)?;
+        let mut current = self
+            .conn
+            .lock()
+            .map_err(|_| IndexError::CorruptIndex("symbol db mutex poisoned".into()))?;
+        *current = conn;
+        Ok(())
     }
 
     /// Delete all symbols for the given file_ids (used before re-indexing).
