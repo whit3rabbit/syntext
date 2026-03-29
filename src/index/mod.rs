@@ -116,19 +116,20 @@ fn projected_overlay_doc_count(
         + visible_changed.len()
 }
 
-fn base_doc_id_limit(snapshot: &IndexSnapshot) -> u32 {
-    snapshot
-        .base_segments()
-        .iter()
-        .enumerate()
-        .filter_map(|(seg_idx, seg)| {
-            snapshot
-                .segment_base_ids()
-                .get(seg_idx)
-                .and_then(|base| base.checked_add(seg.doc_count))
-        })
-        .max()
-        .unwrap_or(0)
+fn base_doc_id_limit(snapshot: &IndexSnapshot) -> Result<u32, IndexError> {
+    let mut limit: u32 = 0;
+    for (seg_idx, seg) in snapshot.base_segments().iter().enumerate() {
+        if let Some(base) = snapshot.segment_base_ids().get(seg_idx) {
+            let end = base.checked_add(seg.doc_count).ok_or(IndexError::DocIdOverflow {
+                base_doc_count: *base,
+                overlay_docs: seg.doc_count as usize,
+            })?;
+            if end > limit {
+                limit = end;
+            }
+        }
+    }
+    Ok(limit)
 }
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
 pub struct Index {
@@ -515,7 +516,7 @@ impl Index {
 
         // Total base doc count for overlay doc_id assignment.
         let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
-        let base_doc_id_limit = base_doc_id_limit(&old_snap);
+        let base_doc_id_limit = base_doc_id_limit(&old_snap)?;
 
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
