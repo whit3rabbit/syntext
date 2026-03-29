@@ -8,6 +8,12 @@ use ignore::WalkBuilder;
 
 use crate::{Config, IndexError};
 
+/// Maximum number of distinct symlinked directories resolved during a single
+/// `enumerate_files` call. Each symlinked directory spawns a nested sub-walk;
+/// an unbounded number of distinct symlinks to distinct directories could
+/// stall indexing indefinitely. This cap prevents that.
+pub(crate) const MAX_SYMLINK_WALKERS: usize = 256;
+
 /// A record of a scanned file pending indexing: `(absolute_path, relative_path, size_bytes)`.
 pub type FileRecord = (PathBuf, PathBuf, u64);
 
@@ -165,6 +171,11 @@ fn collect_symlink_entry(
         return;
     }
 
+    // Cap the number of distinct directory sub-walks to prevent pathological
+    // repos with many symlinks from stalling indexing indefinitely.
+    if seen_canonical.len() >= MAX_SYMLINK_WALKERS {
+        return;
+    }
     seen_canonical.insert(canonical_target.clone());
     let nested = WalkBuilder::new(&canonical_target)
         .hidden(false)
@@ -354,6 +365,37 @@ mod tests {
         assert!(
             !files.iter().any(|(_, rel, _)| rel == "escape.rs"),
             "out-of-repo symlink targets must be skipped"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_files_caps_symlink_walkers() {
+        use std::os::unix::fs::symlink;
+
+        let repo = TempDir::new().unwrap();
+        let n = super::MAX_SYMLINK_WALKERS + 5;
+        for i in 0..n {
+            let dir = repo.path().join(format!("real_dir_{i}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("f.rs"), b"fn f() {}").unwrap();
+            symlink(&dir, repo.path().join(format!("link_{i}"))).unwrap();
+        }
+
+        let config = Config {
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let files = enumerate_files(&config).unwrap();
+        let symlinked: Vec<_> = files
+            .iter()
+            .filter(|(_, rel, _)| rel.to_str().unwrap_or("").starts_with("link_"))
+            .collect();
+        assert!(
+            symlinked.len() <= super::MAX_SYMLINK_WALKERS,
+            "must not process more than MAX_SYMLINK_WALKERS symlinked dirs, got {}",
+            symlinked.len()
         );
     }
 }
