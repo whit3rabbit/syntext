@@ -288,29 +288,32 @@ Criterion's stored local baselines also report statistically significant improve
 
 #### External repo spot checks
 
-These runs used the current local `react` and `linux` clones available on the benchmarking machine, not the older pinned corpus snapshots from the setup section. Treat them as present-day spot checks, not strict before/after regressions against earlier external tables.
+These runs used the current local `_ripline-bench` corpus available on the benchmarking machine, not the older pinned corpus snapshots from the setup section. Treat them as present-day spot checks, not strict before/after regressions against earlier external tables. The local corpus for this rerun contains `react`, `rust`, `typescript`, `node`, and `linux`; `zed` was not present and was not rerun.
 
-Build-only runs (`python3 scripts/bench_compare.py --repo ... --build-only --build-iterations 3 --json`):
+Preset-backed external matrix (`python3 scripts/bench_compare.py --repo ... --preset ... --json`):
 
 | Repo | Commit | Tracked files | Build median | Build min | Build max | Index bytes |
 |---|---|---|---|---|---|---|
-| `react` | `3cb2c42` | 6,840 | 399.999 ms | 394.152 ms | 754.734 ms | 6,553,661 |
-| `linux` | `46b513250-dirty` | 93,018 | 7,567.240 ms | 6,425.960 ms | 7,776.493 ms | 85,405,469 |
+| `react` | `3cb2c42` | 6,840 | 290.457 ms | 290.457 ms | 290.457 ms | 6,553,661 |
+| `rust` | `23903d01` | 58,698 | 2,202.514 ms | 2,202.514 ms | 2,202.514 ms | 13,865,683 |
+| `typescript` | `7881fe530` | 81,362 | 3,274.670 ms | 3,274.670 ms | 3,274.670 ms | 19,943,071 |
+| `node` | `53bcd114` | 47,364 | 2,964.754 ms | 2,964.754 ms | 2,964.754 ms | 79,016,816 |
+| `linux` | `46b513250-dirty` | 93,018 | 6,913.323 ms | 6,913.323 ms | 6,913.323 ms | 80,772,167 |
 
-Search spot checks (`python3 scripts/bench_compare.py --repo ... --preset ... --syntext-search-mode both --json`):
+Search results from the same matrix runs:
 
-React (`3cb2c42`), exact count parity across all tools:
+| Repo | Query | Count match | `syntext` | `rg` | `grep` |
+|---|---|---|---|---|---|
+| `react` | `useState` | yes (`2708`) | 24.909 ms | 103.728 ms | 275.523 ms |
+| `react` | `getDisplayNameForReactElement` | yes (`13`) | 13.376 ms | 101.945 ms | 314.732 ms |
+| `rust` | `rustc_middle` | yes (`3757`) | 95.822 ms | 1,781.763 ms | 2,393.570 ms |
+| `rust` | `mir::Body` | yes (`141`) | 90.010 ms | 2,007.275 ms | 2,214.030 ms |
+| `typescript` | `TransformationContext` | yes (`142`) | 101.403 ms | 2,940.724 ms | 3,214.135 ms |
+| `typescript` | `NodeBuilderFlags` | yes (`255`) | 105.575 ms | 2,970.204 ms | 2,971.841 ms |
+| `node` | `EnvironmentOptions` | yes (`158`) | 65.326 ms | 1,455.443 ms | 3,330.274 ms |
+| `node` | `MaybeStackBuffer` | yes (`93`) | 66.135 ms | 1,507.757 ms | 2,949.335 ms |
+| `linux` | `irq_work_queue` | yes (`128`) | 156.980 ms | 3,421.463 ms | n/a |
+| `linux` | `sched_clock` | yes (`817`) | 145.740 ms | 3,483.316 ms | n/a |
+| `linux` | `raw_spin_lock` | yes (`2321`) | 150.697 ms | 3,596.556 ms | n/a |
 
-| Query | `syntext-persistent` | `syntext-fork` | `rg` | `grep` |
-|---|---|---|---|---|
-| `useState` | 11.914 ms (2,708 hits) | 26.349 ms (2,708 hits) | 105.563 ms (2,708 hits) | 291.980 ms (2,708 hits) |
-| `getDisplayNameForReactElement` | 0.190 ms (13 hits) | 12.777 ms (13 hits) | 103.005 ms (13 hits) | 335.028 ms (13 hits) |
-
-Linux (`46b513250-dirty`), exact count parity on the queries below:
-
-| Query | `syntext-persistent` | `syntext-fork` | `rg` |
-|---|---|---|---|
-| `irq_work_queue` | 40.373 ms (128 hits) | 167.834 ms (128 hits) | 3,601.184 ms (128 hits) |
-| `raw_spin_lock` | 26.242 ms (2,321 hits) | 154.834 ms (2,321 hits) | 3,583.117 ms (2,321 hits) |
-
-Earlier local runs showed a `sched_clock` mismatch (`syntext` 818 vs default `rg` 817) caused by indexing `scripts/dtc/include-prefixes/arm/rockchip/rk3xxx.dtsi:84` through the symlinked directory `scripts/dtc/include-prefixes/arm -> ../../../arch/arm/boot/dts`. The current branch now skips directory symlinks during repository enumeration, so `sched_clock` has returned to default-`rg` count parity on the same Linux corpus (`817` vs `817`).
+This Linux rerun was taken after fixing the directory-symlink mismatch in incremental updates as well as full builds. The earlier extra `sched_clock` hit from `scripts/dtc/include-prefixes/arm/rockchip/rk3xxx.dtsi:84` is gone, so the preset now has default-`rg` count parity on all three Linux queries.

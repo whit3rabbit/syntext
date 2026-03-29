@@ -162,7 +162,6 @@ fn collect_symlink_entry(
             max_file_size,
             files,
         );
-        return;
     }
 }
 

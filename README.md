@@ -7,7 +7,7 @@
 
 A hybrid code search index for agent workflows, built in Rust. Indexes repositories using sparse n-grams with a pre-trained frequency weight table, then narrows to a small candidate set before verification. Designed as a drop-in replacement for `rg` in AI agent loops where grep is called repeatedly and in parallel.
 
-**Status: under active development.** See [Project status](#project-status) below.
+**Status: stable (v1.0).** See [Project status](#project-status) below.
 
 ## Why this exists
 
@@ -19,12 +19,13 @@ syntext builds a content index so queries only touch candidate files, not all fi
 
 Real-world benchmark runs are tracked in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The table below is
-the current snapshot of preset-backed external runs using the shared harness
+the current snapshot of preset-backed external runs from the local
+`/Users/whit3rabbit/Documents/GitHub/_ripline-bench` corpus using the shared harness
 `scripts/bench_compare.py`.
 
 Method:
 
-- **Note**: These benchmarks were run against `syntext` version `0.01`.
+- **Note**: These benchmarks were run against `syntext` version `1.0.0`.
 - External repos use the same harness and preset catalog.
 - Times below are single-shot preset runs on macOS unless noted otherwise.
 - `syntext` search time excludes index build time. Build time is shown separately.
@@ -35,36 +36,37 @@ Method:
 
 | Repo | Preset | Tracked files | Tools | `st index` |
 |---|---|---:|---|---:|
-| Zed Research | `zed_mixed_app` | 3,593 | `syntext`, `rg`, `grep` | `225.103 ms` |
-| React | `react_token_aligned` | 6,840 | `syntext`, `rg`, `grep` | `347.956 ms` |
-| Rust compiler | `rust_token_aligned` | 58,698 | `syntext`, `rg`, `grep` | `2755.613 ms` |
-| TypeScript | `typescript_compiler` | 81,362 | `syntext`, `rg`, `grep` | `3659.839 ms` |
-| Node.js | `node_runtime` | 47,364 | `syntext`, `rg`, `grep` | `2810.84 ms` |
-| Linux kernel | `linux_token_aligned` | 93,018 | `syntext`, `rg` | `6101.93 ms` |
+| React | `react_token_aligned` | 6,840 | `syntext`, `rg`, `grep` | `290.457 ms` |
+| Rust compiler | `rust_token_aligned` | 58,698 | `syntext`, `rg`, `grep` | `2202.514 ms` |
+| TypeScript | `typescript_compiler` | 81,362 | `syntext`, `rg`, `grep` | `3274.67 ms` |
+| Node.js | `node_runtime` | 47,364 | `syntext`, `rg`, `grep` | `2964.754 ms` |
+| Linux kernel | `linux_token_aligned` | 93,018 | `syntext`, `rg` | `6913.323 ms` |
 
 ### Search latency
 
 | Repo | Query | Count match | `syntext` | `rg` | `grep` |
 |---|---|---|---:|---:|---:|
-| Zed Research | `workspace` | yes | `50.39 ms` | `45.47 ms` | `233.07 ms` |
-| Zed Research | `LanguageServerId` | yes | `8.391 ms` | `44.718 ms` | `209.067 ms` |
-| Zed Research | `LanguageServer(Id\|InstallationStatus)` | yes | `44.046 ms` | `45.159 ms` | `234.345 ms` |
-| React | `useState` | yes | `111.716 ms` | `114.463 ms` | `273.504 ms` |
-| React | `getDisplayNameForReactElement` | yes | `10.354 ms` | `110.312 ms` | `315.521 ms` |
-| Rust compiler | `rustc_middle` | yes | `107.084 ms` | `1946.141 ms` | `2307.596 ms` |
-| Rust compiler | `mir::Body` | yes | `77.344 ms` | `1899.967 ms` | `2049.872 ms` |
-| TypeScript | `TransformationContext` | yes | `95.611 ms` | `2573.266 ms` | `3339.558 ms` |
-| TypeScript | `NodeBuilderFlags` | yes | `88.656 ms` | `2447.316 ms` | `3270.151 ms` |
-| Node.js | `EnvironmentOptions` | yes | `55.626 ms` | `1119.841 ms` | `3550.489 ms` |
-| Node.js | `MaybeStackBuffer` | yes | `55.454 ms` | `1089.497 ms` | `3097.734 ms` |
-| Linux kernel | `irq_work_queue` | yes | `3220.995 ms` | `3432.32 ms` | `n/a` |
-| Linux kernel | `sched_clock` | yes | `125.831 ms` | `3771.862 ms` | `n/a` |
-| Linux kernel | `raw_spin_lock` | yes | `121.53 ms` | `3820.238 ms` | `n/a` |
+| React | `useState` | yes | `24.909 ms` | `103.728 ms` | `275.523 ms` |
+| React | `getDisplayNameForReactElement` | yes | `13.376 ms` | `101.945 ms` | `314.732 ms` |
+| Rust compiler | `rustc_middle` | yes | `95.822 ms` | `1781.763 ms` | `2393.57 ms` |
+| Rust compiler | `mir::Body` | yes | `90.01 ms` | `2007.275 ms` | `2214.03 ms` |
+| TypeScript | `TransformationContext` | yes | `101.403 ms` | `2940.724 ms` | `3214.135 ms` |
+| TypeScript | `NodeBuilderFlags` | yes | `105.575 ms` | `2970.204 ms` | `2971.841 ms` |
+| Node.js | `EnvironmentOptions` | yes | `65.326 ms` | `1455.443 ms` | `3330.274 ms` |
+| Node.js | `MaybeStackBuffer` | yes | `66.135 ms` | `1507.757 ms` | `2949.335 ms` |
+| Linux kernel | `irq_work_queue` | yes | `156.98 ms` | `3421.463 ms` | `n/a` |
+| Linux kernel | `sched_clock` | yes | `145.74 ms` | `3483.316 ms` | `n/a` |
+| Linux kernel | `raw_spin_lock` | yes | `150.697 ms` | `3596.556 ms` | `n/a` |
 
 Notes:
 
 - The exact-count validated preset terms are documented in
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+- This refreshed matrix covers the local `_ripline-bench` corpus currently on
+  the machine: React, Rust, TypeScript, Node.js, and Linux. Zed was not rerun
+  because it is not present in that local corpus directory.
+- Linux now matches default `rg` counts on all three preset queries after the
+  directory-symlink fixes in both full builds and incremental updates.
 - Substring-heavy terms such as `ReactElement`, `useEffect`, and `TyCtxt` are
   intentionally not in the headline README table because they can undercount in
   `syntext` relative to `rg`.
@@ -165,21 +167,31 @@ Segments are immutable single-file mmap structures (SNTX format). Updates go thr
 
 ## Project status
 
-**Phases 1–6 and 8 complete. Phase 7 (Symbols) and Phase 9 (Polish) in progress.** The core `st index && st search "pattern"` workflow is functional and validated against ripgrep. Remaining work: Tree-sitter symbol extraction via SQLite, and larger corpus benchmarks with segment merge and crash recovery.
+**All phases complete (v1.0).** The core `st index && st search "pattern"` workflow is functional and validated against ripgrep. Symbol search is available behind `--features symbols`.
 
 See `specs/001-hybrid-code-search-index/tasks.md` for the full implementation plan with 69 tasks across 9 phases.
 
 | Phase | Status | What it delivers |
 |---|---|---|
-| 1. Setup | ✅ Complete | Cargo project, dependencies, module structure |
-| 2. Foundational | ✅ Complete | Weight table, tokenizer, posting lists, correctness harness |
-| 3. US5 — Build | ✅ Complete | Full index build from scratch |
-| 4. US1 — Search | ✅ Complete | Literal + regex search, ripgrep correctness validation |
-| 5. US2 — Incremental | ✅ Complete | Overlay, batch commit, read-your-writes |
-| 6. US3 — Path scoping | ✅ Complete | Path/type filters with Roaring bitmaps |
-| 7. US4 — Symbols | 🔄 In progress | Tree-sitter symbol extraction, SQLite storage |
-| 8. CLI | ✅ Complete | `st` binary with grep-compatible output |
-| 9. Polish | 🔄 In progress | Benchmarks, edge cases, documentation |
+| 1. Setup | Complete | Cargo project, dependencies, module structure |
+| 2. Foundational | Complete | Weight table, tokenizer, posting lists, correctness harness |
+| 3. US5 -- Build | Complete | Full index build from scratch |
+| 4. US1 -- Search | Complete | Literal + regex search, ripgrep correctness validation |
+| 5. US2 -- Incremental | Complete | Overlay, batch commit, read-your-writes |
+| 6. US3 -- Path scoping | Complete | Path/type filters with Roaring bitmaps |
+| 7. US4 -- Symbols | Complete | Tree-sitter symbol extraction, SQLite storage |
+| 8. CLI | Complete | `st` binary with grep-compatible output |
+| 9. Polish | Complete | Bug fixes, security hardening, benchmarks, documentation |
+
+## Known limitations
+
+1. **Crash recovery**: Overlay state is lost on unclean shutdown. Run `st update` or `st index` after a crash.
+2. **Invert match scope**: `st -v` inverts within candidate files only, not the full corpus.
+3. **Non-aligned substring coverage**: ~16% false-negative rate for queries that don't align with token boundaries. Token-aligned queries (identifiers, keywords) have 0% false negatives.
+4. **Network filesystems**: Index directory must be on local filesystem. NFS/SMB behavior is undefined.
+5. **Case-insensitive overhead**: ~15-20% more candidates due to lowercase normalization. Correct results guaranteed by verifier.
+6. **`\r`-only line endings**: Treated as a single line (matches ripgrep behavior).
+7. **Symbol search accuracy**: Tier 3 (heuristic) results are approximate. Tree-sitter failures fall back silently.
 
 ## Design documents
 

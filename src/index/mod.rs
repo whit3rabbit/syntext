@@ -197,7 +197,56 @@ impl Index {
             return Err(IndexError::PathOutsideRepo(path.to_path_buf()));
         }
 
-        Ok(rel.to_path_buf())
+        self.normalize_repo_relative_path(rel)
+    }
+
+    fn normalize_repo_relative_path(
+        &self,
+        rel: &Path,
+    ) -> Result<std::path::PathBuf, IndexError> {
+        if !self.path_has_intermediate_symlink(rel)? {
+            return Ok(rel.to_path_buf());
+        }
+
+        let abs = self.config.repo_root.join(rel);
+        let Some(parent) = abs.parent() else {
+            return Ok(rel.to_path_buf());
+        };
+        let canonical_parent = std::fs::canonicalize(parent)?;
+        if !canonical_parent.starts_with(&self.canonical_root) {
+            return Err(IndexError::PathOutsideRepo(abs));
+        }
+
+        let Some(file_name) = rel.file_name() else {
+            return Ok(rel.to_path_buf());
+        };
+        let normalized = canonical_parent.join(file_name);
+        normalized
+            .strip_prefix(&self.canonical_root)
+            .map(|p| p.to_path_buf())
+            .map_err(|_| IndexError::PathOutsideRepo(normalized))
+    }
+
+    fn path_has_intermediate_symlink(&self, rel: &Path) -> Result<bool, IndexError> {
+        let mut current = self.config.repo_root.clone();
+        let mut components = rel.components().peekable();
+        while let Some(component) = components.next() {
+            let Component::Normal(part) = component else {
+                continue;
+            };
+            if components.peek().is_none() {
+                break;
+            }
+            current.push(part);
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => return Ok(true),
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(err) => return Err(IndexError::Io(err)),
+            }
+        }
+
+        Ok(false)
     }
 
     /// Build the index from scratch, writing segments and a manifest.
@@ -1081,6 +1130,93 @@ mod tests {
                 .iter()
                 .any(|m| m.path.to_string_lossy() == "alias.rs"),
             "symlink inside repo should remain indexable through commit_batch"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_batch_normalizes_paths_under_symlinked_directory() {
+        use std::os::unix::fs::symlink;
+        let _serial = serial_index_lock();
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..4 {
+            std::fs::write(
+                repo.path().join(format!("base_{i}.rs")),
+                format!("fn base_{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        let real_dir = repo.path().join("real");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let real_file = real_dir.join("nested.rs");
+        std::fs::write(&real_file, b"fn original() {}\n").unwrap();
+        symlink(&real_dir, repo.path().join("alias")).unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        std::fs::write(&real_file, b"fn original() {}\nfn normalized_alias() {}\n").unwrap();
+        index
+            .notify_change(&repo.path().join("alias/nested.rs"))
+            .unwrap();
+        index.commit_batch().unwrap();
+
+        let matches = index
+            .search("normalized_alias", &SearchOptions::default())
+            .unwrap();
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.path.to_string_lossy() == "real/nested.rs"),
+            "incremental update through a symlinked directory must update the real path entry"
+        );
+        assert!(
+            matches
+                .iter()
+                .all(|m| m.path.to_string_lossy() != "alias/nested.rs"),
+            "incremental update through a symlinked directory must not reintroduce alias paths"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_batch_normalizes_delete_under_symlinked_directory() {
+        use std::os::unix::fs::symlink;
+        let _serial = serial_index_lock();
+
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        let real_dir = repo.path().join("real");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let real_file = real_dir.join("nested.rs");
+        std::fs::write(&real_file, b"fn remove_me() {}\n").unwrap();
+        symlink(&real_dir, repo.path().join("alias")).unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+
+        std::fs::remove_file(&real_file).unwrap();
+        index
+            .notify_delete(&repo.path().join("alias/nested.rs"))
+            .unwrap();
+        index.commit_batch().unwrap();
+
+        let matches = index.search("remove_me", &SearchOptions::default()).unwrap();
+        assert!(
+            matches.is_empty(),
+            "delete through a symlinked directory must remove the real path entry"
         );
     }
 
