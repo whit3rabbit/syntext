@@ -524,12 +524,31 @@ impl Index {
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
         let mut new_files: Vec<(std::path::PathBuf, Arc<[u8]>)> = Vec::new();
         let mut excluded_changed = std::collections::HashSet::new();
+        // Files that vanished between notify_change() and commit_batch() are
+        // treated as deletions rather than hard errors. The TOCTOU window is
+        // narrow but real, especially in agent/watch workflows.
+        let mut vanished_paths: std::collections::HashSet<std::path::PathBuf> =
+            std::collections::HashSet::new();
         for path in &take.newly_changed {
             let abs = self.config.repo_root.join(path);
             // Canonicalize before opening to detect symlink swaps that occurred
             // between notify_change() and commit_batch(). If the resolved path
             // escapes canonical_root, reject it as PathOutsideRepo.
-            let resolved = std::fs::canonicalize(&abs)?;
+            let resolved = match std::fs::canonicalize(&abs) {
+                Ok(p) => p,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // File deleted between notify_change() and now; treat as deletion.
+                    if self.config.verbose {
+                        eprintln!(
+                            "syntext: warning: file vanished before indexing, treating as deletion: {}",
+                            abs.display()
+                        );
+                    }
+                    vanished_paths.insert(path.clone());
+                    continue;
+                }
+                Err(e) => return Err(IndexError::Io(e)),
+            };
             if !resolved.starts_with(&self.canonical_root) {
                 return Err(IndexError::PathOutsideRepo(abs));
             }
@@ -538,11 +557,37 @@ impl Index {
             // occur in the window between canonicalize() and open() (O_NOFOLLOW
             // only blocks the final component, not intermediate ones).
             #[cfg(unix)]
-            let pre_open_meta = std::fs::metadata(&resolved)?;
+            let pre_open_meta = match std::fs::metadata(&resolved) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if self.config.verbose {
+                        eprintln!(
+                            "syntext: warning: file vanished before indexing, treating as deletion: {}",
+                            abs.display()
+                        );
+                    }
+                    vanished_paths.insert(path.clone());
+                    continue;
+                }
+                Err(e) => return Err(IndexError::Io(e)),
+            };
             // Enforce the same max_file_size limit used during full builds.
             // Use bounded read to eliminate TOCTOU race: file can grow between
             // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
-            let file = io_util::open_readonly_nofollow(&resolved)?;
+            let file = match io_util::open_readonly_nofollow(&resolved) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if self.config.verbose {
+                        eprintln!(
+                            "syntext: warning: file vanished before indexing, treating as deletion: {}",
+                            abs.display()
+                        );
+                    }
+                    vanished_paths.insert(path.clone());
+                    continue;
+                }
+                Err(e) => return Err(IndexError::Io(e)),
+            };
             #[cfg(unix)]
             if !io_util::verify_fd_matches_stat(&file, &pre_open_meta) {
                 return Err(IndexError::PathOutsideRepo(abs.clone()));
@@ -570,9 +615,16 @@ impl Index {
         for path in &excluded_changed {
             visible_changed.remove(path);
         }
+        // Vanished files are not in new_files; remove them from visible_changed
+        // so they don't appear as unresolvable additions.
+        for path in &vanished_paths {
+            visible_changed.remove(path);
+        }
 
         let mut removed_paths = take.newly_deleted.clone();
         removed_paths.extend(excluded_changed.iter().cloned());
+        // Vanished files act as deletions: evict any existing index entry.
+        removed_paths.extend(vanished_paths.iter().cloned());
 
         let projected_overlay_docs =
             projected_overlay_doc_count(&old_snap.overlay, &visible_changed, &removed_paths);
