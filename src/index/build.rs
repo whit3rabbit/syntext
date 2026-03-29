@@ -185,7 +185,7 @@ pub(super) fn build_index_with_batch_size(
                 }
                 let mut raw = Vec::new();
                 file.read_to_end(&mut raw).ok()?;
-                let content = crate::index::normalize_encoding(&raw);
+                let content = crate::index::normalize_encoding(&raw, config.verbose);
                 if is_binary(&content) {
                     return None;
                 }
@@ -286,7 +286,7 @@ pub(super) fn build_index_with_batch_size(
                 for batch in &batches {
                     for (abs_path, rel_path, _size) in batch {
                         if let Ok(raw) = fs::read(abs_path) {
-                            let content = crate::index::normalize_encoding(&raw);
+                            let content = crate::index::normalize_encoding(&raw, config.verbose);
                             if !is_binary(&content) {
                                 // file_id from path_index built in open(); use position
                                 // in indexed_paths as a stable id for build time.

@@ -14,6 +14,7 @@ pub(super) fn resolve_doc(
     global_id: u32,
     canonical_root: &Path,
     max_file_size: u64,
+    verbose: bool,
 ) -> Option<(std::path::PathBuf, Arc<[u8]>)> {
     if let Some(doc) = snap.overlay.get_doc(global_id) {
         return Some((doc.path.clone(), Arc::clone(&doc.content)));
@@ -56,7 +57,7 @@ pub(super) fn resolve_doc(
     if raw.len() as u64 > max_file_size {
         return None;
     }
-    let content = crate::index::normalize_encoding(&raw);
+    let content = crate::index::normalize_encoding(&raw, verbose);
     Some((doc_entry.path, Arc::from(content.as_ref())))
 }
 

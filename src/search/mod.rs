@@ -138,7 +138,7 @@ pub fn search(
                 }
             }
             let (rel_path, content) =
-                resolve_doc(&snap, global_id, canonical_root, config.max_file_size)?;
+                resolve_doc(&snap, global_id, canonical_root, config.max_file_size, config.verbose)?;
 
             if let Some(ref pf) = path_filter_bitmap {
                 let file_id_opt = snap

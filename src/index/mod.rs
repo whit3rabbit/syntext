@@ -558,7 +558,7 @@ impl Index {
                     size: raw.len() as u64,
                 });
             }
-            let content = encoding::normalize_encoding(&raw);
+            let content = encoding::normalize_encoding(&raw, self.config.verbose);
             if is_binary(&content) {
                 excluded_changed.insert(path.clone());
                 continue;

@@ -143,7 +143,7 @@ pub(super) fn render_invert_match(
         if file.read_to_end(&mut raw_bytes).is_err() {
             continue;
         }
-        let file_bytes = crate::index::normalize_encoding(&raw_bytes);
+        let file_bytes = crate::index::normalize_encoding(&raw_bytes, config.verbose);
 
         for_each_line(file_bytes.as_ref(), |line_num, _line_start, line| {
             if !re.is_match(line) {
@@ -225,7 +225,7 @@ pub(super) fn render_with_context_to(
         if file.read_to_end(&mut raw_content).is_err() {
             continue;
         }
-        let file_content = crate::index::normalize_encoding(&raw_content);
+        let file_content = crate::index::normalize_encoding(&raw_content, config.verbose);
         let mut file_lines: Vec<Vec<u8>> = Vec::new();
         for_each_line(file_content.as_ref(), |_, _, line| {
             file_lines.push(line.to_vec())
