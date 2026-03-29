@@ -376,20 +376,14 @@ pub(super) fn compact_index(
         );
     }
 
+    lock_file.unlock().map_err(|e| {
+        IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}"))
+    })?;
+    lock_file
+        .try_lock_shared()
+        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
     drop(_write_lock);
-    drop(lock_file);
-
-    let mut delay = std::time::Duration::from_millis(10);
-    for _ in 0..4u32 {
-        match super::Index::open(config.clone()) {
-            Err(IndexError::LockConflict(_)) => {
-                std::thread::sleep(delay);
-                delay = delay.saturating_mul(2);
-            }
-            result => return result,
-        }
-    }
-    super::Index::open(config)
+    super::Index::open_with_lock(config, lock_file)
 }
 
 #[cfg(test)]

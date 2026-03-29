@@ -722,8 +722,16 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
     use xxhash_rust::xxh64::xxh64;
+
+    fn serial_index_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn git(args: &[&str], repo: &std::path::Path) {
         let status = std::process::Command::new("git")
@@ -801,6 +809,11 @@ mod tests {
         let mut manifest = crate::index::manifest::Manifest::new(vec![seg_a, seg_b], 2);
         manifest.scan_threshold_fraction = Some(0.10);
         manifest.save(index_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(index_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
 
         Config {
             index_dir: index_dir.to_path_buf(),
@@ -811,6 +824,7 @@ mod tests {
 
     #[test]
     fn build_produces_calibrated_threshold_in_valid_range() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -851,6 +865,7 @@ mod tests {
 
     #[test]
     fn open_accepts_manifest_with_gapped_base_doc_ids() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
         let config = write_sparse_manifest_index(repo.path(), index_dir.path());
@@ -865,6 +880,7 @@ mod tests {
 
     #[test]
     fn commit_batch_overlay_ids_start_after_max_base_doc_id() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
         let config = write_sparse_manifest_index(repo.path(), index_dir.path());
@@ -881,6 +897,7 @@ mod tests {
 
     #[test]
     fn commit_batch_bounded_read_rejects_file_that_exceeds_limit() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -909,6 +926,7 @@ mod tests {
     #[test]
     fn commit_batch_rejects_symlink_escape() {
         use std::os::unix::fs::symlink;
+        let _serial = serial_index_lock();
 
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
@@ -948,6 +966,7 @@ mod tests {
     #[test]
     fn commit_batch_accepts_symlink_target_inside_repo() {
         use std::os::unix::fs::symlink;
+        let _serial = serial_index_lock();
 
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
@@ -994,6 +1013,7 @@ mod tests {
     #[test]
     fn commit_batch_rejects_intermediate_symlink_swap() {
         use std::os::unix::fs::symlink;
+        let _serial = serial_index_lock();
 
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
@@ -1036,6 +1056,7 @@ mod tests {
 
     #[test]
     fn commit_batch_returns_overlay_full_when_overlay_ratio_exceeded() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1069,6 +1090,7 @@ mod tests {
 
     #[test]
     fn commit_batch_binary_changes_do_not_count_toward_overlay_limit() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1107,6 +1129,7 @@ mod tests {
 
     #[test]
     fn build_succeeds_and_opens_cleanly() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
         std::fs::write(repo.path().join("lib.rs"), b"fn f() {}").unwrap();
@@ -1123,6 +1146,7 @@ mod tests {
     #[test]
     fn open_rejects_permissive_index_dir_mode() {
         use std::os::unix::fs::PermissionsExt;
+        let _serial = serial_index_lock();
 
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
@@ -1159,6 +1183,7 @@ mod tests {
 
     #[test]
     fn build_index_returns_valid_index_without_lock_gap() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
         std::fs::write(repo.path().join("lib.rs"), b"fn f() {}").unwrap();
@@ -1174,6 +1199,7 @@ mod tests {
 
     #[test]
     fn maintenance_apis_are_noops_when_no_work_is_needed() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1197,6 +1223,7 @@ mod tests {
     #[test]
     fn open_allows_permissive_mode_when_strict_permissions_disabled() {
         use std::os::unix::fs::PermissionsExt;
+        let _serial = serial_index_lock();
 
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
@@ -1231,6 +1258,7 @@ mod tests {
 
     #[test]
     fn compact_reduces_segment_count_to_config_limit() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1275,6 +1303,7 @@ mod tests {
 
     #[test]
     fn compact_preserves_untouched_prefix_segments_in_manifest() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1307,6 +1336,7 @@ mod tests {
 
     #[test]
     fn compact_preserves_actual_total_files_for_gapped_prefix_manifest() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
         let config = write_sparse_manifest_index(repo.path(), index_dir.path());
@@ -1328,6 +1358,7 @@ mod tests {
 
     #[test]
     fn maybe_compact_rebuilds_when_overlay_ratio_exceeds_threshold() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1388,6 +1419,7 @@ mod tests {
 
     #[test]
     fn compact_preserves_base_snapshot_when_working_tree_drifts() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1421,6 +1453,7 @@ mod tests {
 
     #[test]
     fn compact_folds_overlay_snapshot_without_rereading_disk() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
@@ -1464,6 +1497,7 @@ mod tests {
 
     #[test]
     fn rebuild_if_stale_refreshes_snapshot_after_head_change() {
+        let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
 
