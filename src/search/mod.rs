@@ -228,10 +228,16 @@ fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> Result<bool, IndexE
 
     // Probe the intersection of a few smallest postings. Compound identifiers
     // can be highly selective even when each component gram is common alone.
-    let mut acc = posting_bitmap(ordered[0], snap)?.as_ref().clone();
-    for &hash in ordered.iter().skip(1).take(2) {
-        let postings = posting_bitmap(hash, snap)?;
-        acc &= postings.as_ref();
+    // Use & on two borrows to avoid cloning the first (potentially large) bitmap.
+    let first = posting_bitmap(ordered[0], snap)?;
+    let second = posting_bitmap(ordered[1], snap)?;
+    let mut acc: RoaringBitmap = first.as_ref() & second.as_ref();
+    if acc.is_empty() || is_selective_enough(acc.len(), total_docs, snap.scan_threshold) {
+        return Ok(true);
+    }
+    if ordered.len() > 2 {
+        let third = posting_bitmap(ordered[2], snap)?;
+        acc &= third.as_ref();
         if acc.is_empty() || is_selective_enough(acc.len(), total_docs, snap.scan_threshold) {
             return Ok(true);
         }
@@ -283,13 +289,19 @@ fn execute_query_bitmap(
             let Some(first) = iter.next() else {
                 return Ok(snap.all_doc_ids().clone());
             };
-            let mut acc = posting_bitmap(first, snap)?.as_ref().clone();
+            let first_bm = posting_bitmap(first, snap)?;
+            let mut acc: RoaringBitmap = if let Some(second) = iter.next() {
+                let second_bm = posting_bitmap(second, snap)?;
+                first_bm.as_ref() & second_bm.as_ref()
+            } else {
+                first_bm.as_ref().clone()
+            };
             for hash in iter {
-                let postings = posting_bitmap(hash, snap)?;
-                acc &= postings.as_ref();
                 if acc.is_empty() {
                     break;
                 }
+                let postings = posting_bitmap(hash, snap)?;
+                acc &= postings.as_ref();
             }
             Ok(acc)
         }
