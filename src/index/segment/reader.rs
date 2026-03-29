@@ -183,7 +183,7 @@ pub(super) fn read_posting_list_pread(
     // infallible: header is [u8; 9]; header[5..9] is always exactly 4 bytes
     let byte_len = u32::from_le_bytes(header[5..9].try_into().unwrap()) as usize;
 
-    const MAX_POSTING_BYTES: usize = 64 * 1024 * 1024;
+    const MAX_POSTING_BYTES: usize = 8 * 1024 * 1024;
     // Bounds check: prevent OOM from a malformed `.post` file.
     if byte_len > MAX_POSTING_BYTES {
         return Err(Error::new(
