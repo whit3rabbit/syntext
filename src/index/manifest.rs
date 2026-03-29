@@ -167,7 +167,17 @@ impl Manifest {
         Ok(())
     }
 
-    /// Delete segment files in `index_dir` not referenced by this manifest.
+    /// Remove segment files that exist on disk but are not referenced by this
+    /// manifest. Called during build and after compaction to clean up orphans.
+    ///
+    /// **Unix safety:** `MmapSegment` holds an open `File` handle (`_file` field).
+    /// On Linux and macOS, `unlink(2)` removes the directory entry but the inode
+    /// (and mmap) remain valid until all file descriptors are closed. A reader
+    /// that opened a segment before GC runs will continue to operate correctly.
+    ///
+    /// **Windows caveat:** Windows does not allow deleting a file that is open
+    /// by another process/handle. `fs::remove_file` will return an error for
+    /// any segment still mmap'd by an open `Index`. This is a known v1 limitation.
     pub fn gc_orphan_segments(&self, index_dir: &Path) -> io::Result<()> {
         let mut known: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for s in &self.segments {
