@@ -161,7 +161,7 @@ impl OverlayView {
         }
 
         let mut gram_index: HashMap<u64, Vec<u32>> = HashMap::new();
-        let overlay_docs = old_overlay.docs.len() + new_files.len() - newly_changed.len();
+        let overlay_docs = (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
         let mut docs = Vec::new();
         let mut next_id = base_doc_count;
 
@@ -256,7 +256,7 @@ impl OverlayView {
         // non-trivial. A Cow or persistent map would avoid the copy for unchanged
         // entries; deferred to v2. See ARCHITECTURE.md "Overlay compaction" note.
         let mut gram_index = old_overlay.gram_index.clone();
-        let overlay_docs = old_overlay.docs.len() + new_files.len() - newly_changed.len();
+        let overlay_docs = (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
 
         for old_doc in &old_overlay.docs {
             if removed_paths.contains(&old_doc.path) || newly_changed.contains(&old_doc.path) {
