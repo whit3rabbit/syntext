@@ -290,15 +290,18 @@ pub(super) fn compact_index(
     // compact_index or build_index hold the exclusive lock (which we hold here).
     // It is a defence-in-depth assert, not a runtime error path.
     #[cfg(debug_assertions)]
-    for idx in plan.suffix_start..snapshot.base.base_ids.len().min(manifest_bases.len()) {
-        debug_assert_eq!(
-            snapshot.base.base_ids[idx],
-            manifest_bases[idx],
-            "snapshot base_id[{idx}]={} diverges from manifest base[{idx}]={} -- \
-             compaction would assign wrong global doc_ids",
-            snapshot.base.base_ids[idx],
-            manifest_bases[idx],
-        );
+    {
+        let check_end = snapshot.base.base_ids.len().min(manifest_bases.len());
+        for (idx, manifest_base) in manifest_bases.iter().enumerate().take(check_end).skip(plan.suffix_start) {
+            debug_assert_eq!(
+                snapshot.base.base_ids[idx],
+                *manifest_base,
+                "snapshot base_id[{idx}]={} diverges from manifest base[{idx}]={} -- \
+                 compaction would assign wrong global doc_ids",
+                snapshot.base.base_ids[idx],
+                manifest_base,
+            );
+        }
     }
 
     let prefix_doc_id_limit = if plan.suffix_start == 0 {
