@@ -13,6 +13,7 @@ pub(crate) mod lines;
 mod resolver;
 pub mod verifier;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use resolver::resolve_doc;
@@ -121,12 +122,21 @@ pub fn search(
         opts.path_filter.as_deref(),
     );
 
-    // Parallel resolve + filter + verify. Loses serial early-exit on
-    // max_results, but parallel I/O vastly outweighs this for typical
-    // workloads (NVMe queue depth exploitation, kernel I/O scheduling).
+    // Parallel resolve + filter + verify. An atomic counter enables early-exit
+    // once max_results is reached: threads skip resolve+verify once the
+    // counter reaches the limit. Relaxed ordering is intentional: a few extra
+    // files may be processed near the boundary, which is acceptable since the
+    // final truncate enforces the hard limit.
+    let match_count = AtomicUsize::new(0);
     let all_matches: Vec<SearchMatch> = candidates
         .par_iter()
         .filter_map(|&global_id| {
+            // Early-exit: skip expensive I/O once we already have enough matches.
+            if let Some(limit) = opts.max_results {
+                if match_count.load(Ordering::Relaxed) >= limit {
+                    return None;
+                }
+            }
             let (rel_path, content) =
                 resolve_doc(&snap, global_id, canonical_root, config.max_file_size)?;
 
@@ -157,6 +167,11 @@ pub fn search(
                 QueryRoute::Literal => verify_literal(pattern, file_path, &content),
                 _ => verify_regex(compiled_re.as_ref().unwrap(), file_path, &content),
             };
+            if let Some(_limit) = opts.max_results {
+                if !file_matches.is_empty() {
+                    match_count.fetch_add(file_matches.len(), Ordering::Relaxed);
+                }
+            }
             Some(file_matches)
         })
         .flatten()
