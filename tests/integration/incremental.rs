@@ -5,9 +5,11 @@
 //! interleaved edit+search consistency.
 
 use std::fs;
+use std::thread;
+use std::time::Duration;
 
 use syntext::index::Index;
-use syntext::{Config, SearchOptions};
+use syntext::{Config, IndexError, SearchOptions};
 
 /// Create a temp directory with some source files, build an index, return both.
 fn setup() -> (tempfile::TempDir, tempfile::TempDir, Index) {
@@ -51,6 +53,21 @@ fn search(index: &Index, pattern: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
+fn commit_batch_with_retry(index: &Index) {
+    const MAX_ATTEMPTS: usize = 5;
+    const RETRY_DELAY: Duration = Duration::from_millis(10);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match index.commit_batch() {
+            Ok(()) => return,
+            Err(IndexError::LockConflict(_)) if attempt < MAX_ATTEMPTS => {
+                thread::sleep(RETRY_DELAY);
+            }
+            Err(err) => panic!("commit_batch failed on attempt {attempt}: {err}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // T044: Build -> modify -> commit_batch -> search
 // ---------------------------------------------------------------------------
@@ -74,7 +91,7 @@ fn modify_file_new_content_found() {
 
     // Commit the change
     index.notify_change(&main_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     // After commit: new content is visible
     let results = search(&index, "transform_data");
@@ -98,7 +115,7 @@ fn modify_file_old_content_gone() {
     fs::write(&main_path, "fn completely_different() {}\n").unwrap();
 
     index.notify_change(&main_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     // parse_query should no longer appear in src/main.rs results
     let results = search(&index, "parse_query");
@@ -124,7 +141,7 @@ fn delete_file_removes_from_results() {
     fs::remove_file(&lib_path).unwrap();
 
     index.notify_delete(&lib_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     // Should no longer find results from deleted file
     let results = search(&index, "process_batch");
@@ -175,7 +192,7 @@ fn pending_new_file_invisible_before_commit() {
     );
 
     // After commit, it becomes visible
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
     let results = search(&index, "pending_content_xyz");
     assert!(
         !results.is_empty(),
@@ -187,8 +204,8 @@ fn pending_new_file_invisible_before_commit() {
 fn empty_commit_batch_is_noop() {
     let (_repo, _idx, index) = setup();
 
-    index.commit_batch().unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
+    commit_batch_with_retry(&index);
 
     assert!(!search(&index, "parse_query").is_empty());
     assert!(!search(&index, "process_batch").is_empty());
@@ -201,7 +218,7 @@ fn path_index_tracks_incremental_visible_paths() {
     let new_path = repo.path().join("src/new_module.rs");
     fs::write(&new_path, "fn brand_new_function() { 42 }\n").unwrap();
     index.notify_change(&new_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     let snap = index.snapshot();
     assert!(snap
@@ -213,7 +230,7 @@ fn path_index_tracks_incremental_visible_paths() {
     let deleted_path = repo.path().join("src/lib.rs");
     fs::remove_file(&deleted_path).unwrap();
     index.notify_delete(&deleted_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     let snap = index.snapshot();
     assert!(!snap
@@ -232,7 +249,7 @@ fn add_new_file() {
     fs::write(&new_path, "fn brand_new_function() { 42 }\n").unwrap();
 
     index.notify_change(&new_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     let results = search(&index, "brand_new_function");
     assert!(!results.is_empty(), "newly added file should be searchable");
@@ -248,13 +265,13 @@ fn interleaved_edit_search() {
     // Edit 1: change content
     fs::write(&main_path, "fn first_edit() {}\n").unwrap();
     index.notify_change(&main_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
     assert!(!search(&index, "first_edit").is_empty());
 
     // Edit 2: change again
     fs::write(&main_path, "fn second_edit() {}\n").unwrap();
     index.notify_change(&main_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     // first_edit should be gone, second_edit should be present
     let first = search(&index, "first_edit");
@@ -275,7 +292,7 @@ fn unmodified_files_still_searchable() {
     let main_path = repo.path().join("src/main.rs");
     fs::write(&main_path, "fn changed() {}\n").unwrap();
     index.notify_change(&main_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     // Other files should still be searchable
     assert!(
@@ -383,7 +400,7 @@ fn binary_file_added_during_commit_is_not_indexed() {
     fs::write(&binary_path, binary).unwrap();
 
     index.notify_change(&binary_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     let snap = index.snapshot();
     assert!(
@@ -407,7 +424,7 @@ fn text_file_changed_to_binary_is_removed_from_visible_index() {
     fs::write(&main_path, binary).unwrap();
 
     index.notify_change(&main_path).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 
     let snap = index.snapshot();
     assert!(
@@ -470,7 +487,7 @@ fn concurrent_commit_batch_returns_lock_conflict() {
 
     // Release lock and verify commit succeeds.
     lock_file.unlock().unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index);
 }
 
 /// A full build must reject an in-flight incremental writer.

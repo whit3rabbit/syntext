@@ -124,6 +124,33 @@ fn status_json_is_machine_readable() {
 }
 
 #[test]
+fn status_json_escapes_special_characters_in_index_dir() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_root = tempfile::TempDir::new().unwrap();
+    let index = index_root
+        .path()
+        .join("index \"quoted\" \\ tab\tline\nbreak");
+    write_text(
+        &repo.path().join("src/main.rs"),
+        "fn main() { println!(\"needle\"); }\n",
+    );
+    build_index(repo.path(), &index);
+
+    let output = run_repo(repo.path(), &index, &["status", "--json"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = stdout_text(&output);
+    assert_eq!(
+        stdout.trim_end_matches('\n').lines().count(),
+        1,
+        "status --json must stay single-line for line-oriented tooling"
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["index_dir"], index.display().to_string());
+}
+
+#[test]
 fn json_output_emits_begin_match_end_and_summary_messages() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
@@ -158,6 +185,48 @@ fn json_output_emits_begin_match_end_and_summary_messages() {
         .collect();
     assert!(matched_paths.contains(&"src/one.rs"));
     assert!(matched_paths.contains(&"src/two.rs"));
+}
+
+#[test]
+fn json_output_escapes_special_characters_in_paths_and_lines() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    let rel_path = "src/json \"quoted\" \\\\ tab\tline\nfile.txt";
+    let expected_line = "prefix needle \"quote\" \t slash\\\\ suffix";
+    write_text(&repo.path().join(rel_path), &format!("{expected_line}\n"));
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["--json", "-F", "needle"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = stdout_text(&output);
+    let messages: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid NDJSON line"))
+        .collect();
+
+    let begin = messages
+        .iter()
+        .find(|msg| msg["type"] == "begin")
+        .expect("begin message");
+    assert_eq!(begin["data"]["path"]["text"], rel_path);
+
+    let matched = messages
+        .iter()
+        .find(|msg| msg["type"] == "match")
+        .expect("match message");
+    assert_eq!(matched["data"]["path"]["text"], rel_path);
+    assert_eq!(
+        matched["data"]["lines"]["text"],
+        format!("{expected_line}\n")
+    );
+    assert_eq!(matched["data"]["submatches"][0]["match"]["text"], "needle");
+
+    let end = messages
+        .iter()
+        .find(|msg| msg["type"] == "end")
+        .expect("end message");
+    assert_eq!(end["data"]["path"]["text"], rel_path);
 }
 
 #[test]
