@@ -45,7 +45,9 @@ impl SymbolIndex {
         let conn = Connection::open(db_path)
             .map_err(|e| IndexError::CorruptIndex(format!("symbol db: {e}")))?;
         initialize_schema(&conn)?;
-        Ok(SymbolIndex { conn: Mutex::new(conn) })
+        Ok(SymbolIndex {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub(crate) fn reopen(&self, db_path: &Path) -> Result<(), IndexError> {
@@ -77,8 +79,7 @@ impl SymbolIndex {
             .lock()
             .map_err(|_| IndexError::CorruptIndex("symbol db mutex poisoned".into()))?;
         for chunk in file_ids.chunks(SQLITE_MAX_PARAMS) {
-            let placeholders: String =
-                chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!("DELETE FROM symbols WHERE file_id IN ({placeholders})");
             let params: Vec<&dyn rusqlite::ToSql> =
                 chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
@@ -89,12 +90,7 @@ impl SymbolIndex {
     }
 
     /// Extract and insert symbols for a single file.
-    pub fn index_file(
-        &self,
-        file_id: u32,
-        path: &str,
-        content: &[u8],
-    ) -> Result<(), IndexError> {
+    pub fn index_file(&self, file_id: u32, path: &str, content: &[u8]) -> Result<(), IndexError> {
         let symbols = extract_symbols(path, content);
         if symbols.is_empty() {
             return Ok(());
@@ -191,14 +187,22 @@ impl SymbolIndex {
 
         let rows: Vec<(String, u32, String)> = if let Some(kind) = kind_filter {
             stmt.query_map(params![like_pat, kind.as_str()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| IndexError::CorruptIndex(format!("symbol query: {e}")))?
             .filter_map(|r| r.ok())
             .collect()
         } else {
             stmt.query_map(params![like_pat], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| IndexError::CorruptIndex(format!("symbol query: {e}")))?
             .filter_map(|r| r.ok())
@@ -216,7 +220,9 @@ impl SymbolIndex {
                 // We filter (skip) rather than error so one bad row does not abort
                 // a query that has many valid rows.
                 if pb.is_absolute()
-                    || pb.components().any(|c| c == std::path::Component::ParentDir)
+                    || pb
+                        .components()
+                        .any(|c| c == std::path::Component::ParentDir)
                 {
                     return None;
                 }
@@ -288,10 +294,15 @@ mod tests {
         }
 
         let results = idx.search("", None).unwrap();
-        let paths: Vec<_> = results.iter().map(|m| m.path.display().to_string()).collect();
+        let paths: Vec<_> = results
+            .iter()
+            .map(|m| m.path.display().to_string())
+            .collect();
 
         assert!(
-            !paths.iter().any(|p| p.contains("etc/passwd") || p.contains("etc/shadow")),
+            !paths
+                .iter()
+                .any(|p| p.contains("etc/passwd") || p.contains("etc/shadow")),
             "traversal paths must not appear in results: {:?}",
             paths
         );

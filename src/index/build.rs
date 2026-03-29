@@ -329,12 +329,12 @@ pub(super) fn build_index_with_batch_size(
 
     // Downgrade the exclusive directory lock to shared in-place.
     // This ensures no competing build can start between unlock and re-lock.
-    lock_file.unlock().map_err(|e| {
-        IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}"))
-    })?;
-    lock_file.try_lock_shared().map_err(|_| {
-        IndexError::LockConflict(config.index_dir.clone())
-    })?;
+    lock_file
+        .unlock()
+        .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;
+    lock_file
+        .try_lock_shared()
+        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
     // Drop writer lock only after the shared lock is held, closing the gap.
     drop(write_lock);
     super::Index::open_with_lock(config, lock_file)

@@ -105,7 +105,7 @@ impl Manifest {
             total_files_indexed,
             created_at,
             opstamp: 0,
-            scan_threshold_fraction: None,  // populated by Index::build() after calibration
+            scan_threshold_fraction: None, // populated by Index::build() after calibration
         }
     }
 
@@ -132,7 +132,8 @@ impl Manifest {
                     meta.len(),
                     Self::MAX_MANIFEST_SIZE
                 ),
-            ).into());
+            )
+            .into());
         }
         let data = std::fs::read_to_string(&path)?;
         let manifest: Self = serde_json::from_str(&data)
@@ -339,7 +340,8 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         // Simulate a v2 manifest with no dict_filename / post_filename fields
-        let json = format!(r#"{{
+        let json = format!(
+            r#"{{
         "version": 1,
         "base_commit": null,
         "segments": [
@@ -356,7 +358,8 @@ mod tests {
         "total_files_indexed": 10,
         "created_at": 0,
         "opstamp": 0
-    }}"#);
+    }}"#
+        );
         std::fs::write(dir.path().join("manifest.json"), json).unwrap();
         let loaded = Manifest::load(dir.path()).unwrap();
         assert_eq!(loaded.segments[0].filename, format!("{id}.seg"));

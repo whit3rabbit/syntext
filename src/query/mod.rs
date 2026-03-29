@@ -99,7 +99,10 @@ pub enum QueryRoute {
 /// - IndexedRegex otherwise
 pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, String> {
     // Symbol prefix detection: sym:, def:, ref:
-    if let Some(rest) = pattern.strip_prefix("sym:").or_else(|| pattern.strip_prefix("ref:")) {
+    if let Some(rest) = pattern
+        .strip_prefix("sym:")
+        .or_else(|| pattern.strip_prefix("ref:"))
+    {
         return Ok(QueryRoute::SymbolSearch {
             name: rest.to_string(),
             kind_filter: None,

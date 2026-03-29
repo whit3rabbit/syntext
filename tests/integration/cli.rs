@@ -12,8 +12,7 @@ fn run(args: &[&str]) -> Output {
 }
 
 fn run_repo(repo: &Path, index: &Path, args: &[&str]) -> Output {
-    st()
-        .arg("--repo-root")
+    st().arg("--repo-root")
         .arg(repo)
         .arg("--index-dir")
         .arg(index)
@@ -77,7 +76,10 @@ fn invalid_flag_exits_with_clap_error() {
 fn search_exit_codes_follow_cli_contract() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
-    write_text(&repo.path().join("src/lib.rs"), "fn needle() {}\nfn helper() {}\n");
+    write_text(
+        &repo.path().join("src/lib.rs"),
+        "fn needle() {}\nfn helper() {}\n",
+    );
     build_index(repo.path(), index.path());
 
     let hit = run_repo(repo.path(), index.path(), &["needle"]);
@@ -107,7 +109,10 @@ fn search_exit_codes_follow_cli_contract() {
 fn status_json_is_machine_readable() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
-    write_text(&repo.path().join("src/main.rs"), "fn main() { println!(\"x\"); }\n");
+    write_text(
+        &repo.path().join("src/main.rs"),
+        "fn main() { println!(\"x\"); }\n",
+    );
     build_index(repo.path(), index.path());
 
     let output = run_repo(repo.path(), index.path(), &["status", "--json"]);
@@ -232,7 +237,11 @@ fn json_output_uses_bytes_fields_for_non_utf8_match_lines() {
     write_bytes(&repo.path().join("src/non_utf8.txt"), line);
     build_index(repo.path(), index.path());
 
-    let output = run_repo(repo.path(), index.path(), &["--json", "(?-u)\\xFFneedle\\x80"]);
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--json", "(?-u)\\xFFneedle\\x80"],
+    );
     assert_eq!(output.status.code(), Some(0));
 
     let messages: Vec<serde_json::Value> = stdout_text(&output)
@@ -359,8 +368,17 @@ fn utf16_le_file_is_searchable_via_cli_flat_output() {
     build_index(repo.path(), index.path());
 
     let output = run_repo(repo.path(), index.path(), &["-F", "utf16_cli_fn"]);
-    assert_eq!(output.status.code(), Some(0), "expected match\nstdout: {}\nstderr: {}", stdout_text(&output), stderr_text(&output));
-    assert!(std::str::from_utf8(&output.stdout).is_ok(), "stdout is not valid UTF-8");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected match\nstdout: {}\nstderr: {}",
+        stdout_text(&output),
+        stderr_text(&output)
+    );
+    assert!(
+        std::str::from_utf8(&output.stdout).is_ok(),
+        "stdout is not valid UTF-8"
+    );
     assert!(stdout_text(&output).contains("utf16_cli_fn"));
 }
 
@@ -375,10 +393,19 @@ fn utf8_bom_file_match_line_has_no_bom_bytes() {
     build_index(repo.path(), index.path());
 
     let output = run_repo(repo.path(), index.path(), &["-F", "bom_cli_fn"]);
-    assert_eq!(output.status.code(), Some(0), "expected match\nstdout: {}\nstderr: {}", stdout_text(&output), stderr_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected match\nstdout: {}\nstderr: {}",
+        stdout_text(&output),
+        stderr_text(&output)
+    );
     // BOM bytes must not appear in output
-    assert!(!output.stdout.windows(3).any(|w| w == [0xEF, 0xBB, 0xBF]),
-        "BOM bytes found in output: {:?}", &output.stdout[..output.stdout.len().min(32)]);
+    assert!(
+        !output.stdout.windows(3).any(|w| w == [0xEF, 0xBB, 0xBF]),
+        "BOM bytes found in output: {:?}",
+        &output.stdout[..output.stdout.len().min(32)]
+    );
 }
 
 #[test]
@@ -396,11 +423,19 @@ fn utf16_le_file_context_output_is_utf8() {
     build_index(repo.path(), index.path());
 
     let output = run_repo(repo.path(), index.path(), &["-C", "1", "ctx_utf16_fn"]);
-    assert_eq!(output.status.code(), Some(0), "expected match\nstdout: {}\nstderr: {}", stdout_text(&output), stderr_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected match\nstdout: {}\nstderr: {}",
+        stdout_text(&output),
+        stderr_text(&output)
+    );
     let stdout = std::str::from_utf8(&output.stdout)
         .expect("context output for UTF-16 file must be valid UTF-8");
-    assert!(stdout.contains("ctx_utf16_fn"),
-        "context output must contain matched symbol, got: {stdout:?}");
+    assert!(
+        stdout.contains("ctx_utf16_fn"),
+        "context output must contain matched symbol, got: {stdout:?}"
+    );
 }
 
 #[test]
@@ -420,12 +455,20 @@ fn utf16_le_invert_match_output_is_utf8() {
 
     // Search with invert-match for "marker": should output lines from the UTF-16 file that do NOT contain "marker"
     let output = run_repo(repo.path(), index.path(), &["-v", "marker"]);
-    assert_eq!(output.status.code(), Some(0), "expected match\nstdout: {}\nstderr: {}", stdout_text(&output), stderr_text(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "expected match\nstdout: {}\nstderr: {}",
+        stdout_text(&output),
+        stderr_text(&output)
+    );
 
     let stdout = std::str::from_utf8(&output.stdout)
         .expect("invert-match output for UTF-16 file must be valid UTF-8");
-    assert!(stdout.contains("utf16_invert_fn"),
-        "invert-match output must contain UTF-16 file content after transcoding, got: {stdout:?}");
+    assert!(
+        stdout.contains("utf16_invert_fn"),
+        "invert-match output must contain UTF-16 file content after transcoding, got: {stdout:?}"
+    );
 }
 
 #[test]

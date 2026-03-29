@@ -216,13 +216,11 @@ fn path_index_tracks_incremental_visible_paths() {
     index.commit_batch().unwrap();
 
     let snap = index.snapshot();
-    assert!(
-        !snap
-            .path_index
-            .paths
-            .iter()
-            .any(|p| p == std::path::Path::new("src/lib.rs"))
-    );
+    assert!(!snap
+        .path_index
+        .paths
+        .iter()
+        .any(|p| p == std::path::Path::new("src/lib.rs")));
 }
 
 /// Adding a new file makes it searchable after commit.

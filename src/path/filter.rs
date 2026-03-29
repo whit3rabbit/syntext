@@ -137,8 +137,7 @@ pub(crate) fn path_matches_glob(path: &Path, glob: &str) -> bool {
     }
 
     if glob.ends_with(b"/") {
-        return path.starts_with(glob)
-            || memmem::find(path, &[b"/", glob].concat()).is_some();
+        return path.starts_with(glob) || memmem::find(path, &[b"/", glob].concat()).is_some();
     }
 
     if glob.contains(&b'/') {
@@ -255,8 +254,14 @@ mod tests {
 
     #[test]
     fn glob_double_star_extension() {
-        assert!(path_matches_glob(Path::new("deep/nested/file.rs"), "**/*.rs"));
-        assert!(!path_matches_glob(Path::new("deep/nested/file.py"), "**/*.rs"));
+        assert!(path_matches_glob(
+            Path::new("deep/nested/file.rs"),
+            "**/*.rs"
+        ));
+        assert!(!path_matches_glob(
+            Path::new("deep/nested/file.py"),
+            "**/*.rs"
+        ));
     }
 
     #[test]

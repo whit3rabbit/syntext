@@ -175,7 +175,10 @@ pub(super) fn read_posting_list_pread(
     // .post file (the magic header bytes) and producing a silent false negative.
     let mut header = [0u8; 9];
     let header_off = abs_off.checked_add(POST_MAGIC_SIZE).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "posting header offset overflow")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "posting header offset overflow",
+        )
     })?;
     read_exact_at(post_file, &mut header, header_off)?;
 
@@ -194,7 +197,10 @@ pub(super) fn read_posting_list_pread(
 
     let mut data = vec![0u8; byte_len];
     let data_off = abs_off.checked_add(9 + POST_MAGIC_SIZE).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "posting data offset overflow")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "posting data offset overflow",
+        )
     })?;
     read_exact_at(post_file, &mut data, data_off)?;
 

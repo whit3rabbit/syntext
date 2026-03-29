@@ -149,7 +149,8 @@ impl PathIndex {
 
     /// All file_ids for files whose path contains `component` (case-insensitive).
     pub fn files_with_component(&self, component: &str) -> Option<&RoaringBitmap> {
-        self.component_to_files.get(&ascii_lower(component.as_bytes()))
+        self.component_to_files
+            .get(&ascii_lower(component.as_bytes()))
     }
 
     /// Build a global doc_id -> file_id mapping for O(1) path filter lookup.
@@ -262,7 +263,8 @@ mod tests {
 
     #[test]
     fn incremental_preserves_stable_ids_for_unchanged_paths() {
-        let initial = PathIndex::build(&[PathBuf::from("src/lib.rs"), PathBuf::from("src/main.rs")]);
+        let initial =
+            PathIndex::build(&[PathBuf::from("src/lib.rs"), PathBuf::from("src/main.rs")]);
         let main_id = initial.file_id(Path::new("src/main.rs")).unwrap();
 
         let updated = PathIndex::build_incremental(

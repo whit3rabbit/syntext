@@ -251,7 +251,10 @@ impl Index {
     /// Open an existing index using an already-held directory lock.
     /// Called by `build_index` after downgrading the exclusive lock to shared,
     /// avoiding the gap where a competing build could start.
-    pub(super) fn open_with_lock(config: Config, dir_lock: std::fs::File) -> Result<Self, IndexError> {
+    pub(super) fn open_with_lock(
+        config: Config,
+        dir_lock: std::fs::File,
+    ) -> Result<Self, IndexError> {
         // Lock is already held (shared) and permissions were verified by
         // build_index, so skip both checks.
         Self::open_inner(config, dir_lock)
@@ -797,10 +800,7 @@ mod tests {
         seg_ref
     }
 
-    fn write_sparse_manifest_index(
-        repo: &std::path::Path,
-        index_dir: &std::path::Path,
-    ) -> Config {
+    fn write_sparse_manifest_index(repo: &std::path::Path, index_dir: &std::path::Path) -> Config {
         std::fs::write(repo.join("a.rs"), b"fn alpha() {}\n").unwrap();
         std::fs::write(repo.join("b.rs"), b"fn beta() {}\n").unwrap();
 
@@ -874,8 +874,20 @@ mod tests {
         assert_eq!(index.snapshot().segment_base_ids(), &[0, 5]);
         let all_doc_ids: Vec<u32> = index.snapshot().all_doc_ids().iter().collect();
         assert_eq!(all_doc_ids, vec![0, 5]);
-        assert_eq!(index.search("alpha", &SearchOptions::default()).unwrap().len(), 1);
-        assert_eq!(index.search("beta", &SearchOptions::default()).unwrap().len(), 1);
+        assert_eq!(
+            index
+                .search("alpha", &SearchOptions::default())
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            index
+                .search("beta", &SearchOptions::default())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -891,7 +903,13 @@ mod tests {
         index.notify_change(&new_path).unwrap();
         index.commit_batch().unwrap();
 
-        let overlay_ids: Vec<u32> = index.snapshot().overlay.docs.iter().map(|doc| doc.doc_id).collect();
+        let overlay_ids: Vec<u32> = index
+            .snapshot()
+            .overlay
+            .docs
+            .iter()
+            .map(|doc| doc.doc_id)
+            .collect();
         assert_eq!(overlay_ids, vec![6]);
     }
 
@@ -1159,11 +1177,7 @@ mod tests {
         };
         Index::build(config).unwrap();
 
-        std::fs::set_permissions(
-            index_dir.path(),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        std::fs::set_permissions(index_dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let config = Config {
             index_dir: index_dir.path().to_path_buf(),
@@ -1174,7 +1188,10 @@ mod tests {
         let result = Index::open(config);
         match &result {
             Err(IndexError::CorruptIndex(msg)) => {
-                assert!(msg.contains("0755"), "error message should mention mode 0755: {msg}");
+                assert!(
+                    msg.contains("0755"),
+                    "error message should mention mode 0755: {msg}"
+                );
             }
             Err(e) => panic!("expected CorruptIndex, got: {e}"),
             Ok(_) => panic!("open() must reject permissive dir mode"),
@@ -1194,7 +1211,13 @@ mod tests {
         };
         let index = Index::build(config).unwrap();
         let snap = index.snapshot();
-        assert!(snap.base_segments().iter().map(|s| s.doc_count).sum::<u32>() > 0);
+        assert!(
+            snap.base_segments()
+                .iter()
+                .map(|s| s.doc_count)
+                .sum::<u32>()
+                > 0
+        );
     }
 
     #[test]
@@ -1236,11 +1259,7 @@ mod tests {
         };
         Index::build(config).unwrap();
 
-        std::fs::set_permissions(
-            index_dir.path(),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        std::fs::set_permissions(index_dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let config = Config {
             index_dir: index_dir.path().to_path_buf(),
@@ -1323,12 +1342,20 @@ mod tests {
         };
         let index = build::build_index_with_batch_size(config.clone(), 1).unwrap();
         let before = Manifest::load(&config.index_dir).unwrap();
-        assert_eq!(before.segments.len(), 4, "fixture must begin with four segments");
+        assert_eq!(
+            before.segments.len(),
+            4,
+            "fixture must begin with four segments"
+        );
 
         index.compact().unwrap();
 
         let after = Manifest::load(&config.index_dir).unwrap();
-        assert_eq!(after.segments.len(), 3, "selective compaction should rewrite only the suffix");
+        assert_eq!(
+            after.segments.len(),
+            3,
+            "selective compaction should rewrite only the suffix"
+        );
         assert_eq!(after.segments[0].segment_id, before.segments[0].segment_id);
         assert_eq!(after.segments[1].segment_id, before.segments[1].segment_id);
         assert_ne!(after.segments[2].segment_id, before.segments[2].segment_id);

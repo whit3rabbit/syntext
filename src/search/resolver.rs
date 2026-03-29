@@ -92,6 +92,9 @@ mod tests {
         let mut reader = file.take(max.saturating_add(1));
         let mut content = Vec::new();
         reader.read_to_end(&mut content).unwrap();
-        assert!(content.len() as u64 <= max, "at-limit file must not be skipped");
+        assert!(
+            content.len() as u64 <= max,
+            "at-limit file must not be skipped"
+        );
     }
 }

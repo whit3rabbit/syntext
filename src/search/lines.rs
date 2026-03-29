@@ -7,10 +7,7 @@
 /// - 1-based line number
 /// - byte offset of the line start in the original content
 /// - line bytes without trailing newline
-pub(crate) fn for_each_line(
-    content: &[u8],
-    mut f: impl FnMut(u32, usize, &[u8]),
-) {
+pub(crate) fn for_each_line(content: &[u8], mut f: impl FnMut(u32, usize, &[u8])) {
     if content.is_empty() {
         return;
     }

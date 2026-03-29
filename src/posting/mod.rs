@@ -202,7 +202,10 @@ mod tests {
         // varint(5) then varint(0) → [5, 0]
         let bytes = [5u8, 0u8];
         let result = varint_decode(&bytes);
-        assert!(result.is_err(), "zero delta (duplicate id) must be rejected: {result:?}");
+        assert!(
+            result.is_err(),
+            "zero delta (duplicate id) must be rejected: {result:?}"
+        );
     }
 
     #[test]

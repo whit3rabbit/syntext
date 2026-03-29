@@ -570,18 +570,23 @@ mod tests {
         let dict_path = dir.path().join(&meta.dict_filename);
         let seg = MmapSegment::open(&dict_path).unwrap();
 
-        // Overwrite the on-disk file after open(). With MAP_PRIVATE the mmap
-        // is unaffected -- we are reading our own private copy.
-        std::fs::write(&dict_path, b"SNTX_corrupted_on_disk").unwrap();
+        // Atomically replace the on-disk file after open() via rename.
+        // On Linux, in-place writes (std::fs::write with O_TRUNC) invalidate
+        // MAP_PRIVATE + PROT_READ page cache entries and cause SIGBUS.
+        // Rename only changes the directory entry; the mmap holds the original
+        // inode open via _file and is unaffected.
+        let replacement = dir.path().join("replacement.dict");
+        std::fs::write(&replacement, b"SNTX_corrupted_on_disk").unwrap();
+        std::fs::rename(&replacement, &dict_path).unwrap();
 
-        // Both operations use the private copy; both must succeed.
+        // The mmap still reads from the original inode; both must succeed.
         assert!(
             seg.verify_integrity().is_ok(),
-            "private copy should be intact"
+            "mmap must survive atomic file replacement via rename"
         );
         assert!(
             seg.get_doc(0).is_some(),
-            "private copy should serve doc reads"
+            "mmap must serve doc reads after file replacement"
         );
     }
 
@@ -803,8 +808,16 @@ mod tests {
 
     #[test]
     fn mmap_isolation_from_disk_overwrite() {
-        // MAP_PRIVATE: after opening, overwriting the file on disk must not
-        // corrupt the in-memory mapping (CoW isolation).
+        // After opening, atomically replacing the file on disk must not corrupt
+        // the in-memory mapping. MmapSegment retains an open file handle to the
+        // original inode; after an atomic rename the old inode stays alive and
+        // the mapping continues to read from it.
+        //
+        // We use rename rather than in-place write: on Linux, MAP_PRIVATE +
+        // PROT_READ pages are still backed by the file's page cache, so
+        // truncating the file via std::fs::write invalidates those pages and
+        // delivers SIGBUS.  Atomic rename only changes the directory entry;
+        // the mmap's inode reference is unaffected.
         let dir = tempfile::TempDir::new().unwrap();
         let mut writer = SegmentWriter::new();
         writer.add_document(0, std::path::Path::new("a.rs"), 0xABCD, 10);
@@ -813,15 +826,18 @@ mod tests {
         let dict_path = dir.path().join(&meta.dict_filename);
         let seg = MmapSegment::open(&dict_path).unwrap();
 
-        // Overwrite the segment file after opening.
-        std::fs::write(&dict_path, b"CORRUPTED").unwrap();
+        // Atomically replace the file at the same path with corrupted content.
+        // The segment's inode (held open via _file) is unlinked from the
+        // directory but remains alive.
+        let replacement = dir.path().join("replacement.dict");
+        std::fs::write(&replacement, b"CORRUPTED").unwrap();
+        std::fs::rename(&replacement, &dict_path).unwrap();
 
-        // With MAP_PRIVATE, the in-memory view is isolated from the disk overwrite.
-        // The document should still be readable.
+        // The mmap still references the original inode; the document must be readable.
         let doc = seg.get_doc(0);
         assert!(
             doc.is_some(),
-            "MAP_PRIVATE mapping must survive external file overwrite"
+            "mmap must survive atomic file replacement via rename"
         );
     }
 }

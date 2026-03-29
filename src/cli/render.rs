@@ -3,10 +3,10 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use crate::Config;
 use crate::path_util::path_bytes;
+use crate::Config;
 
-use super::search::{SearchArgs, build_effective_pattern};
+use super::search::{build_effective_pattern, SearchArgs};
 use crate::search::lines::for_each_line;
 use crate::search::REGEX_SIZE_LIMIT;
 
@@ -124,9 +124,7 @@ pub(super) fn render_invert_match(
     let mut out = stdout.lock();
     let mut found_any = false;
     for abs_path in &files {
-        let rel_path = abs_path
-            .strip_prefix(&config.repo_root)
-            .unwrap_or(abs_path);
+        let rel_path = abs_path.strip_prefix(&config.repo_root).unwrap_or(abs_path);
 
         #[cfg(unix)]
         let pre_open_meta = match std::fs::metadata(abs_path) {
@@ -197,7 +195,10 @@ pub(super) fn render_with_context_to(
     // Group match line numbers by relative path string.
     let mut by_file: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
     for m in matches {
-        by_file.entry(m.path.clone()).or_default().push(m.line_number);
+        by_file
+            .entry(m.path.clone())
+            .or_default()
+            .push(m.line_number);
     }
 
     let before = args.before_context;
@@ -226,7 +227,9 @@ pub(super) fn render_with_context_to(
         }
         let file_content = crate::index::normalize_encoding(&raw_content);
         let mut file_lines: Vec<Vec<u8>> = Vec::new();
-        for_each_line(file_content.as_ref(), |_, _, line| file_lines.push(line.to_vec()));
+        for_each_line(file_content.as_ref(), |_, _, line| {
+            file_lines.push(line.to_vec())
+        });
 
         // Set of 0-based line indices that are direct matches.
         let match_set: BTreeSet<usize> = match_lines

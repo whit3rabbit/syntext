@@ -39,7 +39,10 @@ fn build_creates_segment_with_valid_rplx_header() {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map(|x| x == "dict").unwrap_or(false))
         .collect();
-    assert!(!dict_files.is_empty(), "no dictionary segment files created");
+    assert!(
+        !dict_files.is_empty(),
+        "no dictionary segment files created"
+    );
 
     // Every segment must pass integrity checks (magic, version, checksum).
     for dict_file in &dict_files {
@@ -335,13 +338,19 @@ fn utf8_bom_file_is_indexed_without_bom_bytes() {
     let snap = idx.snapshot();
 
     assert!(
-        snap.path_index.paths.iter().any(|p| p == std::path::Path::new("src/bom.rs")),
+        snap.path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("src/bom.rs")),
         "UTF-8 BOM file must appear in the path index"
     );
 
     let opts = SearchOptions::default();
     let matches = idx.search("bom_function", &opts).unwrap();
-    assert!(!matches.is_empty(), "must find 'bom_function' in a UTF-8 BOM file");
+    assert!(
+        !matches.is_empty(),
+        "must find 'bom_function' in a UTF-8 BOM file"
+    );
     let line = &matches[0].line_content;
     assert!(
         !line.starts_with(&[0xEF, 0xBB, 0xBF]),
@@ -370,13 +379,19 @@ fn utf16_le_file_is_indexed_and_searchable() {
     let snap = idx.snapshot();
 
     assert!(
-        snap.path_index.paths.iter().any(|p| p == std::path::Path::new("src/utf16le.rs")),
+        snap.path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("src/utf16le.rs")),
         "UTF-16 LE file must appear in the path index (not skipped as binary)"
     );
 
     let opts = SearchOptions::default();
     let matches = idx.search("utf16_function", &opts).unwrap();
-    assert!(!matches.is_empty(), "must find 'utf16_function' in a UTF-16 LE file");
+    assert!(
+        !matches.is_empty(),
+        "must find 'utf16_function' in a UTF-16 LE file"
+    );
 }
 
 #[test]
@@ -400,13 +415,19 @@ fn utf16_be_file_is_indexed_and_searchable() {
     let snap = idx.snapshot();
 
     assert!(
-        snap.path_index.paths.iter().any(|p| p == std::path::Path::new("src/utf16be.rs")),
+        snap.path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("src/utf16be.rs")),
         "UTF-16 BE file must appear in the path index (not skipped as binary)"
     );
 
     let opts = SearchOptions::default();
     let matches = idx.search("utf16be_fn", &opts).unwrap();
-    assert!(!matches.is_empty(), "must find 'utf16be_fn' in a UTF-16 BE file");
+    assert!(
+        !matches.is_empty(),
+        "must find 'utf16be_fn' in a UTF-16 BE file"
+    );
 }
 
 #[test]

@@ -106,10 +106,7 @@ mod tests {
     #[test]
     fn utf16_le_source_code() {
         let src = "fn main() {}";
-        let utf16le: Vec<u8> = src
-            .encode_utf16()
-            .flat_map(|u| u.to_le_bytes())
-            .collect();
+        let utf16le: Vec<u8> = src.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         let mut input = vec![0xFF, 0xFE]; // LE BOM
         input.extend_from_slice(&utf16le);
         let result = normalize_encoding(&input);

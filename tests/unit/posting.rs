@@ -14,7 +14,10 @@ fn varint_empty() {
 
 #[test]
 fn varint_single_zero() {
-    assert_eq!(varint_decode(&varint_encode(&[0u32]).unwrap()).unwrap(), [0u32]);
+    assert_eq!(
+        varint_decode(&varint_encode(&[0u32]).unwrap()).unwrap(),
+        [0u32]
+    );
 }
 
 #[test]

@@ -201,13 +201,18 @@ pub(super) fn plan(snapshot: &IndexSnapshot, config: &Config) -> Option<Compacti
     let segment_count = snapshot.base.segments.len();
     let delete_start = first_deleted_segment(snapshot).unwrap_or(segment_count);
     let limit_start = if segment_limit_exceeded {
-        config.max_segments.max(1).saturating_sub(1).min(segment_count)
+        config
+            .max_segments
+            .max(1)
+            .saturating_sub(1)
+            .min(segment_count)
     } else {
         segment_count
     };
     let suffix_start = delete_start.min(limit_start);
     let target_segments = if segment_limit_exceeded {
-        config.max_segments
+        config
+            .max_segments
             .max(1)
             .saturating_sub(suffix_start)
             .max(1)
@@ -284,7 +289,13 @@ pub(super) fn compact_index(
 
     let mut state = CompactionState::new(prefix_doc_id_limit, plan.batch_size_bytes);
 
-    for (seg_idx, seg) in snapshot.base.segments.iter().enumerate().skip(plan.suffix_start) {
+    for (seg_idx, seg) in snapshot
+        .base
+        .segments
+        .iter()
+        .enumerate()
+        .skip(plan.suffix_start)
+    {
         let base_id = snapshot
             .base
             .base_ids
@@ -376,9 +387,9 @@ pub(super) fn compact_index(
         );
     }
 
-    lock_file.unlock().map_err(|e| {
-        IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}"))
-    })?;
+    lock_file
+        .unlock()
+        .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;
     lock_file
         .try_lock_shared()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;

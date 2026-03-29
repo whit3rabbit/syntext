@@ -9,9 +9,9 @@
 //! 3. Each candidate doc is read from disk (or overlay memory) and passed to the verifier.
 //! 4. Matches are sorted by path, then line number.
 
-pub mod verifier;
 pub(crate) mod lines;
 mod resolver;
+pub mod verifier;
 
 use std::sync::Arc;
 
@@ -348,7 +348,6 @@ fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBit
     bitmap -= &snap.delete_set;
     Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
 }
-
 
 #[cfg(test)]
 mod tests {

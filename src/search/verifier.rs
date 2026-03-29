@@ -42,7 +42,9 @@ pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch>
     if is_binary(content) {
         return Vec::new(); // skip binary files
     }
-    collect_line_matches(path, content, |line| re.find(line).map(|m| (m.start(), m.end())))
+    collect_line_matches(path, content, |line| {
+        re.find(line).map(|m| (m.start(), m.end()))
+    })
 }
 
 /// Iterate `content` line by line, calling `predicate` on each line's bytes.

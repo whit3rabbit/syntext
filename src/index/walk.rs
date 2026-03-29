@@ -259,7 +259,12 @@ mod tests {
 
         let files = enumerate_files(&config).unwrap();
         // Without dedup we'd get 5 + 10*5 = 55; with dedup exactly 10.
-        assert_eq!(files.len(), 10, "5 real + 5 via alias0, got {}", files.len());
+        assert_eq!(
+            files.len(),
+            10,
+            "5 real + 5 via alias0, got {}",
+            files.len()
+        );
     }
 
     #[cfg(unix)]

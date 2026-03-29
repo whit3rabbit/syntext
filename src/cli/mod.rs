@@ -16,7 +16,7 @@ use crate::Config;
 
 use bench::cmd_bench_search;
 use manage::{cmd_index, cmd_status, cmd_update};
-use search::{SearchArgs, cmd_search};
+use search::{cmd_search, SearchArgs};
 
 /// Fast code search with index acceleration. rg-compatible interface.
 ///
@@ -33,7 +33,6 @@ pub struct Cli {
     pub paths: Vec<PathBuf>,
 
     // --- Match options ---
-
     /// Treat PATTERN as a literal string (not a regex). Equivalent to rg -F.
     #[arg(short = 'F', long = "fixed-strings")]
     pub fixed_strings: bool,
@@ -60,7 +59,6 @@ pub struct Cli {
     pub regexp: Option<String>,
 
     // --- Output format ---
-
     /// Print only paths of files with at least one match.
     #[arg(short = 'l', long = "files-with-matches")]
     pub files_with_matches: bool,
@@ -98,7 +96,6 @@ pub struct Cli {
     pub no_filename: bool,
 
     // --- Context lines ---
-
     /// Show NUM lines after each match.
     #[arg(short = 'A', long = "after-context", value_name = "NUM")]
     pub after_context: Option<usize>,
@@ -112,7 +109,6 @@ pub struct Cli {
     pub context: Option<usize>,
 
     // --- Filtering ---
-
     /// Restrict to file type extension (e.g. rs, py, js).
     #[arg(short = 't', long = "type", value_name = "TYPE")]
     pub file_type: Option<String>,
@@ -126,7 +122,6 @@ pub struct Cli {
     pub glob: Option<String>,
 
     // --- Index configuration ---
-
     /// Override index directory (default: .syntext/ at repo root).
     #[arg(long, global = true, env = "SYNTEXT_INDEX_DIR")]
     pub index_dir: Option<PathBuf>,
@@ -192,9 +187,11 @@ pub fn run() -> i32 {
     config.verbose = cli.verbose;
 
     match cli.command {
-        Some(ManageCommand::Index { force, stats, quiet }) => {
-            cmd_index(config, force, stats, quiet)
-        }
+        Some(ManageCommand::Index {
+            force,
+            stats,
+            quiet,
+        }) => cmd_index(config, force, stats, quiet),
         Some(ManageCommand::Status { json }) => cmd_status(config, json),
         Some(ManageCommand::Update { flush, quiet }) => cmd_update(config, flush, quiet),
         Some(ManageCommand::BenchSearch {
@@ -375,7 +372,7 @@ mod tests {
     use crate::index::Index;
     use crate::{Config, SearchOptions};
 
-    use super::{Cli, ManageCommand, manage::cmd_index, manage::cmd_update};
+    use super::{manage::cmd_index, manage::cmd_update, Cli, ManageCommand};
 
     #[test]
     fn search_works_without_subcommand() {
@@ -500,15 +497,26 @@ mod tests {
         // Block 1: lines 1-5 (around match at line 3)
         // Block 2: lines 16-20 (around match at line 18)
         // Gap between: lines 6-15 are not printed.
-        assert!(output.contains("--\n"), "Expected '--' separator between context blocks, got:\n{output}");
+        assert!(
+            output.contains("--\n"),
+            "Expected '--' separator between context blocks, got:\n{output}"
+        );
 
         // Match lines should use ':' separator.
-        assert!(output.contains(":target_token line 3"), "Expected ':' for match line");
-        assert!(output.contains(":target_token line 18"), "Expected ':' for match line");
+        assert!(
+            output.contains(":target_token line 3"),
+            "Expected ':' for match line"
+        );
+        assert!(
+            output.contains(":target_token line 18"),
+            "Expected ':' for match line"
+        );
 
         // Context lines should use '-' separator.
-        assert!(output.contains("-other line 1") || output.contains("-other line 2"),
-            "Expected '-' for context lines before first match");
+        assert!(
+            output.contains("-other line 1") || output.contains("-other line 2"),
+            "Expected '-' for context lines before first match"
+        );
     }
 
     #[test]

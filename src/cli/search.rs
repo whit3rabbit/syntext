@@ -54,9 +54,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     };
 
     if args.invert_match {
-        return handle_output_code(super::render::render_invert_match(
-            &config, &results, args,
-        ));
+        return handle_output_code(super::render::render_invert_match(&config, &results, args));
     }
 
     if results.is_empty() {

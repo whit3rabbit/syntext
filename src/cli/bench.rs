@@ -5,7 +5,7 @@ use std::time::Instant;
 use crate::index::Index;
 use crate::Config;
 
-use super::search::{SearchArgs, run_search};
+use super::search::{run_search, SearchArgs};
 
 #[derive(Debug, Clone)]
 pub(super) struct BenchQuerySpec {
@@ -66,8 +66,7 @@ pub(super) fn cmd_bench_search(
         return 2;
     }
 
-    let parsed_queries: Result<Vec<_>, _> =
-        queries.iter().map(|q| parse_bench_query(q)).collect();
+    let parsed_queries: Result<Vec<_>, _> = queries.iter().map(|q| parse_bench_query(q)).collect();
     let parsed_queries = match parsed_queries {
         Ok(qs) => qs,
         Err(e) => {
