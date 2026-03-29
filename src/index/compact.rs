@@ -292,14 +292,17 @@ pub(super) fn compact_index(
     #[cfg(debug_assertions)]
     {
         let check_end = snapshot.base.base_ids.len().min(manifest_bases.len());
-        for (idx, manifest_base) in manifest_bases.iter().enumerate().take(check_end).skip(plan.suffix_start) {
+        for (idx, manifest_base) in manifest_bases
+            .iter()
+            .enumerate()
+            .take(check_end)
+            .skip(plan.suffix_start)
+        {
             debug_assert_eq!(
-                snapshot.base.base_ids[idx],
-                *manifest_base,
+                snapshot.base.base_ids[idx], *manifest_base,
                 "snapshot base_id[{idx}]={} diverges from manifest base[{idx}]={} -- \
                  compaction would assign wrong global doc_ids",
-                snapshot.base.base_ids[idx],
-                manifest_base,
+                snapshot.base.base_ids[idx], manifest_base,
             );
         }
     }

@@ -186,9 +186,9 @@ Corpus: Rust, Python, JS, Go, Java, C, TypeScript (~25MB each, ~175MB total).
 
 The script prints diagnostics after generation. A correct table shows:
 - `'  '` (double space), `'re'`, `'er'`: weight < 12000 (common, gram interior)
-- `'qz'`, `'xj'`: weight > 35000 (rare, good gram boundaries)
+- `'qz'`, `'xj'`: weight > 28000 (rare, good gram boundaries)
 - Unseen pairs: weight 65535
-- Non-zero pairs: ~15000+
+- Non-zero pairs: ~32,000+ (current table: 32,542 from ~498 GB run)
 
 If all weights are 65535, the script ran with no corpus. Check HF auth and dataset access.
 

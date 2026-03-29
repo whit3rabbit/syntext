@@ -222,7 +222,10 @@ mod tests {
     #[test]
     fn varint_encode_rejects_unsorted_input() {
         let result = varint_encode(&[5, 3, 7]);
-        assert_eq!(result, Err("varint_encode: ids must be strictly ascending (no duplicates)"));
+        assert_eq!(
+            result,
+            Err("varint_encode: ids must be strictly ascending (no duplicates)")
+        );
     }
 
     #[test]

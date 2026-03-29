@@ -169,7 +169,8 @@ impl OverlayView {
         }
 
         let mut gram_index: HashMap<u64, Vec<u32>> = HashMap::new();
-        let overlay_docs = (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
+        let overlay_docs =
+            (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
         let mut docs = Vec::new();
         let mut next_id = base_doc_count;
 
@@ -270,7 +271,8 @@ impl OverlayView {
         // Mitigation (v2): use a persistent/CoW map (e.g., `im::HashMap`) so only
         // the changed entries are copied. See ARCHITECTURE.md "Overlay compaction".
         let mut gram_index = old_overlay.gram_index.clone();
-        let overlay_docs = (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
+        let overlay_docs =
+            (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
 
         for old_doc in &old_overlay.docs {
             if removed_paths.contains(&old_doc.path) || newly_changed.contains(&old_doc.path) {

@@ -590,8 +590,7 @@ mod tests {
         let from_lower = boundary_positions_lower(&small_lower);
         with_boundary_positions_lower(&small_lower, |from_callback| {
             assert_eq!(
-                from_lower,
-                from_callback,
+                from_lower, from_callback,
                 "callback variant must produce same boundaries as non-buffered after shrink"
             );
         });

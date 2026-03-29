@@ -127,9 +127,13 @@ Two generation paths:
 | Script | Corpus | When to use |
 |---|---|---|
 | `scripts/weights_gen.py` | ~175 MB from `bigcode/the-stack-smol` (default) | Local regeneration, CI |
-| `scripts/weights_gen_colab.ipynb` | 1 GB – 100 GB+ from `bigcode/the-stack-dedup` | Higher quality, run on Colab free tier |
+| `scripts/notebooks/weights_gen_colab.ipynb` | 100 GB – 500 GB+ from `bigcode/the-stack-dedup` | Higher quality, run on Colab Pro |
 
-The Colab notebook streams the dataset without a full download, checkpoints every 500 MB (safe against disconnects), and emits a `weights.rs` ready to drop into `src/tokenizer/`. See the notebook for setup instructions (HuggingFace access required for `the-stack-dedup`).
+The current shipped table was trained on ~498 GB across 20+ languages (49.7% pair
+coverage, 32,542 / 65,536 non-zero pairs). The Colab notebook uses bulk Parquet
+download with checkpointing after every shard (safe against disconnects) and emits
+a `weights.rs` ready to drop into `src/tokenizer/`. HuggingFace access required
+for `the-stack-dedup`.
 
 ## Architecture
 

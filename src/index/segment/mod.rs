@@ -425,7 +425,9 @@ impl MmapSegment {
         // crafted V2 dict entry with an abs_off pointing into the doc table or
         // header would return garbage bytes as a posting list (information disclosure).
         const MIN_POSTING_BYTES: usize = 9;
-        if abs_off < self.postings_start || abs_off.saturating_add(MIN_POSTING_BYTES) > self.dict_offset {
+        if abs_off < self.postings_start
+            || abs_off.saturating_add(MIN_POSTING_BYTES) > self.dict_offset
+        {
             return None;
         }
         let b = self.mmap.get(abs_off..)?;
