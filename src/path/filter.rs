@@ -133,6 +133,12 @@ pub(crate) fn path_matches_glob(path: &Path, glob: &str) -> bool {
         if rest.starts_with(b"*.") && !rest.contains(&b'/') {
             return path_has_extension(path, &rest[2..]);
         }
+        // Bare word (no '/' and no '*'): use component-boundary match, not
+        // substring. "**/test" must NOT match "src/contest.rs".
+        // Patterns with '/' (e.g., "**/src/test") keep substring semantics.
+        if !rest.contains(&b'/') && !rest.contains(&b'*') {
+            return path_has_component(path, rest);
+        }
         return memmem::find(path, rest).is_some();
     }
 
@@ -299,6 +305,42 @@ mod tests {
     fn path_with_slash_still_uses_substring() {
         assert!(path_matches_glob(Path::new("src/test/foo.rs"), "src/test"));
         assert!(!path_matches_glob(Path::new("lib/test/foo.rs"), "src/test"));
+    }
+
+    #[test]
+    fn double_star_slash_bare_word_requires_component_boundary() {
+        assert!(
+            !path_matches_glob(Path::new("src/contest.rs"), "**/test"),
+            "**/test must not match 'contest.rs' (substring, not component)"
+        );
+        assert!(
+            !path_matches_glob(Path::new("src/testing.rs"), "**/test"),
+            "**/test must not match 'testing.rs'"
+        );
+        assert!(
+            path_matches_glob(Path::new("test/foo.rs"), "**/test"),
+            "**/test must match 'test/foo.rs'"
+        );
+        assert!(
+            path_matches_glob(Path::new("src/test.rs"), "**/test"),
+            "**/test must match 'src/test.rs' (stem matches component)"
+        );
+        assert!(
+            path_matches_glob(Path::new("src/test/util.rs"), "**/test"),
+            "**/test must match when test is a directory component"
+        );
+    }
+
+    #[test]
+    fn double_star_slash_with_slash_still_uses_substring() {
+        assert!(path_matches_glob(
+            Path::new("deep/src/test/util.rs"),
+            "**/src/test"
+        ));
+        assert!(!path_matches_glob(
+            Path::new("deep/lib/test/util.rs"),
+            "**/src/test"
+        ));
     }
 
     #[cfg(unix)]
