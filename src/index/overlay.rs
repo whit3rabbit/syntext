@@ -260,9 +260,15 @@ impl OverlayView {
     ) -> Result<Self, IndexError> {
         // Clone old gram_index; remove stale entries for changed/deleted files.
         //
-        // Cost: O(entries). For overlays > 30% of base docs, this clone becomes
-        // non-trivial. A Cow or persistent map would avoid the copy for unchanged
-        // entries; deferred to v2. See ARCHITECTURE.md "Overlay compaction" note.
+        // Cost: O(gram_index.len()), NOT O(changed files). For an overlay with
+        // 1000 dirty files x ~120 grams = 120K entries, this is ~1 MB of
+        // HashMap clone per commit_batch call regardless of how many files changed.
+        // The delta path was optimised for the single-file edit case: the clone
+        // is fast in practice (< 5 ms for typical overlay sizes), but grows
+        // linearly with overlay size and eventually dominates the delta advantage.
+        //
+        // Mitigation (v2): use a persistent/CoW map (e.g., `im::HashMap`) so only
+        // the changed entries are copied. See ARCHITECTURE.md "Overlay compaction".
         let mut gram_index = old_overlay.gram_index.clone();
         let overlay_docs = (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
 
