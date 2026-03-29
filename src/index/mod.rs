@@ -113,10 +113,7 @@ fn projected_overlay_doc_count(
         .iter()
         .filter(|doc| !visible_changed.contains(&doc.path) && !removed_paths.contains(&doc.path))
         .count()
-        + visible_changed
-            .iter()
-            .filter(|p| !removed_paths.contains(*p))
-            .count()
+        + visible_changed.len()
 }
 
 fn base_doc_id_limit(snapshot: &IndexSnapshot) -> Result<u32, IndexError> {
