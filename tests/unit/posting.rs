@@ -44,7 +44,7 @@ fn varint_max_value() {
 fn varint_unsorted_returns_error() {
     assert_eq!(
         varint_encode(&[5, 3, 7]),
-        Err("varint_encode: ids must be sorted")
+        Err("varint_encode: ids must be strictly ascending (no duplicates)")
     );
 }
 

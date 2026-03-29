@@ -32,10 +32,13 @@ pub const ROARING_THRESHOLD: usize = 8192;
 ///
 /// Each entry is stored as a variable-length integer (1-5 bytes) encoding the
 /// delta from the previous value. The first entry uses the value directly.
-/// Returns an error if `ids` is not sorted.
+/// Returns an error if `ids` is not sorted or contains duplicates.
 pub fn varint_encode(ids: &[u32]) -> Result<Vec<u8>, &'static str> {
-    if !ids.windows(2).all(|w| w[0] <= w[1]) {
-        return Err("varint_encode: ids must be sorted");
+    // Require strictly ascending order (no duplicates): varint_decode rejects
+    // zero-delta entries after the first, so encoding duplicates produces
+    // bytes that cannot be decoded. Catch the inconsistency at encode time.
+    if !ids.windows(2).all(|w| w[0] < w[1]) {
+        return Err("varint_encode: ids must be strictly ascending (no duplicates)");
     }
 
     let mut out = Vec::with_capacity(ids.len() * 2);
@@ -219,6 +222,29 @@ mod tests {
     #[test]
     fn varint_encode_rejects_unsorted_input() {
         let result = varint_encode(&[5, 3, 7]);
-        assert_eq!(result, Err("varint_encode: ids must be sorted"));
+        assert_eq!(result, Err("varint_encode: ids must be strictly ascending (no duplicates)"));
+    }
+
+    #[test]
+    fn varint_encode_rejects_duplicate_ids() {
+        let result = varint_encode(&[0u32, 0u32]);
+        assert!(
+            result.is_err(),
+            "duplicate doc_ids must be rejected by encode: {result:?}"
+        );
+
+        let result2 = varint_encode(&[5u32, 5u32, 7u32]);
+        assert!(
+            result2.is_err(),
+            "mid-list duplicate must be rejected: {result2:?}"
+        );
+    }
+
+    #[test]
+    fn varint_round_trip_no_duplicates() {
+        let ids = vec![0u32, 1, 5, 100, u32::MAX - 1];
+        let encoded = varint_encode(&ids).unwrap();
+        let decoded = varint_decode(&encoded).unwrap();
+        assert_eq!(decoded, ids);
     }
 }
