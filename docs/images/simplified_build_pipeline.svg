@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="700" viewBox="0 0 1600 700" role="img" aria-labelledby="title desc">
+  <title id="title">Simplified Build Pipeline</title>
+  <desc id="desc">A simplified connected-node SVG diagram showing the build index workflow from files through optional symbol index.</desc>
+
+  <defs>
+    <style>
+      text { font-family: Inter, Arial, Helvetica, sans-serif; fill: #17212b; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 14px; fill: #4b5b6a; }
+      .node-title { font-size: 18px; font-weight: 700; }
+      .node-body { font-size: 13px; fill: #51606f; }
+      .small { font-size: 12px; fill: #607080; }
+      .arrow { stroke: #5b6b7c; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+      .branch { stroke: #8695a5; stroke-width: 2.5; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrowhead); }
+      .node { fill: #f8fbff; stroke: #bfd0e2; stroke-width: 2; rx: 18; ry: 18; }
+      .accent { fill: #eef6ff; stroke: #8bb7e0; }
+      .optional { fill: #fbfbfd; stroke: #c8ced8; stroke-dasharray: 8 6; }
+      .parallel-box { fill: #f5faff; stroke: #8bb7e0; stroke-width: 2; rx: 18; ry: 18; }
+      .worker { fill: #ffffff; stroke: #c5d5e5; stroke-width: 1.5; rx: 14; ry: 14; }
+      .badge { fill: #17324d; }
+      .badge-text { font-size: 13px; font-weight: 700; fill: white; }
+    </style>
+
+    <marker id="arrowhead" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#5b6b7c"/>
+    </marker>
+
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#9fb1c4" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <text x="80" y="60" class="title">Simplified Build Pipeline</text>
+  <text x="80" y="88" class="subtitle">High-level flow from repository files to a complete index, with an optional symbol lookup path.</text>
+
+  <!-- Top flow nodes -->
+  <g filter="url(#shadow)">
+    <rect x="70" y="150" width="180" height="110" class="node accent"/>
+    <circle cx="115" cy="205" r="22" fill="#d9ecff" stroke="#8bb7e0" stroke-width="2"/>
+    <text x="115" y="211" text-anchor="middle" font-size="20">1</text>
+    <text x="150" y="192" class="node-title">Files</text>
+    <text x="150" y="214" class="node-body">Find repository files</text>
+    <text x="150" y="233" class="node-body">and group them</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="300" y="150" width="180" height="110" class="node"/>
+    <circle cx="345" cy="205" r="22" fill="#eef3f8" stroke="#bfd0e2" stroke-width="2"/>
+    <text x="345" y="211" text-anchor="middle" font-size="20">2</text>
+    <text x="380" y="192" class="node-title">Batching</text>
+    <text x="380" y="214" class="node-body">Split files into</text>
+    <text x="380" y="233" class="node-body">manageable chunks</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="530" y="120" width="360" height="170" class="parallel-box"/>
+    <circle cx="575" cy="175" r="22" fill="#d9ecff" stroke="#8bb7e0" stroke-width="2"/>
+    <text x="575" y="181" text-anchor="middle" font-size="20">3</text>
+    <text x="610" y="163" class="node-title">Parallel Processing</text>
+    <text x="610" y="186" class="node-body">Multiple workers handle files at the same time</text>
+
+    <rect x="570" y="210" width="90" height="52" class="worker"/>
+    <text x="615" y="231" text-anchor="middle" class="node-body" font-weight="700">Read</text>
+    <text x="615" y="248" text-anchor="middle" class="small">open safely</text>
+
+    <rect x="670" y="210" width="90" height="52" class="worker"/>
+    <text x="715" y="231" text-anchor="middle" class="node-body" font-weight="700">Clean</text>
+    <text x="715" y="248" text-anchor="middle" class="small">normalize text</text>
+
+    <rect x="770" y="210" width="90" height="52" class="worker"/>
+    <text x="815" y="231" text-anchor="middle" class="node-body" font-weight="700">Catalog</text>
+    <text x="815" y="248" text-anchor="middle" class="small">extract grams</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="940" y="150" width="190" height="110" class="node"/>
+    <circle cx="985" cy="205" r="22" fill="#eef3f8" stroke="#bfd0e2" stroke-width="2"/>
+    <text x="985" y="211" text-anchor="middle" font-size="20">4</text>
+    <text x="1020" y="192" class="node-title">Segment Writing</text>
+    <text x="1020" y="214" class="node-body">Combine worker output</text>
+    <text x="1020" y="233" class="node-body">into index volumes</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1180" y="150" width="180" height="110" class="node"/>
+    <circle cx="1225" cy="205" r="22" fill="#eef3f8" stroke="#bfd0e2" stroke-width="2"/>
+    <text x="1225" y="211" text-anchor="middle" font-size="20">5</text>
+    <text x="1260" y="192" class="node-title">Calibration</text>
+    <text x="1260" y="214" class="node-body">Measure and tune</text>
+    <text x="1260" y="233" class="node-body">for faster lookups</text>
+  </g>
+
+  <!-- Bottom nodes -->
+  <g filter="url(#shadow)">
+    <rect x="470" y="430" width="220" height="120" class="node accent"/>
+    <circle cx="520" cy="490" r="22" fill="#d9ecff" stroke="#8bb7e0" stroke-width="2"/>
+    <text x="520" y="496" text-anchor="middle" font-size="20">6</text>
+    <text x="560" y="473" class="node-title">Manifest</text>
+    <text x="560" y="495" class="node-body">Update the master list</text>
+    <text x="560" y="514" class="node-body">and remove old segments</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="760" y="430" width="260" height="120" class="node accent"/>
+    <circle cx="810" cy="490" r="22" fill="#d9ecff" stroke="#8bb7e0" stroke-width="2"/>
+    <text x="810" y="496" text-anchor="middle" font-size="20">7</text>
+    <text x="850" y="473" class="node-title">Complete Index</text>
+    <text x="850" y="495" class="node-body">Repository is ready for</text>
+    <text x="850" y="514" class="node-body">fast search and retrieval</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1140" y="430" width="240" height="120" class="optional"/>
+    <rect x="1160" y="448" width="78" height="24" rx="12" class="badge"/>
+    <text x="1199" y="465" text-anchor="middle" class="badge-text">Optional</text>
+    <text x="1165" y="494" class="node-title">Symbol Index</text>
+    <text x="1165" y="516" class="node-body">Add a separate lookup table</text>
+    <text x="1165" y="535" class="node-body">for key identifiers</text>
+  </g>
+
+  <!-- Main arrows -->
+  <path d="M 250 205 H 300" class="arrow"/>
+  <path d="M 480 205 H 530" class="arrow"/>
+  <path d="M 890 205 H 940" class="arrow"/>
+  <path d="M 1130 205 H 1180" class="arrow"/>
+
+  <!-- Downward and final flow -->
+  <path d="M 1270 260 V 360 H 580 V 430" class="arrow"/>
+  <path d="M 690 490 H 760" class="arrow"/>
+
+  <!-- Optional branch -->
+  <path d="M 1020 490 H 1140" class="branch"/>
+
+  <!-- Decorative labels -->
+  <text x="710" y="325" text-anchor="middle" class="small">Workers process files concurrently</text>
+  <text x="1268" y="385" text-anchor="middle" class="small">Finalize active segments</text>
+</svg>

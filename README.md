@@ -23,6 +23,41 @@ the current snapshot of preset-backed external runs from the local
 `/Users/whit3rabbit/Documents/GitHub/_ripline-bench` corpus using the shared harness
 `scripts/bench_compare.py`.
 
+### Search latency
+
+Search Latency (Log Scale, Lower is Better →)
+
+Legend:
+
+🟩 syntext (<200 ms)
+🟨 rg (100 ms – 2 s)
+🟥 grep (>2 s)
+
+React
+syntext  🟩 25 ms  
+rg       🟨 103 ms  
+grep     🟥🟥 275 ms  
+
+Rust compiler
+syntext  🟩 93 ms  
+rg       🟥🟥🟥 1781 ms  
+grep     🟥🟥🟥🟥 2393 ms  
+
+TypeScript
+syntext  🟩 103 ms  
+rg       🟥🟥🟥🟥 2940 ms  
+grep     🟥🟥🟥🟥🟥 3214 ms  
+
+Node.js
+syntext  🟩 66 ms  
+rg       🟥🟥🟥 1455 ms  
+grep     🟥🟥🟥🟥🟥 3130 ms  
+
+Linux kernel
+syntext  🟩 151 ms  
+rg       🟥🟥🟥🟥🟥 3500 ms  
+grep     n/a
+
 Method:
 
 - **Note**: These benchmarks were run against `syntext` version `1.0.0`.
@@ -32,34 +67,9 @@ Method:
 - Linux uses the cheaper shared large-corpus mode (`syntext` + `rg`) because the
   full `syntext` vs `rg` vs `grep` run is too expensive on this machine.
 
-### Index build
-
-| Repo | Preset | Tracked files | Tools | `st index` |
-|---|---|---:|---|---:|
-| React | `react_token_aligned` | 6,840 | `syntext`, `rg`, `grep` | `290.457 ms` |
-| Rust compiler | `rust_token_aligned` | 58,698 | `syntext`, `rg`, `grep` | `2202.514 ms` |
-| TypeScript | `typescript_compiler` | 81,362 | `syntext`, `rg`, `grep` | `3274.67 ms` |
-| Node.js | `node_runtime` | 47,364 | `syntext`, `rg`, `grep` | `2964.754 ms` |
-| Linux kernel | `linux_token_aligned` | 93,018 | `syntext`, `rg` | `6913.323 ms` |
-
-### Search latency
-
-| Repo | Query | Count match | `syntext` | `rg` | `grep` |
-|---|---|---|---:|---:|---:|
-| React | `useState` | yes | `24.909 ms` | `103.728 ms` | `275.523 ms` |
-| React | `getDisplayNameForReactElement` | yes | `13.376 ms` | `101.945 ms` | `314.732 ms` |
-| Rust compiler | `rustc_middle` | yes | `95.822 ms` | `1781.763 ms` | `2393.57 ms` |
-| Rust compiler | `mir::Body` | yes | `90.01 ms` | `2007.275 ms` | `2214.03 ms` |
-| TypeScript | `TransformationContext` | yes | `101.403 ms` | `2940.724 ms` | `3214.135 ms` |
-| TypeScript | `NodeBuilderFlags` | yes | `105.575 ms` | `2970.204 ms` | `2971.841 ms` |
-| Node.js | `EnvironmentOptions` | yes | `65.326 ms` | `1455.443 ms` | `3330.274 ms` |
-| Node.js | `MaybeStackBuffer` | yes | `66.135 ms` | `1507.757 ms` | `2949.335 ms` |
-| Linux kernel | `irq_work_queue` | yes | `156.98 ms` | `3421.463 ms` | `n/a` |
-| Linux kernel | `sched_clock` | yes | `145.74 ms` | `3483.316 ms` | `n/a` |
-| Linux kernel | `raw_spin_lock` | yes | `150.697 ms` | `3596.556 ms` | `n/a` |
-
 Notes:
 
+- Latency grows ~log-linearly for scan tools as repo size increases, while syntext remains effectively constant due to indexing.
 - The exact-count validated preset terms are documented in
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - This refreshed matrix covers the local `_ripline-bench` corpus currently on
@@ -72,6 +82,17 @@ Notes:
   `syntext` relative to `rg`.
 - Historical and exploratory runs, including mismatched-count investigations,
   remain in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+### Index build time
+
+| Repo | Preset | Tracked files | Tools | `st index` |
+|---|---|---:|---|---:|
+| React | `react_token_aligned` | 6,840 | `syntext`, `rg`, `grep` | `290.457 ms` |
+| Rust compiler | `rust_token_aligned` | 58,698 | `syntext`, `rg`, `grep` | `2202.514 ms` |
+| TypeScript | `typescript_compiler` | 81,362 | `syntext`, `rg`, `grep` | `3274.67 ms` |
+| Node.js | `node_runtime` | 47,364 | `syntext`, `rg`, `grep` | `2964.754 ms` |
+| Linux kernel | `linux_token_aligned` | 93,018 | `syntext`, `rg` | `6913.323 ms` |
+
 
 ## Usage
 

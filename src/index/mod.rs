@@ -200,10 +200,7 @@ impl Index {
         self.normalize_repo_relative_path(rel)
     }
 
-    fn normalize_repo_relative_path(
-        &self,
-        rel: &Path,
-    ) -> Result<std::path::PathBuf, IndexError> {
+    fn normalize_repo_relative_path(&self, rel: &Path) -> Result<std::path::PathBuf, IndexError> {
         if !self.path_has_intermediate_symlink(rel)? {
             return Ok(rel.to_path_buf());
         }
@@ -1213,7 +1210,9 @@ mod tests {
             .unwrap();
         index.commit_batch().unwrap();
 
-        let matches = index.search("remove_me", &SearchOptions::default()).unwrap();
+        let matches = index
+            .search("remove_me", &SearchOptions::default())
+            .unwrap();
         assert!(
             matches.is_empty(),
             "delete through a symlinked directory must remove the real path entry"
@@ -1780,12 +1779,8 @@ mod tests {
         let index_dir = TempDir::new().unwrap();
 
         // Create a real segment file (doc_count=1).
-        let seg_ref = write_segment_with_global_doc_id(
-            index_dir.path(),
-            0,
-            "a.rs",
-            b"fn alpha() {}\n",
-        );
+        let seg_ref =
+            write_segment_with_global_doc_id(index_dir.path(), 0, "a.rs", b"fn alpha() {}\n");
         let seg_file = index_dir.path().join(&seg_ref.dict_filename);
         let seg = crate::index::segment::MmapSegment::open(&seg_file).unwrap();
         assert_eq!(seg.doc_count, 1);
@@ -1835,11 +1830,8 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                index_dir.path(),
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .unwrap();
+            std::fs::set_permissions(index_dir.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
         }
 
         let config = Config {

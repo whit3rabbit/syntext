@@ -168,7 +168,7 @@ def emit_rust_const(weights, output_path="weights.rs"):
         f.write("// Usage: BIGRAM_WEIGHTS[(b1 as usize) << 8 | (b2 as usize)]\n")
         f.write(f"// Corpus: mixed open-source code (Rust, Python, JS, Go, Java, C/C++, TS)\n")
         f.write("\n")
-        f.write("pub const BIGRAM_WEIGHTS: [u16; 65536] = [\n")
+        f.write("pub static BIGRAM_WEIGHTS: [u16; 65536] = [\n")
         
         for i in range(0, 65536, 16):
             row = ", ".join(f"{weights[i+j]:5}" for j in range(16))

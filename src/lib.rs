@@ -1,6 +1,35 @@
-//! Hybrid code search index library.
+//! Hybrid code search index for agent workflows.
 //!
-//! Provides the core index, search, and configuration APIs.
+//! syntext indexes repository files using sparse n-grams with a pre-trained
+//! frequency weight table, then narrows queries to a small candidate set
+//! before verification. Three index components:
+//!
+//! - **Content index**: sparse n-gram posting lists (delta-varint or Roaring bitmap)
+//! - **Path index**: Roaring bitmap component sets for path/type scoping
+//! - **Symbol index** (optional, `--features symbols`): Tree-sitter + SQLite
+//!
+//! # Usage
+//!
+//! ```no_run
+//! use syntext::{Config, SearchOptions};
+//! use syntext::index::Index;
+//!
+//! let config = Config {
+//!     index_dir: ".syntext".into(),
+//!     repo_root: ".".into(),
+//!     ..Config::default()
+//! };
+//!
+//! // Build or open the index.
+//! let index = Index::build(config).unwrap();
+//!
+//! // Search with default options.
+//! let results = index.search("parse_query", &SearchOptions::default()).unwrap();
+//! for m in &results {
+//!     println!("{}:{}: {}", m.path.display(), m.line_number,
+//!         String::from_utf8_lossy(&m.line_content));
+//! }
+//! ```
 
 pub mod base64;
 pub mod cli;
@@ -10,12 +39,9 @@ pub(crate) mod path_util;
 pub mod posting;
 pub mod query;
 pub mod search;
-pub mod tokenizer;
-// NOTE: `symbol` module (Tree-sitter + SQLite symbol index) is deferred to Phase 7.
-// When implemented, add: pub mod symbol;
-// See specs/001-hybrid-code-search-index/plan.md for the implementation plan.
 #[cfg(feature = "symbols")]
 pub mod symbol;
+pub mod tokenizer;
 
 use std::path::PathBuf;
 

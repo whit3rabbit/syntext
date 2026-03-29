@@ -151,13 +151,13 @@
 
 ### Implementation for US4
 
-- [ ] T048 [US4] Implement Tree-sitter symbol extractor in src/symbol/extractor.rs: parse file with language-specific grammar, walk tree to extract (name, kind, line, column, span) for functions, structs, classes, traits, methods, enums. Support Tier 1 languages: Rust, Python, TypeScript/JavaScript, Go, Java, C/C++. Wrap parse in panic catch.
-- [ ] T049 [US4] Implement Tier 3 heuristic fallback in src/symbol/extractor.rs: regex-based definition extraction (`^\s*(def|fn|func|function|class|struct|enum|trait|interface)\s+(\w+)`) for unsupported languages.
-- [ ] T050 [US4] Implement SQLite symbol index in src/symbol/mod.rs: create/open WAL-mode database, schema per research.md section 11 (symbols table with name, kind, file_id, line, column, language; indexes on name, kind+name, file_id). Bulk insert during build, incremental update on overlay commit.
-- [ ] T051 [US4] Implement `search_symbols()` method in src/symbol/mod.rs: query SQLite by name (with LIKE for prefix match), optionally filter by kind and language. Return SearchMatch results.
-- [ ] T052 [US4] Integrate symbol index build into `Index::build()` in src/index/mod.rs: after content index build, run symbol extraction for Tier 1 languages, bulk insert into SQLite.
-- [ ] T053 [US4] Integrate symbol search into query router in src/query/mod.rs: detect `sym:`, `def:`, `ref:` prefixes, route to SymbolSearch path.
-- [ ] T054 [US4] Write integration test for symbol search in tests/integration/: index a Rust file with `fn parse_query(...)`, query `sym:parse_query`, verify definition line returned. Query `sym:nonexistent`, verify empty results.
+- [x] T048 [US4] Implement Tree-sitter symbol extractor in src/symbol/extractor.rs: parse file with language-specific grammar, walk tree to extract (name, kind, line, column, span) for functions, structs, classes, traits, methods, enums. Support Tier 1 languages: Rust, Python, TypeScript/JavaScript, Go, Java, C/C++. Wrap parse in panic catch.
+- [x] T049 [US4] Implement Tier 3 heuristic fallback in src/symbol/extractor.rs: regex-based definition extraction (`^\s*(def|fn|func|function|class|struct|enum|trait|interface)\s+(\w+)`) for unsupported languages.
+- [x] T050 [US4] Implement SQLite symbol index in src/symbol/mod.rs: create/open WAL-mode database, schema per research.md section 11 (symbols table with name, kind, file_id, line, column, language; indexes on name, kind+name, file_id). Bulk insert during build, incremental update on overlay commit.
+- [x] T051 [US4] Implement `search_symbols()` method in src/symbol/mod.rs: query SQLite by name (with LIKE for prefix match), optionally filter by kind and language. Return SearchMatch results.
+- [x] T052 [US4] Integrate symbol index build into `Index::build()` in src/index/mod.rs: after content index build, run symbol extraction for Tier 1 languages, bulk insert into SQLite.
+- [x] T053 [US4] Integrate symbol search into query router in src/query/mod.rs: detect `sym:`, `def:`, `ref:` prefixes, route to SymbolSearch path.
+- [x] T054 [US4] Write integration test for symbol search in tests/integration/: index a Rust file with `fn parse_query(...)`, query `sym:parse_query`, verify definition line returned. Query `sym:nonexistent`, verify empty results.
 
 **Checkpoint**: Symbol search works as a separate mode for Tier 1 languages with heuristic fallback for others.
 
