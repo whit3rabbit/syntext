@@ -1,6 +1,7 @@
 //! Index builder (`Index::build`) and reader (`Index::open`).
 
 mod build;
+mod compact;
 pub(crate) mod encoding;
 mod io_util;
 pub(crate) use io_util::open_readonly_nofollow;
@@ -110,11 +111,24 @@ fn projected_overlay_doc_count(
     old_overlay
         .docs
         .iter()
-        .filter(|doc| {
-            !visible_changed.contains(&doc.path) && !removed_paths.contains(&doc.path)
-        })
+        .filter(|doc| !visible_changed.contains(&doc.path) && !removed_paths.contains(&doc.path))
         .count()
         + visible_changed.len()
+}
+
+fn base_doc_id_limit(snapshot: &IndexSnapshot) -> u32 {
+    snapshot
+        .base_segments()
+        .iter()
+        .enumerate()
+        .filter_map(|(seg_idx, seg)| {
+            snapshot
+                .segment_base_ids()
+                .get(seg_idx)
+                .and_then(|base| base.checked_add(seg.doc_count))
+        })
+        .max()
+        .unwrap_or(0)
 }
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
 pub struct Index {
@@ -254,10 +268,11 @@ impl Index {
 
         let mut base_segments: Vec<MmapSegment> = Vec::new();
         let mut segment_base_ids: Vec<u32> = Vec::new();
-        let mut base_doc_paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut base_doc_paths: Vec<Option<std::path::PathBuf>> = Vec::new();
         let mut all_paths: Vec<std::path::PathBuf> = Vec::new();
         let mut path_doc_ids: HashMap<std::path::PathBuf, Vec<u32>> = HashMap::new();
-        let mut next_global_id: u32 = 0;
+        let mut max_global_id_exclusive: u32 = 0;
+        let mut prev_segment_end: u32 = 0;
 
         for seg_ref in &manifest.segments {
             let seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty() {
@@ -307,28 +322,57 @@ impl Index {
             // gigabytes of PathBuf allocations into path_doc_ids before the
             // post-loop guard triggers. The per-segment check caps the allocation
             // to at most one segment's worth of entries at a time.
-            let new_global_id =
-                next_global_id.checked_add(seg.doc_count).ok_or(IndexError::DocIdOverflow {
-                    base_doc_count: next_global_id,
-                    overlay_docs: 0,
-                })?;
-            if new_global_id > MAX_TOTAL_DOCS {
+            let segment_base_id = seg_ref.base_doc_id.unwrap_or(prev_segment_end);
+            if segment_base_id < prev_segment_end {
                 return Err(IndexError::CorruptIndex(format!(
-                    "segment would push total docs to {new_global_id}, exceeds safety limit of {MAX_TOTAL_DOCS}"
+                    "segment base_doc_id {} regresses previous end {}",
+                    segment_base_id, prev_segment_end
+                )));
+            }
+            let new_global_id_exclusive =
+                segment_base_id
+                    .checked_add(seg.doc_count)
+                    .ok_or(IndexError::DocIdOverflow {
+                        base_doc_count: segment_base_id,
+                        overlay_docs: 0,
+                    })?;
+            if new_global_id_exclusive > MAX_TOTAL_DOCS {
+                return Err(IndexError::CorruptIndex(format!(
+                    "segment would push total docs to {new_global_id_exclusive}, exceeds safety limit of {MAX_TOTAL_DOCS}"
                 )));
             }
 
-            segment_base_ids.push(next_global_id);
+            segment_base_ids.push(segment_base_id);
             // Iterate using local 0-based indices (0..seg.doc_count).
             for local_id in 0..seg.doc_count {
                 if let Some(doc) = seg.get_doc(local_id) {
-                    debug_assert_eq!(doc.doc_id as usize, base_doc_paths.len());
-                    base_doc_paths.push(doc.path.clone());
-                    path_doc_ids.entry(doc.path.clone()).or_default().push(doc.doc_id);
+                    let expected_doc_id = segment_base_id.saturating_add(local_id);
+                    if doc.doc_id != expected_doc_id {
+                        return Err(IndexError::CorruptIndex(format!(
+                            "segment doc_id {} does not match expected {}",
+                            doc.doc_id, expected_doc_id
+                        )));
+                    }
+                    let doc_idx = doc.doc_id as usize;
+                    if base_doc_paths.len() <= doc_idx {
+                        base_doc_paths.resize(doc_idx + 1, None);
+                    }
+                    if base_doc_paths[doc_idx].is_some() {
+                        return Err(IndexError::CorruptIndex(format!(
+                            "duplicate base doc_id {} across segments",
+                            doc.doc_id
+                        )));
+                    }
+                    base_doc_paths[doc_idx] = Some(doc.path.clone());
+                    path_doc_ids
+                        .entry(doc.path.clone())
+                        .or_default()
+                        .push(doc.doc_id);
                     all_paths.push(doc.path);
                 }
             }
-            next_global_id = new_global_id;
+            prev_segment_end = new_global_id_exclusive;
+            max_global_id_exclusive = max_global_id_exclusive.max(new_global_id_exclusive);
             base_segments.push(seg);
         }
 
@@ -345,15 +389,17 @@ impl Index {
 
         // Final sanity check: the per-segment guard above should have caught
         // any overage, but verify the accumulated total before the vec allocation.
-        if next_global_id > MAX_TOTAL_DOCS {
+        if max_global_id_exclusive > MAX_TOTAL_DOCS {
             return Err(IndexError::CorruptIndex(format!(
-                "manifest claims {next_global_id} total docs, exceeds safety limit of {MAX_TOTAL_DOCS}"
+                "manifest claims {max_global_id_exclusive} total docs, exceeds safety limit of {MAX_TOTAL_DOCS}"
             )));
         }
-        let mut doc_to_file_id = vec![u32::MAX; next_global_id as usize];
+        let mut doc_to_file_id = vec![u32::MAX; max_global_id_exclusive as usize];
         for (gid, path) in base.base_doc_paths.iter().enumerate() {
-            if let Some(fid) = path_index.file_id(path) {
-                doc_to_file_id[gid] = fid;
+            if let Some(path) = path {
+                if let Some(fid) = path_index.file_id(path) {
+                    doc_to_file_id[gid] = fid;
+                }
             }
         }
 
@@ -466,6 +512,7 @@ impl Index {
 
         // Total base doc count for overlay doc_id assignment.
         let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
+        let base_doc_id_limit = base_doc_id_limit(&old_snap);
 
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
@@ -536,7 +583,7 @@ impl Index {
         }
 
         let overlay = OverlayView::build_incremental(
-            base_doc_count,
+            base_doc_id_limit,
             &old_snap.overlay,
             new_files,
             &visible_changed,
@@ -630,18 +677,8 @@ impl Index {
             self.commit_batch()?;
         }
 
-        let snap = self.snapshot.load();
-        let base_docs: usize = snap.base_segments().iter().map(|s| s.doc_count as usize).sum();
-        let overlay_docs = snap.overlay.docs.len();
-        let overlay_ratio_exceeded = if base_docs == 0 {
-            overlay_docs > 0
-        } else {
-            overlay_docs as f64 / base_docs as f64 > 0.10
-        };
-        let segment_limit_exceeded = snap.base.segments.len() > self.config.max_segments.max(1);
-        drop(snap);
-
-        if !overlay_ratio_exceeded && !segment_limit_exceeded {
+        let snapshot = self.snapshot();
+        if compact::plan(snapshot.as_ref(), &self.config).is_none() {
             return Ok(false);
         }
 
@@ -651,16 +688,19 @@ impl Index {
 
     /// Blocking compaction path.
     ///
-    /// The current implementation rebuilds the index from the working tree with
-    /// a larger target batch size so the resulting base segment count is driven
-    /// back down toward `config.max_segments`.
+    /// Rewrites fresh base segments from the current snapshot state, folding
+    /// live overlay docs into the base index without rereading unchanged files
+    /// from the working tree.
     pub fn compact(&self) -> Result<(), IndexError> {
         if self.pending.has_uncommitted() {
             self.commit_batch()?;
         }
 
-        let batch_size = build::compact_batch_size_for(&self.config)?;
-        self.rebuild_with(|config| build::build_index_with_batch_size(config, batch_size))?;
+        let snapshot = self.snapshot();
+        let Some(plan) = compact::forced_plan(snapshot.as_ref(), &self.config) else {
+            return Ok(());
+        };
+        self.rebuild_with(|config| compact::compact_index(config, snapshot, plan))?;
         Ok(())
     }
 
@@ -683,6 +723,7 @@ impl Index {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use xxhash_rust::xxh64::xxh64;
 
     fn git(args: &[&str], repo: &std::path::Path) {
         let status = std::process::Command::new("git")
@@ -711,6 +752,61 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "git rev-parse HEAD failed");
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn base_doc_hash(index: &Index, relative_path: &std::path::Path) -> Option<u64> {
+        let snapshot = index.snapshot();
+        for seg in snapshot.base_segments() {
+            for local_doc_id in 0..seg.doc_count {
+                let doc = seg.get_doc(local_doc_id)?;
+                if doc.path == relative_path {
+                    return Some(doc.content_hash);
+                }
+            }
+        }
+        None
+    }
+
+    fn write_segment_with_global_doc_id(
+        index_dir: &std::path::Path,
+        doc_id: u32,
+        relative_path: &str,
+        content: &[u8],
+    ) -> crate::index::manifest::SegmentRef {
+        let mut writer = crate::index::segment::SegmentWriter::new();
+        writer.add_document(
+            doc_id,
+            std::path::Path::new(relative_path),
+            xxh64(content, 0),
+            content.len() as u64,
+        );
+        for gram_hash in crate::tokenizer::build_all(content) {
+            writer.add_gram_posting(gram_hash, doc_id);
+        }
+        let mut seg_ref: crate::index::manifest::SegmentRef =
+            writer.write_to_dir(index_dir).unwrap().into();
+        seg_ref.base_doc_id = Some(doc_id);
+        seg_ref
+    }
+
+    fn write_sparse_manifest_index(
+        repo: &std::path::Path,
+        index_dir: &std::path::Path,
+    ) -> Config {
+        std::fs::write(repo.join("a.rs"), b"fn alpha() {}\n").unwrap();
+        std::fs::write(repo.join("b.rs"), b"fn beta() {}\n").unwrap();
+
+        let seg_a = write_segment_with_global_doc_id(index_dir, 0, "a.rs", b"fn alpha() {}\n");
+        let seg_b = write_segment_with_global_doc_id(index_dir, 5, "b.rs", b"fn beta() {}\n");
+        let mut manifest = crate::index::manifest::Manifest::new(vec![seg_a, seg_b], 2);
+        manifest.scan_threshold_fraction = Some(0.10);
+        manifest.save(index_dir).unwrap();
+
+        Config {
+            index_dir: index_dir.to_path_buf(),
+            repo_root: repo.to_path_buf(),
+            ..Config::default()
+        }
     }
 
     #[test]
@@ -751,6 +847,36 @@ mod tests {
             snap.scan_threshold, threshold,
             "snapshot.scan_threshold must match manifest value"
         );
+    }
+
+    #[test]
+    fn open_accepts_manifest_with_gapped_base_doc_ids() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        let config = write_sparse_manifest_index(repo.path(), index_dir.path());
+        let index = Index::open(config).unwrap();
+
+        assert_eq!(index.snapshot().segment_base_ids(), &[0, 5]);
+        let all_doc_ids: Vec<u32> = index.snapshot().all_doc_ids().iter().collect();
+        assert_eq!(all_doc_ids, vec![0, 5]);
+        assert_eq!(index.search("alpha", &SearchOptions::default()).unwrap().len(), 1);
+        assert_eq!(index.search("beta", &SearchOptions::default()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn commit_batch_overlay_ids_start_after_max_base_doc_id() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        let config = write_sparse_manifest_index(repo.path(), index_dir.path());
+        let index = Index::open(config).unwrap();
+
+        let new_path = repo.path().join("c.rs");
+        std::fs::write(&new_path, b"fn gamma() {}\n").unwrap();
+        index.notify_change(&new_path).unwrap();
+        index.commit_batch().unwrap();
+
+        let overlay_ids: Vec<u32> = index.snapshot().overlay.docs.iter().map(|doc| doc.doc_id).collect();
+        assert_eq!(overlay_ids, vec![6]);
     }
 
     #[test]
@@ -1148,6 +1274,59 @@ mod tests {
     }
 
     #[test]
+    fn compact_preserves_untouched_prefix_segments_in_manifest() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..4 {
+            std::fs::write(
+                repo.path().join(format!("file_{i}.rs")),
+                format!("fn marker_{i}() {{ println!(\"{i}\"); }}\n"),
+            )
+            .unwrap();
+        }
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            max_segments: 3,
+            ..Config::default()
+        };
+        let index = build::build_index_with_batch_size(config.clone(), 1).unwrap();
+        let before = Manifest::load(&config.index_dir).unwrap();
+        assert_eq!(before.segments.len(), 4, "fixture must begin with four segments");
+
+        index.compact().unwrap();
+
+        let after = Manifest::load(&config.index_dir).unwrap();
+        assert_eq!(after.segments.len(), 3, "selective compaction should rewrite only the suffix");
+        assert_eq!(after.segments[0].segment_id, before.segments[0].segment_id);
+        assert_eq!(after.segments[1].segment_id, before.segments[1].segment_id);
+        assert_ne!(after.segments[2].segment_id, before.segments[2].segment_id);
+    }
+
+    #[test]
+    fn compact_preserves_actual_total_files_for_gapped_prefix_manifest() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        let config = write_sparse_manifest_index(repo.path(), index_dir.path());
+        let index = Index::open(config.clone()).unwrap();
+
+        index.compact().unwrap();
+
+        let manifest = Manifest::load(&config.index_dir).unwrap();
+        assert_eq!(
+            manifest.total_files_indexed, 2,
+            "compact() must record actual live file count, not max doc_id + 1, when base ranges are sparse"
+        );
+        assert_eq!(
+            manifest.total_docs(),
+            manifest.total_files_indexed,
+            "manifest doc_count sum and reported total files should stay aligned after gapped compaction"
+        );
+    }
+
+    #[test]
     fn maybe_compact_rebuilds_when_overlay_ratio_exceeds_threshold() {
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
@@ -1205,6 +1384,82 @@ mod tests {
                 .any(|m| m.path == std::path::Path::new("base_1.rs")),
             "compaction must preserve the updated working tree content"
         );
+    }
+
+    #[test]
+    fn compact_preserves_base_snapshot_when_working_tree_drifts() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        let path = repo.path().join("tracked.rs");
+        std::fs::write(&path, "fn alpha() {}\n").unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let relative = std::path::Path::new("tracked.rs");
+        let alpha_hash = xxh64(b"fn alpha() {}\n", 0);
+        let beta_hash = xxh64(b"fn beta() {}\n", 0);
+        assert_eq!(base_doc_hash(&index, relative), Some(alpha_hash));
+
+        std::fs::write(&path, "fn beta() {}\n").unwrap();
+        index.compact().unwrap();
+
+        assert_eq!(
+            base_doc_hash(&index, relative),
+            Some(alpha_hash),
+            "compact() must preserve the indexed base snapshot, not reread unrelated working tree changes"
+        );
+        assert!(
+            base_doc_hash(&index, relative) != Some(beta_hash),
+            "compact() must not absorb uncommitted working tree edits into base metadata"
+        );
+    }
+
+    #[test]
+    fn compact_folds_overlay_snapshot_without_rereading_disk() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        for i in 0..10 {
+            std::fs::write(
+                repo.path().join(format!("tracked_{i}.rs")),
+                format!("fn alpha_{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        let path = repo.path().join("tracked_0.rs");
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let relative = std::path::Path::new("tracked_0.rs");
+        let bravo_hash = xxh64(b"fn bravo() {}\n", 0);
+        let charlie_hash = xxh64(b"fn charlie() {}\n", 0);
+
+        std::fs::write(&path, "fn bravo() {}\n").unwrap();
+        index.notify_change(&path).unwrap();
+        index.commit_batch().unwrap();
+
+        std::fs::write(&path, "fn charlie() {}\n").unwrap();
+        index.compact().unwrap();
+
+        assert_eq!(
+            base_doc_hash(&index, relative),
+            Some(bravo_hash),
+            "compact() must fold the committed overlay snapshot into base segments"
+        );
+        assert!(
+            base_doc_hash(&index, relative) != Some(charlie_hash),
+            "compact() must not reread newer uncommitted disk content while folding overlay docs"
+        );
+        assert_eq!(index.snapshot().overlay.docs.len(), 0);
     }
 
     #[test]

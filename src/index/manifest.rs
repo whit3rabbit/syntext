@@ -17,6 +17,9 @@ use crate::IndexError;
 pub struct SegmentRef {
     /// UUID string that uniquely identifies this segment across rebuilds.
     pub segment_id: String,
+    /// First global doc_id stored in this segment, if explicitly recorded.
+    #[serde(default)]
+    pub base_doc_id: Option<u32>,
     /// Legacy combined filename (`<uuid>.seg`). Empty for v3 segments.
     #[serde(default)]
     pub filename: String,
@@ -36,6 +39,7 @@ impl From<SegmentMeta> for SegmentRef {
     fn from(m: SegmentMeta) -> Self {
         SegmentRef {
             segment_id: m.segment_id.to_string(),
+            base_doc_id: None,
             filename: m.filename,
             dict_filename: m.dict_filename,
             post_filename: m.post_filename,
@@ -273,6 +277,7 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         let seg_ref = SegmentRef {
             segment_id: id.clone(),
+            base_doc_id: Some(12),
             filename: String::new(),
             dict_filename: format!("{id}.dict"),
             post_filename: format!("{id}.post"),
@@ -282,6 +287,7 @@ mod tests {
         let manifest = Manifest::new(vec![seg_ref], 5);
         manifest.save(dir.path()).unwrap();
         let loaded = Manifest::load(dir.path()).unwrap();
+        assert_eq!(loaded.segments[0].base_doc_id, Some(12));
         assert_eq!(loaded.segments[0].dict_filename, format!("{id}.dict"));
         assert_eq!(loaded.segments[0].post_filename, format!("{id}.post"));
     }
@@ -299,6 +305,7 @@ mod tests {
         let manifest = Manifest::new(
             vec![SegmentRef {
                 segment_id: "kept".into(),
+                base_doc_id: Some(0),
                 filename: String::new(),
                 dict_filename: "kept.dict".into(),
                 post_filename: "kept.post".into(),
@@ -362,6 +369,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let seg_ref = SegmentRef {
             segment_id: "../../etc/passwd".into(),
+            base_doc_id: None,
             filename: String::new(),
             dict_filename: "a.dict".into(),
             post_filename: "a.post".into(),

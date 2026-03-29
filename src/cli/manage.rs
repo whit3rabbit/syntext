@@ -92,6 +92,7 @@ pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bo
             return handle_output(err);
         }
     }
+    drop(index);
     0
 }
 
@@ -173,7 +174,10 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let canonical_root = match config.repo_root.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("st update: invalid repo root \'{}\': {e}", config.repo_root.display());
+            eprintln!(
+                "st update: invalid repo root \'{}\': {e}",
+                config.repo_root.display()
+            );
             return 2;
         }
     };
@@ -277,7 +281,11 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
             return handle_output(err);
         }
     }
-    if notify_errors > 0 { 1 } else { 0 }
+    if notify_errors > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 fn handle_output(err: io::Error) -> i32 {
@@ -291,14 +299,18 @@ fn handle_output(err: io::Error) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_git_binary;
     #[cfg(unix)]
     use super::is_safe_git_path;
+    use super::resolve_git_binary;
 
     #[test]
     fn git_binary_resolves_to_absolute_path() {
         let path = resolve_git_binary();
-        assert!(path.is_absolute(), "git binary must resolve to absolute path, got: {:?}", path);
+        assert!(
+            path.is_absolute(),
+            "git binary must resolve to absolute path, got: {:?}",
+            path
+        );
     }
 
     #[cfg(unix)]

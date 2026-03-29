@@ -22,20 +22,6 @@ use crate::{Config, IndexError};
 /// Target batch size (content bytes) before flushing a segment.
 pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
-pub(super) fn compact_batch_size_for(config: &Config) -> Result<u64, IndexError> {
-    let total_bytes: u64 = enumerate_files(config)?
-        .iter()
-        .map(|(_, _, size)| *size)
-        .sum();
-    if total_bytes == 0 {
-        return Ok(BATCH_SIZE_BYTES);
-    }
-
-    let target_segments = u64::try_from(config.max_segments.max(1)).unwrap_or(u64::MAX);
-    let target = total_bytes.saturating_add(target_segments - 1) / target_segments;
-    Ok(target.max(BATCH_SIZE_BYTES).max(1))
-}
-
 /// Measure the crossover fraction where index lookup becomes cheaper than a
 /// full scan for this repository.
 ///
@@ -208,16 +194,17 @@ pub(super) fn build_index_with_batch_size(
             })
             .collect();
 
+        let batch_start_doc_id = next_doc_id;
         let mut writer = SegmentWriter::with_capacity(batch.len(), 120);
         for ((abs_path, rel_path, size), result) in batch.iter().zip(results.iter()) {
             if let Some((content_hash, grams)) = result {
                 let doc_id = next_doc_id;
-                next_doc_id = next_doc_id.checked_add(1).ok_or(
-                    IndexError::DocIdOverflow {
+                next_doc_id = next_doc_id
+                    .checked_add(1)
+                    .ok_or(IndexError::DocIdOverflow {
                         base_doc_count: doc_id,
                         overlay_docs: 0,
-                    },
-                )?;
+                    })?;
                 writer.add_document(doc_id, rel_path, *content_hash, *size);
                 for &gram_hash in grams {
                     writer.add_gram_posting(gram_hash, doc_id);
@@ -257,7 +244,9 @@ pub(super) fn build_index_with_batch_size(
             );
         }
 
-        seg_refs.push(meta.into());
+        let mut seg_ref: SegmentRef = meta.into();
+        seg_ref.base_doc_id = Some(batch_start_doc_id);
+        seg_refs.push(seg_ref);
     }
 
     let total_indexed = next_doc_id;
@@ -306,22 +295,22 @@ pub(super) fn build_index_with_batch_size(
                                 // unwrap_or(0) would silently assign file_id 0, colliding
                                 // with the first legitimately indexed file and corrupting
                                 // its symbol rows and any incremental delete operation.
-                                let Some(pos) = indexed_paths
-                                    .iter()
-                                    .position(|p| p == rel_path)
+                                let Some(pos) = indexed_paths.iter().position(|p| p == rel_path)
                                 else {
                                     continue;
                                 };
                                 let file_id = pos as u32;
                                 let rel_path_str = rel_path.to_string_lossy();
-                                if let Err(e) = sym_idx.index_file(file_id, &rel_path_str, content.as_ref()) {
-                                        if config.verbose {
-                                            eprintln!(
-                                                "syntext: warning: symbol index failed for {}: {e}",
-                                                rel_path.display()
-                                            );
-                                        }
+                                if let Err(e) =
+                                    sym_idx.index_file(file_id, &rel_path_str, content.as_ref())
+                                {
+                                    if config.verbose {
+                                        eprintln!(
+                                            "syntext: warning: symbol index failed for {}: {e}",
+                                            rel_path.display()
+                                        );
                                     }
+                                }
                             }
                         }
                     }

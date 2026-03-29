@@ -311,6 +311,26 @@ impl MmapSegment {
         Some(self.dict_lookup(gram_hash)?.1)
     }
 
+    pub(crate) fn gram_hashes(&self) -> Result<Vec<u64>, IndexError> {
+        self.check_len()
+            .ok_or_else(|| IndexError::CorruptIndex("segment length changed".into()))?;
+        let dict_len = (self.gram_count as usize)
+            .checked_mul(DICT_ENTRY_SIZE)
+            .ok_or_else(|| IndexError::CorruptIndex("dictionary size overflow".into()))?;
+        let dict = self
+            .mmap
+            .get(self.dict_offset..self.dict_offset.saturating_add(dict_len))
+            .ok_or_else(|| IndexError::CorruptIndex("truncated dictionary".into()))?;
+
+        let mut hashes = Vec::with_capacity(self.gram_count as usize);
+        for entry in dict.chunks_exact(DICT_ENTRY_SIZE) {
+            hashes.push(u64::from_le_bytes(entry[0..8].try_into().map_err(
+                |_| IndexError::CorruptIndex("dictionary entry hash".into()),
+            )?));
+        }
+        Ok(hashes)
+    }
+
     /// Return the `DocEntry` for a local doc_id (0-based within this segment).
     pub fn get_doc(&self, doc_id: u32) -> Option<DocEntry> {
         self.check_len()?;
@@ -322,7 +342,7 @@ impl MmapSegment {
         // bounds-checks it), but a defence-in-depth check here costs nothing.
         let idx_pos = self
             .doc_table_offset
-            .checked_add((doc_id as usize).checked_mul(8)?)? ;
+            .checked_add((doc_id as usize).checked_mul(8)?)?;
         let abs_off =
             u64::from_le_bytes(self.mmap.get(idx_pos..idx_pos + 8)?.try_into().ok()?) as usize;
         // Security: validate abs_off points within the doc table section, not the
@@ -401,9 +421,7 @@ impl MmapSegment {
         // crafted V2 dict entry with an abs_off pointing into the doc table or
         // header would return garbage bytes as a posting list (information disclosure).
         const MIN_POSTING_BYTES: usize = 9;
-        if abs_off < HEADER_SIZE
-            || abs_off.saturating_add(MIN_POSTING_BYTES) > self.dict_offset
-        {
+        if abs_off < HEADER_SIZE || abs_off.saturating_add(MIN_POSTING_BYTES) > self.dict_offset {
             return None;
         }
         let b = self.mmap.get(abs_off..)?;
@@ -557,8 +575,14 @@ mod tests {
         std::fs::write(&dict_path, b"SNTX_corrupted_on_disk").unwrap();
 
         // Both operations use the private copy; both must succeed.
-        assert!(seg.verify_integrity().is_ok(), "private copy should be intact");
-        assert!(seg.get_doc(0).is_some(), "private copy should serve doc reads");
+        assert!(
+            seg.verify_integrity().is_ok(),
+            "private copy should be intact"
+        );
+        assert!(
+            seg.get_doc(0).is_some(),
+            "private copy should serve doc reads"
+        );
     }
 
     #[test]
@@ -604,8 +628,14 @@ mod tests {
         writer.add_gram_posting(0x1234, 0);
         let meta = writer.write_to_dir(dir.path()).unwrap();
 
-        assert!(dir.path().join(&meta.dict_filename).exists(), "missing .dict");
-        assert!(dir.path().join(&meta.post_filename).exists(), "missing .post");
+        assert!(
+            dir.path().join(&meta.dict_filename).exists(),
+            "missing .dict"
+        );
+        assert!(
+            dir.path().join(&meta.post_filename).exists(),
+            "missing .post"
+        );
         // No .seg file for v3
         let any_seg = std::fs::read_dir(dir.path())
             .unwrap()
@@ -720,7 +750,10 @@ mod tests {
             &dir.path().join(&meta.dict_filename),
             &dir.path().join(&meta.post_filename),
         );
-        assert!(result.is_err(), "open_split must reject corrupt .post magic");
+        assert!(
+            result.is_err(),
+            "open_split must reject corrupt .post magic"
+        );
     }
 
     #[test]
@@ -743,9 +776,11 @@ mod tests {
         // Footer layout (from end): [doc_table_off(8)][reserved(8)][dict_off(8)]
         //                           [doc_cnt(4)][gram_cnt(4)][cksum(8)][ver(4)][magic(4)]
         let footer_start = len - FOOTER_SIZE;
-        let dict_offset_value =
-            u64::from_le_bytes(bytes[footer_start + 16..footer_start + 24].try_into().unwrap())
-                as usize;
+        let dict_offset_value = u64::from_le_bytes(
+            bytes[footer_start + 16..footer_start + 24]
+                .try_into()
+                .unwrap(),
+        ) as usize;
 
         // Overwrite doc 0's abs_off pointer to point 4 bytes into the dict section.
         let doc_table_offset = HEADER_SIZE; // always 40 for V3

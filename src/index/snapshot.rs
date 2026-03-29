@@ -22,8 +22,8 @@ pub struct BaseSegments {
     pub segments: Vec<MmapSegment>,
     /// Global doc_id offsets for each segment.
     pub base_ids: Vec<u32>,
-    /// Global base doc_id -> repository-relative path.
-    pub base_doc_paths: Vec<PathBuf>,
+    /// Global base doc_id -> repository-relative path, sparse for gapped ranges.
+    pub base_doc_paths: Vec<Option<PathBuf>>,
     /// Repository-relative path -> all base doc_ids for that path.
     pub path_doc_ids: HashMap<PathBuf, Vec<u32>>,
 }
