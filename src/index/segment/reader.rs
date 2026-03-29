@@ -15,6 +15,9 @@ pub(super) struct SegmentLayout {
     pub dict_offset: usize,
     pub doc_count: u32,
     pub gram_count: u32,
+    /// Conservative lower bound for postings data: past the fixed-size doc
+    /// index entries (8 bytes each).
+    pub postings_start: usize,
 }
 
 /// Validate magic, checksum, and parse offsets from a segment mmap.
@@ -116,11 +119,14 @@ pub(super) fn parse_segment_mmap(
         return Err(corrupt("dict_offset precedes doc_table_offset"));
     }
 
+    let postings_start = doc_table_offset.saturating_add(doc_count as usize * 8);
+
     Ok(SegmentLayout {
         doc_table_offset,
         dict_offset,
         doc_count,
         gram_count,
+        postings_start,
     })
 }
 

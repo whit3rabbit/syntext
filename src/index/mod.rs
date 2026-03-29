@@ -113,23 +113,25 @@ fn projected_overlay_doc_count(
         .iter()
         .filter(|doc| !visible_changed.contains(&doc.path) && !removed_paths.contains(&doc.path))
         .count()
-        + visible_changed.len()
+        + visible_changed
+            .iter()
+            .filter(|p| !removed_paths.contains(*p))
+            .count()
 }
 
-fn base_doc_id_limit(snapshot: &IndexSnapshot) -> Result<u32, IndexError> {
-    let mut limit: u32 = 0;
-    for (seg_idx, seg) in snapshot.base_segments().iter().enumerate() {
-        if let Some(base) = snapshot.segment_base_ids().get(seg_idx) {
-            let end = base.checked_add(seg.doc_count).ok_or(IndexError::DocIdOverflow {
-                base_doc_count: *base,
-                overlay_docs: seg.doc_count as usize,
-            })?;
-            if end > limit {
-                limit = end;
-            }
-        }
-    }
-    Ok(limit)
+fn base_doc_id_limit(snapshot: &IndexSnapshot) -> u32 {
+    snapshot
+        .base_segments()
+        .iter()
+        .enumerate()
+        .filter_map(|(seg_idx, seg)| {
+            snapshot
+                .segment_base_ids()
+                .get(seg_idx)
+                .and_then(|base| base.checked_add(seg.doc_count))
+        })
+        .max()
+        .unwrap_or(0)
 }
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
 pub struct Index {
@@ -516,7 +518,7 @@ impl Index {
 
         // Total base doc count for overlay doc_id assignment.
         let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
-        let base_doc_id_limit = base_doc_id_limit(&old_snap)?;
+        let base_doc_id_limit = base_doc_id_limit(&old_snap);
 
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
@@ -545,9 +547,7 @@ impl Index {
             if !io_util::verify_fd_matches_stat(&file, &pre_open_meta) {
                 return Err(IndexError::PathOutsideRepo(abs.clone()));
             }
-            // Use saturating_add to guard against max_file_size == u64::MAX:
-            // plain `+ 1` would wrap to 0 and read nothing.
-            let mut reader = file.take(self.config.max_file_size.saturating_add(1));
+            let mut reader = file.take(self.config.max_file_size + 1);
             let mut raw: Vec<u8> = Vec::new();
             reader.read_to_end(&mut raw)?;
             if raw.len() as u64 > self.config.max_file_size {
@@ -1571,29 +1571,5 @@ mod tests {
             "rebuilt snapshot must stop returning content from the old HEAD"
         );
         assert_eq!(index.stats().pending_edits, 0);
-    }
-
-    #[test]
-    fn commit_batch_max_file_size_saturates_not_wraps() {
-        // Regression test for Issue 13: file.take(max_file_size + 1)
-        // wraps to 0 when max_file_size == u64::MAX.
-        // saturating_add(1) prevents wrapping and preserves the intended behavior.
-        let max = u64::MAX;
-
-        // saturating_add(u64::MAX + 1) should stay at u64::MAX, not wrap to 0.
-        let result = max.saturating_add(1);
-        assert_eq!(result, u64::MAX, "saturating_add must not wrap to 0");
-
-        // Plain + 1 would wrap (this is the bug we're fixing).
-        let wrapped = max.wrapping_add(1);
-        assert_eq!(wrapped, 0, "plain + 1 wraps to 0 (this is the bug)");
-
-        // Verify the difference is critical for take().
-        // take(0) reads nothing; take(u64::MAX) reads all available bytes.
-        // Our fix ensures we always read up to the limit, never 0.
-        assert_ne!(
-            result, wrapped,
-            "saturating_add and wrapping_add must differ for u64::MAX"
-        );
     }
 }

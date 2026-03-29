@@ -105,6 +105,8 @@ pub struct MmapSegment {
     pub gram_count: u32,
     doc_table_offset: usize,
     dict_offset: usize,
+    /// Conservative lower bound for postings in V2 mmap reads. 0 for V3.
+    postings_start: usize,
     postings: PostingsBacking,
 }
 
@@ -160,6 +162,7 @@ impl MmapSegment {
             gram_count: layout.gram_count,
             doc_table_offset: layout.doc_table_offset,
             dict_offset: layout.dict_offset,
+            postings_start: layout.postings_start,
             postings: PostingsBacking::V2Mmap,
         })
     }
@@ -251,6 +254,7 @@ impl MmapSegment {
             gram_count: layout.gram_count,
             doc_table_offset: layout.doc_table_offset,
             dict_offset: layout.dict_offset,
+            postings_start: 0,
             postings: PostingsBacking::V3File(post_file),
         })
     }
@@ -421,7 +425,7 @@ impl MmapSegment {
         // crafted V2 dict entry with an abs_off pointing into the doc table or
         // header would return garbage bytes as a posting list (information disclosure).
         const MIN_POSTING_BYTES: usize = 9;
-        if abs_off < HEADER_SIZE || abs_off.saturating_add(MIN_POSTING_BYTES) > self.dict_offset {
+        if abs_off < self.postings_start || abs_off.saturating_add(MIN_POSTING_BYTES) > self.dict_offset {
             return None;
         }
         let b = self.mmap.get(abs_off..)?;
