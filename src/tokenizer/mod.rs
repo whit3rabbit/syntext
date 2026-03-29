@@ -164,9 +164,16 @@ fn boundary_positions_lower(bytes: &[u8]) -> Vec<usize> {
     positions
 }
 
-/// Thread-local buffered variant of `boundary_positions_lower`.
-/// Reuses a Vec allocation across calls to reduce allocator pressure.
-fn boundary_positions_lower_buffered(bytes: &[u8]) -> Vec<usize> {
+/// Thread-local buffered variant of `boundary_positions_lower` using a callback
+/// pattern to avoid cloning the result Vec on every call.
+///
+/// The caller receives a `&[usize]` slice valid only for the duration of `f`.
+/// This eliminates the allocation that `buf.clone()` previously incurred on
+/// every call, which matters on the hot path in `build_all` during index build.
+fn with_boundary_positions_lower<F, R>(bytes: &[u8], f: F) -> R
+where
+    F: FnOnce(&[usize]) -> R,
+{
     thread_local! {
         static BUF: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::with_capacity(256));
     }
@@ -197,7 +204,7 @@ fn boundary_positions_lower_buffered(bytes: &[u8]) -> Vec<usize> {
             buf.push(n);
         }
         buf.dedup();
-        buf.clone()
+        f(&buf)
     })
 }
 
@@ -228,21 +235,22 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
     }
 
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
-    let lower_boundaries = boundary_positions_lower_buffered(&lower);
-    let mut hashes = Vec::new();
-    append_grams_for_boundaries(&mut hashes, &lower, &lower_boundaries);
+    with_boundary_positions_lower(&lower, |lower_boundaries| {
+        let mut hashes = Vec::new();
+        append_grams_for_boundaries(&mut hashes, &lower, lower_boundaries);
 
-    // Preserve the token-aligned lowercase spans, then add only the extra
-    // spans unlocked by lowercase->uppercase transitions in CamelCase tokens.
-    let camel_boundaries = camel_case_boundaries(input);
-    if camel_boundaries.is_empty() {
-        return hashes;
-    }
+        // Preserve the token-aligned lowercase spans, then add only the extra
+        // spans unlocked by lowercase->uppercase transitions in CamelCase tokens.
+        let camel_boundaries = camel_case_boundaries(input);
+        if camel_boundaries.is_empty() {
+            return hashes;
+        }
 
-    let merged_boundaries = merge_boundaries(&lower_boundaries, &camel_boundaries);
-    append_new_grams_for_boundaries(&mut hashes, &lower, &lower_boundaries, &merged_boundaries);
+        let merged_boundaries = merge_boundaries(lower_boundaries, &camel_boundaries);
+        append_new_grams_for_boundaries(&mut hashes, &lower, lower_boundaries, &merged_boundaries);
 
-    hashes
+        hashes
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -278,25 +286,25 @@ pub fn build_covering(input: &[u8]) -> Option<Vec<u64>> {
     }
 
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
-    let boundaries = boundary_positions_lower_buffered(&lower);
-
-    let mut hashes = Vec::new();
-    for w in boundaries.windows(2) {
-        let (start, end) = (w[0], w[1]);
-        let span = end - start;
-        if (MIN_GRAM_LEN..=MAX_GRAM_LEN).contains(&span) {
-            hashes.push(gram_hash(&lower[start..end]));
+    with_boundary_positions_lower(&lower, |boundaries| {
+        let mut hashes = Vec::new();
+        for w in boundaries.windows(2) {
+            let (start, end) = (w[0], w[1]);
+            let span = end - start;
+            if (MIN_GRAM_LEN..=MAX_GRAM_LEN).contains(&span) {
+                hashes.push(gram_hash(&lower[start..end]));
+            }
+            // Spans outside [MIN_GRAM_LEN, MAX_GRAM_LEN] are not covered.
+            // This leaves a gap in coverage (more false positives), but correctness
+            // is maintained because the verifier always re-checks each candidate.
         }
-        // Spans outside [MIN_GRAM_LEN, MAX_GRAM_LEN] are not covered.
-        // This leaves a gap in coverage (more false positives), but correctness
-        // is maintained because the verifier always re-checks each candidate.
-    }
 
-    if hashes.is_empty() {
-        None
-    } else {
-        Some(hashes)
-    }
+        if hashes.is_empty() {
+            None
+        } else {
+            Some(hashes)
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -559,10 +567,13 @@ mod tests {
     fn boundary_positions_lower_matches_standard_for_lowercase_input() {
         let lower = b"parse_query_and_build";
         assert_eq!(boundary_positions(lower), boundary_positions_lower(lower));
-        assert_eq!(
-            boundary_positions_lower(lower),
-            boundary_positions_lower_buffered(lower)
-        );
+        with_boundary_positions_lower(lower, |buffered| {
+            assert_eq!(
+                boundary_positions_lower(lower),
+                buffered,
+                "callback variant must produce same boundaries as non-buffered"
+            );
+        });
     }
 
     #[test]
@@ -572,15 +583,18 @@ mod tests {
             .take(8192)
             .map(|b| b.to_ascii_lowercase())
             .collect();
-        let _ = boundary_positions_lower_buffered(&large_lower);
+        // Warm up the thread-local buffer with a large input to trigger the shrink path.
+        with_boundary_positions_lower(&large_lower, |_| {});
 
         let small_lower: Vec<u8> = b"fn foo".iter().map(|b| b.to_ascii_lowercase()).collect();
         let from_lower = boundary_positions_lower(&small_lower);
-        let from_buffered = boundary_positions_lower_buffered(&small_lower);
-        assert_eq!(
-            from_lower, from_buffered,
-            "buffered variant must produce same boundaries as non-buffered after shrink"
-        );
+        with_boundary_positions_lower(&small_lower, |from_callback| {
+            assert_eq!(
+                from_lower,
+                from_callback,
+                "callback variant must produce same boundaries as non-buffered after shrink"
+            );
+        });
     }
 
     #[test]
