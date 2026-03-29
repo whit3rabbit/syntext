@@ -1632,60 +1632,97 @@ mod tests {
 
     #[test]
     fn base_doc_id_limit_overflow_returns_error() {
-        // B01: base_doc_id_limit must return an error when base + doc_count
-        // overflows u32, not silently drop the segment via filter_map.
+        // B01: base_doc_id_limit must return Err when base + doc_count
+        // overflows u32, not silently drop via filter_map.
+        //
+        // In practice MAX_TOTAL_DOCS (50M) prevents near-u32::MAX base_ids
+        // from being loaded via open(), so this is defense in depth. We test
+        // the function directly via a crafted IndexSnapshot.
+        use crate::index::snapshot::{new_snapshot, BaseSegments};
+
+        let _serial = serial_index_lock();
+        let index_dir = TempDir::new().unwrap();
+
+        // Create a real segment file (doc_count=1).
+        let seg_ref = write_segment_with_global_doc_id(
+            index_dir.path(),
+            0,
+            "a.rs",
+            b"fn alpha() {}\n",
+        );
+        let seg_file = index_dir.path().join(&seg_ref.dict_filename);
+        let seg = crate::index::segment::MmapSegment::open(&seg_file).unwrap();
+        assert_eq!(seg.doc_count, 1);
+
+        // Set base_id = u32::MAX so base + doc_count(1) overflows.
+        let base = Arc::new(BaseSegments {
+            segments: vec![seg],
+            base_ids: vec![u32::MAX],
+            base_doc_paths: vec![],
+            path_doc_ids: std::collections::HashMap::new(),
+        });
+        let snap = new_snapshot(
+            base,
+            crate::index::overlay::OverlayView::empty(),
+            roaring::RoaringBitmap::new(),
+            crate::path::PathIndex::build(&[]),
+            vec![],
+            0.10,
+        );
+        let result = base_doc_id_limit(&snap);
+        assert!(
+            result.is_err(),
+            "base_doc_id_limit must return Err on overflow, not silently drop"
+        );
+    }
+
+    #[test]
+    fn overlapping_base_doc_ids_rejected_on_open() {
+        // B04: two segments with overlapping [base_id, base_id + doc_count)
+        // ranges must be rejected as CorruptIndex on open.
         let _serial = serial_index_lock();
         let repo = TempDir::new().unwrap();
         let index_dir = TempDir::new().unwrap();
         std::fs::write(repo.path().join("a.rs"), b"fn alpha() {}\n").unwrap();
+        std::fs::write(repo.path().join("b.rs"), b"fn beta() {}\n").unwrap();
 
-        // Place segment at base_doc_id near u32::MAX so base + doc_count overflows.
-        let seg = write_segment_with_global_doc_id(
-            index_dir.path(),
-            u32::MAX - 1,
-            "a.rs",
-            b"fn alpha() {}\n",
-        );
-        // The segment has doc_count = 1; base = MAX-1, so checked_add(1) = MAX (ok).
-        // But if we craft a second segment that pushes past MAX, the function
-        // must return Err, not silently drop it.
-        let mut seg2_writer = crate::index::segment::SegmentWriter::new();
-        seg2_writer.add_document(
-            u32::MAX,
-            std::path::Path::new("b.rs"),
-            xxh64(b"fn beta() {}\n", 0),
-            13,
-        );
-        for gram_hash in crate::tokenizer::build_all(b"fn beta() {}\n") {
-            seg2_writer.add_gram_posting(gram_hash, u32::MAX);
-        }
-        let mut seg2: crate::index::manifest::SegmentRef =
-            seg2_writer.write_to_dir(index_dir.path()).unwrap().into();
-        seg2.base_doc_id = Some(u32::MAX);
+        // Segment A: base_doc_id=0, doc_count=1 -> range [0, 1)
+        let seg_a =
+            write_segment_with_global_doc_id(index_dir.path(), 0, "a.rs", b"fn alpha() {}\n");
+        // Segment B: base_doc_id=0, doc_count=1 -> range [0, 1) -- overlaps A
+        let seg_b =
+            write_segment_with_global_doc_id(index_dir.path(), 0, "b.rs", b"fn beta() {}\n");
 
-        let mut manifest = crate::index::manifest::Manifest::new(vec![seg, seg2], 2);
+        let mut manifest = crate::index::manifest::Manifest::new(vec![seg_a, seg_b], 2);
         manifest.scan_threshold_fraction = Some(0.10);
         manifest.save(index_dir.path()).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(index_dir.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
+            std::fs::set_permissions(
+                index_dir.path(),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
         }
 
-        std::fs::write(repo.path().join("b.rs"), b"fn beta() {}\n").unwrap();
         let config = Config {
             index_dir: index_dir.path().to_path_buf(),
             repo_root: repo.path().to_path_buf(),
             ..Config::default()
         };
-        let index = Index::open(config).unwrap();
-        // commit_batch calls base_doc_id_limit, which must fail on overflow.
-        index.notify_change(repo.path().join("a.rs"));
-        let result = index.commit_batch();
+        let result = Index::open(config);
         assert!(
             result.is_err(),
-            "commit_batch must propagate DocIdOverflow, not silently drop"
+            "open must reject overlapping base_doc_id ranges"
+        );
+        let err_msg = match result {
+            Err(e) => format!("{e}"),
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err_msg.contains("regresses") || err_msg.contains("CorruptIndex"),
+            "error should indicate corrupt/overlapping segments, got: {err_msg}"
         );
     }
 
