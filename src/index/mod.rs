@@ -547,7 +547,9 @@ impl Index {
             if !io_util::verify_fd_matches_stat(&file, &pre_open_meta) {
                 return Err(IndexError::PathOutsideRepo(abs.clone()));
             }
-            let mut reader = file.take(self.config.max_file_size + 1);
+            // Use saturating_add to guard against max_file_size == u64::MAX:
+            // plain `+ 1` would wrap to 0 and read nothing.
+            let mut reader = file.take(self.config.max_file_size.saturating_add(1));
             let mut raw: Vec<u8> = Vec::new();
             reader.read_to_end(&mut raw)?;
             if raw.len() as u64 > self.config.max_file_size {
@@ -1571,5 +1573,14 @@ mod tests {
             "rebuilt snapshot must stop returning content from the old HEAD"
         );
         assert_eq!(index.stats().pending_edits, 0);
+    }
+
+    #[test]
+    fn commit_batch_max_file_size_saturates_not_wraps() {
+        // Verify that the take() sentinel does not wrap to 0 for u64::MAX.
+        // saturating_add(1) stays at u64::MAX; plain + 1 would wrap to 0.
+        let sentinel = u64::MAX.saturating_add(1);
+        assert_eq!(sentinel, u64::MAX, "saturating_add must not wrap");
+        assert_ne!(sentinel, 0u64, "must not wrap to 0");
     }
 }

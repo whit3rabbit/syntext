@@ -280,6 +280,27 @@ pub(super) fn compact_index(
         )));
     }
     let manifest_bases = manifest_segment_bases(&previous_manifest.segments);
+
+    // Consistency guard: snapshot base_ids must agree with manifest bases for
+    // the segments we are compacting. A divergence (e.g., manifest written by a
+    // concurrent build that the snapshot predates) would cause incorrect
+    // global_doc_id assignments in the rewritten segments.
+    //
+    // This should never fire in normal operation: base segments only change when
+    // compact_index or build_index hold the exclusive lock (which we hold here).
+    // It is a defence-in-depth assert, not a runtime error path.
+    #[cfg(debug_assertions)]
+    for idx in plan.suffix_start..snapshot.base.base_ids.len().min(manifest_bases.len()) {
+        debug_assert_eq!(
+            snapshot.base.base_ids[idx],
+            manifest_bases[idx],
+            "snapshot base_id[{idx}]={} diverges from manifest base[{idx}]={} -- \
+             compaction would assign wrong global doc_ids",
+            snapshot.base.base_ids[idx],
+            manifest_bases[idx],
+        );
+    }
+
     let prefix_doc_id_limit = if plan.suffix_start == 0 {
         0
     } else {

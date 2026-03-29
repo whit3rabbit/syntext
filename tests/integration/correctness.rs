@@ -1,12 +1,10 @@
 //! Ripgrep correctness oracle tests.
 //!
 //! These tests compare syntext search results against `rg` (ripgrep) for
-//! the same patterns on the same fixture corpus. syntext must produce
-//! zero false negatives for all indexed patterns: every file that rg finds
-//! must also appear in syntext results.
-//!
-//! False positives (candidates filtered by the verifier) are acceptable
-//! at the index level but must not survive after verification.
+//! the same patterns on the same fixture corpus. For compatibility with `rg`,
+//! stable cases use exact equality over `(path, line_number, line_content)`.
+//! A small number of documented cases remain subset checks where syntext's
+//! semantics are intentionally narrower than rg's oracle semantics.
 //!
 //! # Running
 //!
@@ -32,8 +30,8 @@
 //! - Indexed regex repetition: `(fn_parse_filter_query)+` -- the required
 //!   repetition preserves grams from the inner literal, so this should narrow.
 //! - Dot-star fallback: `parse.*batch` -- no extractable grams spanning the
-//!   `.*`; query router must fall back to full scan. syntext must still find
-//!   all rg matches.
+//!   `.*`; query router must fall back to full scan. syntext must still match
+//!   rg after verification.
 //! - Path filter: `parse_query` restricted to `*.py` files only
 //! - Gitignore: `parse_query` must NOT find `build/output.txt`
 
