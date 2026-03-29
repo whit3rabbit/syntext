@@ -142,6 +142,12 @@ impl SegmentWriter {
 
     /// Build the on-disk byte representations.
     ///
+    /// **Single-use semantics:** `serialize` sorts and deduplicates `self.docs`
+    /// and `self.postings` in-place. Calling it a second time on the same writer
+    /// is safe and produces identical output (the data is already sorted/deduped),
+    /// but the mutation is surprising. Treat `write_to_dir` / `write_to_file` as
+    /// consuming the writer: do not call both on the same instance.
+    ///
     /// Returns `(dict_bytes, post_bytes, doc_count, gram_count)`.
     ///
     /// `dict_bytes`: header + doc table + page-aligned dictionary + footer.

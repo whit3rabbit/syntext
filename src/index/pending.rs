@@ -118,6 +118,13 @@ pub struct TakeResult {
 /// Compute the delete_set: base doc_ids that are invalidated by overlay
 /// changes (modified or deleted files).
 ///
+/// # Precondition: `modified_paths` and `deleted_paths` must be disjoint
+///
+/// `take_for_commit` guarantees mutual exclusivity: a path changed then
+/// deleted in the same batch is placed in `deleted_paths` only. If a caller
+/// passes overlapping sets, `RoaringBitmap::insert` is idempotent so the result
+/// is still correct, but it indicates a bug in the caller's logic.
+///
 /// Starts from `prev` (the previous snapshot's delete_set) and adds entries
 /// for the current delta only. The base is immutable between full builds, so
 /// the delete_set is monotonically growing and this is always correct.

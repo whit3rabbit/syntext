@@ -81,6 +81,14 @@ impl OverlayView {
 
     /// Build an overlay from a set of dirty files.
     ///
+    /// # Caller contract: content must be pre-normalized
+    ///
+    /// `dirty_files` content is stored as-is and returned by the resolver for
+    /// verification. Callers MUST call `normalize_encoding` before building the
+    /// overlay so that UTF-16 / BOM content is transcoded to UTF-8. `commit_batch`
+    /// in `index/mod.rs` satisfies this contract. Direct callers (e.g., tests)
+    /// using raw byte literals are exempt because ASCII source is already valid UTF-8.
+    ///
     /// `base_doc_count` is the total doc count across all base segments.
     /// Overlay doc_ids start at `base_doc_count` to stay disjoint.
     /// `dirty_files` maps repo-relative path to file content.
