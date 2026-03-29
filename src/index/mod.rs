@@ -143,10 +143,11 @@ impl Index {
                 if meta.mode() & 0o077 != 0 {
                     if config.strict_permissions {
                         return Err(IndexError::CorruptIndex(format!(
-                            "index dir has mode {:04o}; expected 0700 (no group/other bits). \
-                             Fix with: chmod 700 {:?}",
-                            meta.mode() & 0o777,
+                            "index dir {:?} has mode {:04o}; expected 0700 (no group/other bits). \
+                             group/other access enables SIGBUS DoS via ftruncate. \
+                             Fix with: chmod 700, or set strict_permissions=false",
                             config.index_dir,
+                            meta.mode() & 0o777,
                         )));
                     } else if config.verbose {
                         eprintln!(
