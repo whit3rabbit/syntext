@@ -1,13 +1,17 @@
 //! Index builder (`Index::build`) and reader (`Index::open`).
 
 mod build;
+mod commit;
 mod compact;
+mod compact_plan;
 pub(crate) mod encoding;
-mod io_util;
+mod helpers;
+pub(crate) mod io_util;
 pub(crate) use io_util::open_readonly_nofollow;
 #[cfg(unix)]
 pub(crate) use io_util::verify_fd_matches_stat;
 pub mod manifest;
+mod open;
 pub mod overlay;
 pub mod pending;
 pub mod segment;
@@ -20,21 +24,13 @@ pub use snapshot::{BaseSegments, IndexSnapshot};
 pub(crate) use encoding::normalize_encoding;
 pub use walk::is_binary;
 
-use std::collections::{HashMap, HashSet};
-use std::io::Read;
 use std::path::{Component, Path};
-use std::process::Command;
 use std::sync::Arc;
 
-use fs2::FileExt;
-
 use arc_swap::ArcSwap;
-use roaring::RoaringBitmap;
 
 use crate::index::manifest::Manifest;
-use crate::index::overlay::{compute_delete_set, OverlayView, PendingEdits};
-use crate::index::segment::MmapSegment;
-use crate::path::PathIndex;
+use crate::index::overlay::PendingEdits;
 use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
 
 /// Fraction of base docs beyond which the overlay is considered too large.
@@ -51,96 +47,11 @@ const MAX_TOTAL_DOCS: u32 = 50_000_000;
 /// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
 const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
 
-fn resolve_git_binary() -> std::path::PathBuf {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join("git");
-            if candidate.is_file() {
-                if let Ok(resolved) = candidate.canonicalize() {
-                    return resolved;
-                }
-            }
-        }
-    }
-    std::path::PathBuf::from("/usr/bin/git")
-}
-
-fn current_repo_head(repo_root: &Path) -> Result<Option<String>, IndexError> {
-    let canonical_root = std::fs::canonicalize(repo_root)?;
-    let output = match Command::new(resolve_git_binary())
-        .arg("-C")
-        .arg(&canonical_root)
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => return Ok(None),
-    };
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if head.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(head))
-    }
-}
-
-fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
-    let write_lock_path = index_dir.join("write.lock");
-    let write_lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&write_lock_path)?;
-    write_lock
-        .try_lock_exclusive()
-        .map_err(|_| IndexError::LockConflict(index_dir.to_path_buf()))?;
-    Ok(write_lock)
-}
-
-fn projected_overlay_doc_count(
-    old_overlay: &OverlayView,
-    visible_changed: &HashSet<std::path::PathBuf>,
-    removed_paths: &HashSet<std::path::PathBuf>,
-) -> usize {
-    old_overlay
-        .docs
-        .iter()
-        .filter(|doc| !visible_changed.contains(&doc.path) && !removed_paths.contains(&doc.path))
-        .count()
-        + visible_changed
-            .iter()
-            .filter(|p| !removed_paths.contains(*p))
-            .count()
-}
-
-fn base_doc_id_limit(snapshot: &IndexSnapshot) -> Result<u32, IndexError> {
-    let mut max_limit: u32 = 0;
-    for (seg_idx, seg) in snapshot.base_segments().iter().enumerate() {
-        if let Some(&base) = snapshot.segment_base_ids().get(seg_idx) {
-            let limit = base
-                .checked_add(seg.doc_count)
-                .ok_or(IndexError::DocIdOverflow {
-                    base_doc_count: base,
-                    overlay_docs: seg.doc_count as usize,
-                })?;
-            if limit > max_limit {
-                max_limit = limit;
-            }
-        }
-    }
-    Ok(max_limit)
-}
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
 pub struct Index {
     /// The index configuration.
     pub config: Config,
-    snapshot: ArcSwap<IndexSnapshot>,
+    snapshot: ArcSwap<snapshot::IndexSnapshot>,
     pending: PendingEdits,
     /// Advisory lock on the index directory. Held for the lifetime of the
     /// Index: shared for readers (open), exclusive for builders (build).
@@ -253,246 +164,6 @@ impl Index {
         build::build_index(config)
     }
 
-    /// Open an existing index. Loads the manifest, mmaps base segments,
-    /// and rebuilds the path index from segment doc tables.
-    pub fn open(config: Config) -> Result<Self, IndexError> {
-        // Shared lock: multiple readers are fine, but blocks an active build.
-        let lock_path = config.index_dir.join("lock");
-        let dir_lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        dir_lock
-            .try_lock_shared()
-            .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
-
-        // Security: reject (or warn about) index directories readable/writable
-        // by group/other. Permissive modes allow concurrent ftruncate() races
-        // (SIGBUS DoS) and crafted-file injection. New builds enforce 0700 via
-        // build_index(); this check catches pre-existing indexes.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if let Ok(meta) = std::fs::metadata(&config.index_dir) {
-                if meta.mode() & 0o077 != 0 {
-                    if config.strict_permissions {
-                        return Err(IndexError::CorruptIndex(format!(
-                            "index dir {:?} has mode {:04o}; expected 0700 (no group/other bits). \
-                             group/other access enables SIGBUS DoS via ftruncate. \
-                             Fix with: chmod 700, or set strict_permissions=false",
-                            config.index_dir,
-                            meta.mode() & 0o777,
-                        )));
-                    } else if config.verbose {
-                        eprintln!(
-                            "syntext: warning: index dir {:?} has mode {:04o}; \
-                             recommend chmod 700 to prevent injection and SIGBUS DoS",
-                            config.index_dir,
-                            meta.mode() & 0o777,
-                        );
-                    }
-                }
-            }
-        }
-
-        Self::open_inner(config, dir_lock)
-    }
-
-    /// Open an existing index using an already-held directory lock.
-    /// Called by `build_index` after downgrading the exclusive lock to shared,
-    /// avoiding the gap where a competing build could start.
-    pub(super) fn open_with_lock(
-        config: Config,
-        dir_lock: std::fs::File,
-    ) -> Result<Self, IndexError> {
-        // Lock is already held (shared) and permissions were verified by
-        // build_index, so skip both checks.
-        Self::open_inner(config, dir_lock)
-    }
-
-    /// Shared implementation for `open` and `open_with_lock`.
-    fn open_inner(config: Config, dir_lock: std::fs::File) -> Result<Self, IndexError> {
-        let manifest = Manifest::load(&config.index_dir)?;
-
-        let scan_threshold = manifest
-            .scan_threshold_fraction
-            .unwrap_or(0.10)
-            .clamp(0.01, 0.50);
-
-        let mut base_segments: Vec<MmapSegment> = Vec::new();
-        let mut segment_base_ids: Vec<u32> = Vec::new();
-        let mut base_doc_paths: Vec<Option<std::path::PathBuf>> = Vec::new();
-        let mut all_paths: Vec<std::path::PathBuf> = Vec::new();
-        let mut path_doc_ids: HashMap<std::path::PathBuf, Vec<u32>> = HashMap::new();
-        let mut max_global_id_exclusive: u32 = 0;
-        let mut prev_segment_end: u32 = 0;
-
-        for seg_ref in &manifest.segments {
-            let seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty() {
-                // v3: split .dict + .post files. Validate both filenames.
-                for filename in [&seg_ref.dict_filename, &seg_ref.post_filename] {
-                    if filename.contains('/')
-                        || filename.contains('\\')
-                        || filename.contains("..")
-                        || Path::new(filename).is_absolute()
-                    {
-                        return Err(IndexError::CorruptIndex(format!(
-                            "invalid segment filename in manifest: {:?}",
-                            filename
-                        )));
-                    }
-                }
-                let dict_path = config.index_dir.join(&seg_ref.dict_filename);
-                let post_path = config.index_dir.join(&seg_ref.post_filename);
-                MmapSegment::open_split(&dict_path, &post_path)?
-            } else {
-                // v2: single combined .seg file. Accept `dict_filename` as a
-                // compatibility fallback for older transitional manifests.
-                let open_filename = if !seg_ref.filename.is_empty() {
-                    &seg_ref.filename
-                } else {
-                    &seg_ref.dict_filename
-                };
-                if open_filename.contains('/')
-                    || open_filename.contains('\\')
-                    || open_filename.contains("..")
-                    || Path::new(open_filename).is_absolute()
-                {
-                    return Err(IndexError::CorruptIndex(format!(
-                        "invalid segment filename in manifest: {:?}",
-                        open_filename
-                    )));
-                }
-                let seg_path = config.index_dir.join(open_filename);
-                MmapSegment::open(&seg_path)?
-            };
-            // Security: check the per-segment doc count against MAX_TOTAL_DOCS
-            // BEFORE iterating the segment's doc entries and inserting them into
-            // base_doc_paths and path_doc_ids.
-            //
-            // Without this early check, a crafted segment with doc_count close to
-            // MAX_TOTAL_DOCS and path_len = 65535 per entry could force several
-            // gigabytes of PathBuf allocations into path_doc_ids before the
-            // post-loop guard triggers. The per-segment check caps the allocation
-            // to at most one segment's worth of entries at a time.
-            let segment_base_id = seg_ref.base_doc_id.unwrap_or(prev_segment_end);
-            if segment_base_id < prev_segment_end {
-                return Err(IndexError::CorruptIndex(format!(
-                    "segment base_doc_id {} regresses previous end {}",
-                    segment_base_id, prev_segment_end
-                )));
-            }
-            let new_global_id_exclusive =
-                segment_base_id
-                    .checked_add(seg.doc_count)
-                    .ok_or(IndexError::DocIdOverflow {
-                        base_doc_count: segment_base_id,
-                        overlay_docs: 0,
-                    })?;
-            if new_global_id_exclusive > MAX_TOTAL_DOCS {
-                return Err(IndexError::CorruptIndex(format!(
-                    "segment would push total docs to {new_global_id_exclusive}, exceeds safety limit of {MAX_TOTAL_DOCS}"
-                )));
-            }
-
-            segment_base_ids.push(segment_base_id);
-            // Iterate using local 0-based indices (0..seg.doc_count).
-            for local_id in 0..seg.doc_count {
-                if let Some(doc) = seg.get_doc(local_id) {
-                    let expected_doc_id = segment_base_id.saturating_add(local_id);
-                    if doc.doc_id != expected_doc_id {
-                        return Err(IndexError::CorruptIndex(format!(
-                            "segment doc_id {} does not match expected {}",
-                            doc.doc_id, expected_doc_id
-                        )));
-                    }
-                    let doc_idx = doc.doc_id as usize;
-                    if base_doc_paths.len() <= doc_idx {
-                        base_doc_paths.resize(doc_idx + 1, None);
-                    }
-                    if base_doc_paths[doc_idx].is_some() {
-                        return Err(IndexError::CorruptIndex(format!(
-                            "duplicate base doc_id {} across segments",
-                            doc.doc_id
-                        )));
-                    }
-                    base_doc_paths[doc_idx] = Some(doc.path.clone());
-                    path_doc_ids
-                        .entry(doc.path.clone())
-                        .or_default()
-                        .push(doc.doc_id);
-                    all_paths.push(doc.path);
-                }
-            }
-            prev_segment_end = new_global_id_exclusive;
-            max_global_id_exclusive = max_global_id_exclusive.max(new_global_id_exclusive);
-            base_segments.push(seg);
-        }
-
-        all_paths.sort_unstable();
-        all_paths.dedup();
-        let path_index = PathIndex::build(&all_paths);
-
-        let base = Arc::new(BaseSegments {
-            segments: base_segments,
-            base_ids: segment_base_ids,
-            base_doc_paths,
-            path_doc_ids,
-        });
-
-        // Final sanity check: the per-segment guard above should have caught
-        // any overage, but verify the accumulated total before the vec allocation.
-        if max_global_id_exclusive > MAX_TOTAL_DOCS {
-            return Err(IndexError::CorruptIndex(format!(
-                "manifest claims {max_global_id_exclusive} total docs, exceeds safety limit of {MAX_TOTAL_DOCS}"
-            )));
-        }
-        let mut doc_to_file_id = vec![u32::MAX; max_global_id_exclusive as usize];
-        for (gid, path) in base.base_doc_paths.iter().enumerate() {
-            if let Some(path) = path {
-                if let Some(fid) = path_index.file_id(path) {
-                    doc_to_file_id[gid] = fid;
-                }
-            }
-        }
-
-        let snapshot = Arc::new(snapshot::new_snapshot(
-            base,
-            OverlayView::empty(),
-            RoaringBitmap::new(),
-            path_index,
-            doc_to_file_id,
-            scan_threshold,
-        ));
-
-        // Open symbol index if it exists on disk.
-        #[cfg(feature = "symbols")]
-        let symbol_index = {
-            let db_path = config.index_dir.join("symbols.db");
-            if db_path.exists() {
-                crate::symbol::SymbolIndex::open(&db_path)
-                    .ok()
-                    .map(std::sync::Arc::new)
-            } else {
-                None
-            }
-        };
-
-        let canonical_root = std::fs::canonicalize(&config.repo_root)?;
-
-        Ok(Index {
-            config,
-            snapshot: ArcSwap::from(snapshot),
-            pending: PendingEdits::new(),
-            _dir_lock: dir_lock,
-            canonical_root,
-            #[cfg(feature = "symbols")]
-            symbol_index,
-        })
-    }
-
     /// Return index statistics from the current snapshot.
     pub fn stats(&self) -> IndexStats {
         let snap = self.snapshot.load();
@@ -515,7 +186,7 @@ impl Index {
             if let Some(sym_idx) = &self.symbol_index {
                 return sym_idx.search(&name, kind);
             }
-            // Symbol index not built — fall through to content search.
+            // Symbol index not built -- fall through to content search.
         }
         crate::search::search(
             self.snapshot(),
@@ -547,228 +218,6 @@ impl Index {
     pub fn notify_delete(&self, path: &Path) -> Result<(), IndexError> {
         let rel = self.repo_relative_path(path)?;
         self.pending.notify_delete(&rel);
-        Ok(())
-    }
-
-    /// Atomically commit all pending edits. After return, changes are visible
-    /// to subsequent queries. In-flight searches see the old snapshot.
-    pub fn commit_batch(&self) -> Result<(), IndexError> {
-        if !self.pending.has_uncommitted() {
-            return Ok(());
-        }
-
-        // Serialize concurrent writers. _write_lock is held until end of
-        // function (underscore prefix suppresses unused-variable lint without
-        // triggering the immediate-drop behaviour of bare `_`).
-        let _write_lock = acquire_writer_lock(&self.config.index_dir)?;
-
-        let old_snap = self.snapshot.load_full();
-        let take = self.pending.take_for_commit();
-
-        // Total base doc count for overlay doc_id assignment.
-        let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
-        let base_doc_id_limit = base_doc_id_limit(&old_snap)?;
-
-        // Read content from disk only for NEWLY changed paths.
-        // Unchanged dirty files are reused from the old overlay via Arc::clone.
-        let mut new_files: Vec<(std::path::PathBuf, Arc<[u8]>)> = Vec::new();
-        let mut excluded_changed = std::collections::HashSet::new();
-        // Files that vanished between notify_change() and commit_batch() are
-        // treated as deletions rather than hard errors. The TOCTOU window is
-        // narrow but real, especially in agent/watch workflows.
-        let mut vanished_paths: std::collections::HashSet<std::path::PathBuf> =
-            std::collections::HashSet::new();
-        for path in &take.newly_changed {
-            let abs = self.config.repo_root.join(path);
-            // Canonicalize before opening to detect symlink swaps that occurred
-            // between notify_change() and commit_batch(). If the resolved path
-            // escapes canonical_root, reject it as PathOutsideRepo.
-            let resolved = match std::fs::canonicalize(&abs) {
-                Ok(p) => p,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // File deleted between notify_change() and now; treat as deletion.
-                    if self.config.verbose {
-                        eprintln!(
-                            "syntext: warning: file vanished before indexing, treating as deletion: {}",
-                            abs.display()
-                        );
-                    }
-                    vanished_paths.insert(path.clone());
-                    continue;
-                }
-                Err(e) => return Err(IndexError::Io(e)),
-            };
-            if !resolved.starts_with(&self.canonical_root) {
-                return Err(IndexError::PathOutsideRepo(abs));
-            }
-            // Stat before open to record expected inode. After open, fstat the fd
-            // and compare dev+ino to catch directory-component symlink swaps that
-            // occur in the window between canonicalize() and open() (O_NOFOLLOW
-            // only blocks the final component, not intermediate ones).
-            #[cfg(unix)]
-            let pre_open_meta = match std::fs::metadata(&resolved) {
-                Ok(m) => m,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    if self.config.verbose {
-                        eprintln!(
-                            "syntext: warning: file vanished before indexing, treating as deletion: {}",
-                            abs.display()
-                        );
-                    }
-                    vanished_paths.insert(path.clone());
-                    continue;
-                }
-                Err(e) => return Err(IndexError::Io(e)),
-            };
-            // Enforce the same max_file_size limit used during full builds.
-            // Use bounded read to eliminate TOCTOU race: file can grow between
-            // metadata check and read. Read up to max_file_size + 1 bytes to detect overflow.
-            let file = match io_util::open_readonly_nofollow(&resolved) {
-                Ok(f) => f,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    if self.config.verbose {
-                        eprintln!(
-                            "syntext: warning: file vanished before indexing, treating as deletion: {}",
-                            abs.display()
-                        );
-                    }
-                    vanished_paths.insert(path.clone());
-                    continue;
-                }
-                Err(e) => return Err(IndexError::Io(e)),
-            };
-            #[cfg(unix)]
-            if !io_util::verify_fd_matches_stat(&file, &pre_open_meta) {
-                return Err(IndexError::PathOutsideRepo(abs.clone()));
-            }
-            // Use saturating_add to guard against max_file_size == u64::MAX:
-            // plain `+ 1` would wrap to 0 and read nothing.
-            let mut reader = file.take(self.config.max_file_size.saturating_add(1));
-            let mut raw: Vec<u8> = Vec::new();
-            reader.read_to_end(&mut raw)?;
-            if raw.len() as u64 > self.config.max_file_size {
-                return Err(IndexError::FileTooLarge {
-                    path: abs,
-                    size: raw.len() as u64,
-                });
-            }
-            let content = encoding::normalize_encoding(&raw, self.config.verbose);
-            if is_binary(&content) {
-                excluded_changed.insert(path.clone());
-                continue;
-            }
-            new_files.push((path.clone(), Arc::from(content.as_ref())));
-        }
-
-        let mut visible_changed = take.newly_changed.clone();
-        for path in &excluded_changed {
-            visible_changed.remove(path);
-        }
-        // Vanished files are not in new_files; remove them from visible_changed
-        // so they don't appear as unresolvable additions.
-        for path in &vanished_paths {
-            visible_changed.remove(path);
-        }
-
-        let mut removed_paths = take.newly_deleted.clone();
-        removed_paths.extend(excluded_changed.iter().cloned());
-        // Vanished files act as deletions: evict any existing index entry.
-        removed_paths.extend(vanished_paths.iter().cloned());
-
-        let projected_overlay_docs =
-            projected_overlay_doc_count(&old_snap.overlay, &visible_changed, &removed_paths);
-
-        // Enforce hard overlay size limit before rebuilding the overlay. Once
-        // the overlay grows beyond 50% of base docs, the rebuild cost is
-        // wasted work because callers need a full reindex anyway.
-        if base_doc_count > 0 {
-            let ratio = projected_overlay_docs as f64 / base_doc_count as f64;
-            if ratio > OVERLAY_ENFORCE_THRESHOLD {
-                return Err(IndexError::OverlayFull {
-                    overlay_docs: projected_overlay_docs,
-                    base_docs: base_doc_count as usize,
-                });
-            }
-        }
-
-        let overlay = OverlayView::build_incremental(
-            base_doc_id_limit,
-            &old_snap.overlay,
-            new_files,
-            &visible_changed,
-            &removed_paths,
-        )?;
-
-        debug_assert_eq!(overlay.docs.len(), projected_overlay_docs);
-
-        // Compute delete_set: base doc_ids invalidated by changes.
-        // Start from the previous snapshot's delete_set and add only the delta.
-        // The base is immutable between full builds, so the delete_set grows
-        // monotonically and incremental accumulation is always correct.
-        let delete_set = compute_delete_set(
-            &old_snap.base.path_doc_ids,
-            &take.newly_changed,
-            &take.newly_deleted,
-            &old_snap.delete_set,
-        );
-
-        // Update the path index incrementally from the previous snapshot.
-        let path_index =
-            PathIndex::build_incremental(&old_snap.path_index, &removed_paths, &visible_changed);
-
-        let total_ids = overlay
-            .docs
-            .iter()
-            .map(|d| d.doc_id + 1)
-            .max()
-            .unwrap_or(base_doc_count) as usize;
-        let mut doc_to_file_id = old_snap.doc_to_file_id.clone();
-        doc_to_file_id.resize(total_ids, u32::MAX);
-        for gid in delete_set.iter() {
-            let idx = gid as usize;
-            if idx < doc_to_file_id.len() {
-                doc_to_file_id[idx] = u32::MAX;
-            }
-        }
-        for doc in &overlay.docs {
-            let idx = doc.doc_id as usize;
-            if idx < doc_to_file_id.len() {
-                if let Some(fid) = path_index.file_id(&doc.path) {
-                    doc_to_file_id[idx] = fid;
-                }
-            }
-        }
-
-        let new_snap = Arc::new(snapshot::new_snapshot(
-            Arc::clone(&old_snap.base),
-            overlay,
-            delete_set,
-            path_index,
-            doc_to_file_id,
-            old_snap.scan_threshold,
-        ));
-
-        // Pre-populate all_doc_ids so the first post-commit query doesn't pay rebuild cost.
-        new_snap.all_doc_ids();
-
-        self.snapshot.store(new_snap);
-        if self.config.verbose {
-            let snap = self.snapshot.load();
-            let base_count: u32 = snap.base_segments().iter().map(|s| s.doc_count).sum();
-            let overlay_count = snap.overlay.docs.len() as u32;
-            if base_count > 0 {
-                let ratio = overlay_count as f64 / base_count as f64;
-                if ratio > OVERLAY_WARN_THRESHOLD {
-                    eprintln!(
-                        "syntext: warning: overlay is {:.0}% of base ({} overlay, {} base docs); \
-                         consider running `st index` to rebuild",
-                        ratio * 100.0,
-                        overlay_count,
-                        base_count
-                    );
-                }
-            }
-        }
         Ok(())
     }
 
@@ -819,7 +268,7 @@ impl Index {
         }
 
         let manifest = Manifest::load(&self.config.index_dir)?;
-        let current_head = current_repo_head(&self.config.repo_root)?;
+        let current_head = helpers::current_repo_head(&self.config.repo_root)?;
         if manifest.base_commit == current_head {
             return Ok(None);
         }
@@ -1800,7 +1249,7 @@ mod tests {
             vec![],
             0.10,
         );
-        let result = base_doc_id_limit(&snap);
+        let result = helpers::base_doc_id_limit(&snap);
         assert!(
             result.is_err(),
             "base_doc_id_limit must return Err on overflow, not silently drop"

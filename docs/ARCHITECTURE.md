@@ -6,6 +6,12 @@ This document explains the quantitative reasoning behind syntext's design decisi
 
 AI coding agents call grep dozens of times per task. Each `rg` invocation walks every file in the repo. On a 100K-file monorepo that means 100K file reads per query. Index the content once, and each query touches only the files that plausibly contain a match.
 
+## Build Pipeline
+
+The following diagram illustrates the high-level flow from repository files to a complete index, including the parallel processing of grams and the optional symbol index:
+
+![Simplified Build Pipeline](images/simplified_build_pipeline.svg)
+
 ## How sparse n-grams work
 
 Traditional trigram indexes (Google Code Search, Zoekt) index every consecutive 3-byte window. For a file with N bytes, that produces roughly N-2 trigrams. Most of those trigrams are common (`the`, `for`, `ret`, `str`), producing huge posting lists that are expensive to intersect.

@@ -30,30 +30,37 @@ Search Latency (Log Scale, Lower is Better →)
 Legend:
 
 🟩 syntext (<200 ms)
+
 🟨 rg (100 ms – 2 s)
+
 🟥 grep (>2 s)
 
 React
+
 syntext  🟩 25 ms  
 rg       🟨 103 ms  
 grep     🟥🟥 275 ms  
 
 Rust compiler
+
 syntext  🟩 93 ms  
 rg       🟥🟥🟥 1781 ms  
 grep     🟥🟥🟥🟥 2393 ms  
 
 TypeScript
+
 syntext  🟩 103 ms  
 rg       🟥🟥🟥🟥 2940 ms  
 grep     🟥🟥🟥🟥🟥 3214 ms  
 
 Node.js
+
 syntext  🟩 66 ms  
 rg       🟥🟥🟥 1455 ms  
 grep     🟥🟥🟥🟥🟥 3130 ms  
 
 Linux kernel
+
 syntext  🟩 151 ms  
 rg       🟥🟥🟥🟥🟥 3500 ms  
 grep     n/a

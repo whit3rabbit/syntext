@@ -388,4 +388,39 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn build_incremental_no_underflow() {
+        // B05: overlay_docs count uses saturating_sub so that degenerate inputs
+        // (newly_changed.len() > old.len() + new_files.len()) produce 0, not
+        // usize::MAX. Using base_doc_count=1 != old.base_doc_count=0 forces
+        // the full rebuild path rather than the fast delta path.
+        let content_a: Arc<[u8]> = Arc::from(b"fn alpha() {}".as_slice());
+        let overlay1 = OverlayView::build(
+            0,
+            vec![(PathBuf::from("a.rs"), Arc::clone(&content_a))],
+        )
+        .unwrap();
+        assert_eq!(overlay1.docs.len(), 1);
+
+        // old has 1 doc, new_files is empty, but newly_changed has 2 paths.
+        // (1 + 0).saturating_sub(2) = 0, not usize::MAX.
+        let newly_changed: HashSet<PathBuf> =
+            [PathBuf::from("a.rs"), PathBuf::from("ghost.rs")].into();
+        let removed: HashSet<PathBuf> = HashSet::new();
+
+        let result = OverlayView::build_incremental(
+            1, // different from old.base_doc_count=0 → full rebuild, not delta
+            &overlay1,
+            vec![],
+            &newly_changed,
+            &removed,
+        );
+        assert!(result.is_ok(), "must not panic or error");
+        assert_eq!(
+            result.unwrap().docs.len(),
+            0,
+            "all old docs are in newly_changed with no replacements → empty overlay"
+        );
+    }
 }

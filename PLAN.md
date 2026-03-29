@@ -220,10 +220,10 @@ The existing `cargo-fuzz` target (`fuzz_coverage_invariant`) must run for at lea
 
 - [x] All P0 bugs (B01-B08) fixed with regression tests
 - [x] All P1 bugs either fixed or documented with tracking issues
-- [ ] `cargo test` passes (all test suites)
+- [x] `cargo test` passes (all test suites)
 - [x] `cargo test --features symbols` passes
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] No source file exceeds 400 lines (test files exempt)
+- [x] `cargo clippy -- -D warnings` passes
+- [ ] No source file exceeds 400 lines (test files exempt) — **known violation**: 6 files exceed limit (largest: `src/index/mod.rs` ~1865 lines). Constraint is aspirational; splits deferred to v1.1.
 - [ ] Fuzz target runs 10 minutes with 0 failures
 - [ ] Correctness harness passes on fixture corpus
 - [ ] Correctness harness passes on at least one external repo (50K+ files)
@@ -240,7 +240,7 @@ The existing `cargo-fuzz` target (`fuzz_coverage_invariant`) must run for at lea
 
 ### Release
 
-- [ ] Version bumped to `1.0.0` in Cargo.toml
+- [x] Version bumped to `1.0.0` in Cargo.toml
 - [ ] Git tag `v1.0.0`
 - [ ] CI release workflow (`release.yml`) tested with a pre-release tag
 - [ ] GitHub Release with binaries (Linux amd64/arm64, macOS x86_64/arm64)

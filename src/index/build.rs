@@ -136,7 +136,7 @@ pub(super) fn build_index_with_batch_size(
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
     // Full builds and incremental commits both rewrite shared index state,
     // so they must serialize on the same writer lock.
-    let write_lock = super::acquire_writer_lock(&config.index_dir)?;
+    let write_lock = super::helpers::acquire_writer_lock(&config.index_dir)?;
 
     // Startup GC: remove orphaned segments left by any previously crashed build.
     // Runs under the exclusive lock, so no readers are active. Safe to ignore a
@@ -258,7 +258,7 @@ pub(super) fn build_index_with_batch_size(
     }
     // Write manifest.
     let mut manifest = Manifest::new(seg_refs, total_indexed);
-    manifest.base_commit = super::current_repo_head(&config.repo_root)?;
+    manifest.base_commit = super::helpers::current_repo_head(&config.repo_root)?;
     manifest.scan_threshold_fraction = Some(scan_threshold);
     manifest.save(&config.index_dir)?;
     // Post-build GC: delete segments from the previous build that are no
@@ -338,4 +338,29 @@ pub(super) fn build_index_with_batch_size(
     // Drop writer lock only after the shared lock is held, closing the gap.
     drop(write_lock);
     super::Index::open_with_lock(config, lock_file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+    use tempfile::TempDir;
+
+    #[test]
+    fn calibrate_threshold_empty_paths_returns_default() {
+        // B08: calibrate_threshold must not divide by zero (or panic) when
+        // indexed_paths is empty. An empty repository returns the default
+        // threshold (0.10) instead of attempting sample_count / 0.
+        let index_dir = TempDir::new().unwrap();
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: index_dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let threshold = calibrate_threshold(&[], &config);
+        assert_eq!(
+            threshold, 0.10,
+            "empty path list must return default threshold 0.10, got {threshold}"
+        );
+    }
 }

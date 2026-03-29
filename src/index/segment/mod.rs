@@ -10,9 +10,7 @@
 //! V3 format splits into `{uuid}.dict` (header + doc table + dictionary) and
 //! `{uuid}.post` (postings). See `open_split()`.
 
-use std::path::Path;
-
-use memmap2::{Mmap, MmapOptions};
+use memmap2::Mmap;
 use uuid::Uuid;
 use xxhash_rust::xxh64::xxh64;
 
@@ -83,7 +81,7 @@ mod reader;
 
 /// How postings are loaded: from the combined mmap (v2) or a separate .post
 /// file via pread (v3).
-enum PostingsBacking {
+pub(super) enum PostingsBacking {
     /// v2: postings data lives in the segment mmap at absolute file offsets.
     V2Mmap,
     /// v3: postings are in a separate .post file; offsets are from byte 0.
@@ -96,169 +94,21 @@ enum PostingsBacking {
 /// directory entry is removed (e.g. by GC). `expected_len` enables O(1)
 /// staleness detection on every read.
 pub struct MmapSegment {
-    _file: std::fs::File,
-    mmap: Mmap,
-    expected_len: usize,
+    pub(super) _file: std::fs::File,
+    pub(super) mmap: Mmap,
+    pub(super) expected_len: usize,
     /// Number of documents in this segment.
     pub doc_count: u32,
     /// Number of distinct gram hashes in the dictionary.
     pub gram_count: u32,
-    doc_table_offset: usize,
-    dict_offset: usize,
+    pub(super) doc_table_offset: usize,
+    pub(super) dict_offset: usize,
     /// Conservative lower bound for postings in V2 mmap reads. 0 for V3.
-    postings_start: usize,
-    postings: PostingsBacking,
+    pub(super) postings_start: usize,
+    pub(super) postings: PostingsBacking,
 }
 
 impl MmapSegment {
-    /// Open a combined (v2) segment file, verify magic, version, and checksum.
-    pub fn open(path: &Path) -> Result<Self, IndexError> {
-        let file = std::fs::File::open(path)?;
-        let file_meta = file.metadata()?;
-        if file_meta.len() > MAX_SEGMENT_SIZE {
-            return Err(IndexError::CorruptIndex(format!(
-                "segment too large ({} bytes, max {})",
-                file_meta.len(),
-                MAX_SEGMENT_SIZE
-            )));
-        }
-        file.try_lock_shared()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        // SAFETY: The file handle is retained in the struct for the lifetime of
-        // the mmap, keeping the inode alive even if the directory entry is removed.
-        //
-        // Security: we use MAP_PRIVATE (map_copy_read_only) rather than MAP_SHARED.
-        // With MAP_SHARED, a process with write access to the index directory could
-        // mutate segment bytes after the checksum passes, injecting false search
-        // results (information disclosure / result manipulation) even though safe
-        // Rust's .get() bounds checks prevent memory-safety violations. MAP_PRIVATE
-        // creates a copy-on-write mapping: once parse_segment_mmap reads every
-        // content page during checksum verification, those pages are in our private
-        // address space and are immune to external mutations for the mapping's
-        // lifetime. The advisory file lock still blocks concurrent writes by other
-        // syntext instances.
-        //
-        // Residual SIGBUS risk: the advisory file lock (try_lock_shared above) does
-        // not prevent other processes from truncating the file — advisory locks are
-        // cooperative, not mandatory. If a concurrent truncate(2) races with the
-        // linear page read inside parse_segment_mmap (specifically the xxh64 checksum
-        // pass), accessing a page past the new EOF delivers SIGBUS, which terminates
-        // the process. This is a denial-of-service risk when the index directory is
-        // writable by a second principal. Once parse_segment_mmap completes and all
-        // pages have been faulted into the private mapping, subsequent accesses are
-        // safe. The index directory should be mode 0700 (owner only) in security-
-        // sensitive deployments.
-        let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
-        let len = mmap.len();
-        // open() accepts both v2 and v3 version tags. The single-file layout is
-        // identical for both; open_split() handles the split-file v3 read path.
-        let layout = reader::parse_segment_mmap(&mmap, &[FORMAT_VERSION_V2, FORMAT_VERSION_V3])?;
-
-        Ok(MmapSegment {
-            _file: file,
-            mmap,
-            expected_len: len,
-            doc_count: layout.doc_count,
-            gram_count: layout.gram_count,
-            doc_table_offset: layout.doc_table_offset,
-            dict_offset: layout.dict_offset,
-            postings_start: layout.postings_start,
-            postings: PostingsBacking::V2Mmap,
-        })
-    }
-
-    /// Open a v3 segment from separate `.dict` and `.post` files.
-    ///
-    /// The `.dict` file is fully mmap'd (small, always needed for binary
-    /// search). Postings are read on demand from `.post` via positional reads.
-    pub fn open_split(dict_path: &Path, post_path: &Path) -> Result<Self, IndexError> {
-        let file = std::fs::File::open(dict_path)?;
-        let file_meta = file.metadata()?;
-        if file_meta.len() > MAX_SEGMENT_SIZE {
-            return Err(IndexError::CorruptIndex(format!(
-                "dict file too large ({} bytes, max {})",
-                file_meta.len(),
-                MAX_SEGMENT_SIZE
-            )));
-        }
-        file.try_lock_shared()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        // SAFETY: same rationale as open() — file handle retained (_file field),
-        // MAP_PRIVATE mapping (see open() comment), all downstream reads are
-        // bounds-checked via .get(). The mmap only covers the `.dict` side;
-        // postings are read from `.post` via positional reads.
-        //
-        // Residual SIGBUS risk: same as open() — see that comment. The window here
-        // is narrower because only the .dict file is mmap'd; the .post file is read
-        // via positional reads (read_exact_at) rather than mmap, so a truncation of
-        // .post after open returns an I/O error rather than SIGBUS. The .dict mmap
-        // is still subject to the SIGBUS window during parse_segment_mmap's checksum
-        // read before all pages are faulted into the private mapping.
-        let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
-        let len = mmap.len();
-        let layout = reader::parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3])?;
-        let post_file = std::fs::File::open(post_path)?;
-        post_file
-            .try_lock_shared()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-
-        // Validate .post file magic and checksum.
-        // Note: reading the full postings data at open time is O(post_file_size).
-        // This is acceptable: the checksum read happens once per segment open, and
-        // segments are reused across many queries.
-        const POST_MAGIC: &[u8; 8] = b"SNTXPOST";
-        const POST_MIN_SIZE: usize = 8 + 8; // magic + checksum (empty postings allowed)
-
-        let post_meta = post_file.metadata()?;
-        let post_len = post_meta.len() as usize;
-        if post_len < POST_MIN_SIZE {
-            return Err(IndexError::CorruptIndex(format!(
-                "post file too small: {post_len} bytes"
-            )));
-        }
-
-        // Read the magic header (8 bytes).
-        let mut post_magic = [0u8; 8];
-        reader::read_exact_at(&post_file, &mut post_magic, 0)?;
-        if &post_magic != POST_MAGIC {
-            return Err(IndexError::CorruptIndex(
-                "post file has wrong magic (expected SNTXPOST)".into(),
-            ));
-        }
-
-        // Read and verify the checksum (last 8 bytes cover the postings data
-        // between the magic header and checksum trailer).
-        let checksum_offset = (post_len - 8) as u64;
-        let mut stored_cksum_bytes = [0u8; 8];
-        reader::read_exact_at(&post_file, &mut stored_cksum_bytes, checksum_offset)?;
-        let stored_post_checksum = u64::from_le_bytes(stored_cksum_bytes);
-
-        // Read postings data (bytes 8..post_len-8) to compute expected checksum.
-        let postings_data_len = post_len - 16; // subtract magic(8) + checksum(8)
-        let mut postings_data = vec![0u8; postings_data_len];
-        if postings_data_len > 0 {
-            reader::read_exact_at(&post_file, &mut postings_data, 8)?;
-        }
-        let expected_post_checksum = xxh64(&postings_data, 0);
-        if stored_post_checksum != expected_post_checksum {
-            return Err(IndexError::CorruptIndex(
-                "post file checksum mismatch".into(),
-            ));
-        }
-
-        Ok(MmapSegment {
-            _file: file,
-            mmap,
-            expected_len: len,
-            doc_count: layout.doc_count,
-            gram_count: layout.gram_count,
-            doc_table_offset: layout.doc_table_offset,
-            dict_offset: layout.dict_offset,
-            postings_start: 0,
-            postings: PostingsBacking::V3File(post_file),
-        })
-    }
-
     /// O(1) check that the underlying file has not been truncated or extended
     /// since the segment was opened. Returns `None` if the mmap length changed.
     fn check_len(&self) -> Option<()> {
@@ -448,6 +298,8 @@ impl MmapSegment {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use tempfile::TempDir;
 
@@ -844,6 +696,74 @@ mod tests {
         assert!(
             doc.is_some(),
             "mmap must survive atomic file replacement via rename"
+        );
+    }
+
+    #[test]
+    fn v2_posting_offset_below_postings_start_returns_none() {
+        // B03 regression: read_posting_list_mmap must reject abs_off values in
+        // [HEADER_SIZE, postings_start) — the old check was abs_off < HEADER_SIZE,
+        // which accepted values pointing into the doc table section. The fix
+        // uses abs_off < postings_start (= doc_table_offset + doc_count * 8).
+        //
+        // Strategy: write a V3 segment, open the .dict file via open() (V2Mmap
+        // path), craft a dict entry whose abs_off points into the doc table
+        // region [doc_table_offset, postings_start), recompute the checksum,
+        // and verify lookup_gram returns None.
+        use xxhash_rust::xxh64::xxh64;
+
+        let dir = TempDir::new().unwrap();
+        let mut writer = SegmentWriter::new();
+        writer.add_document(0, Path::new("a.rs"), 0xABCD, 10);
+        writer.add_gram_posting(0x1111_2222_3333_4444u64, 0);
+        let meta = writer.write_to_dir(dir.path()).unwrap();
+
+        let dict_path = dir.path().join(&meta.dict_filename);
+        let mut bytes = std::fs::read(&dict_path).unwrap();
+        let len = bytes.len();
+        let footer_start = len - FOOTER_SIZE;
+
+        // Read layout fields from footer.
+        let doc_table_offset = u64::from_le_bytes(
+            bytes[footer_start..footer_start + 8].try_into().unwrap(),
+        ) as usize;
+        let doc_count = u32::from_le_bytes(
+            bytes[footer_start + 24..footer_start + 28].try_into().unwrap(),
+        );
+        let dict_offset = u64::from_le_bytes(
+            bytes[footer_start + 16..footer_start + 24].try_into().unwrap(),
+        ) as usize;
+        let postings_start = doc_table_offset + doc_count as usize * 8;
+
+        assert!(
+            postings_start > HEADER_SIZE,
+            "postings_start({postings_start}) must exceed HEADER_SIZE({HEADER_SIZE}) \
+            for this test to distinguish old vs new check"
+        );
+
+        // Overwrite the first gram entry's abs_off to doc_table_offset, which
+        // falls in [HEADER_SIZE, postings_start). Old check accepted this; new
+        // check must reject it. Dict entry: gram_hash(8) + abs_off(8) + count(4).
+        let abs_off_field_start = dict_offset + 8; // skip gram_hash bytes
+        let crafted_abs_off = doc_table_offset as u64;
+        bytes[abs_off_field_start..abs_off_field_start + 8]
+            .copy_from_slice(&crafted_abs_off.to_le_bytes());
+
+        // Recompute checksum over content (everything before footer).
+        let new_cksum = xxh64(&bytes[..footer_start], 0);
+        bytes[footer_start + 32..footer_start + 40].copy_from_slice(&new_cksum.to_le_bytes());
+
+        let crafted_path = dir.path().join("crafted_b03.dict");
+        std::fs::write(&crafted_path, &bytes).unwrap();
+
+        // open() creates V2Mmap backing; read_posting_list_mmap is called by
+        // lookup_gram. abs_off(doc_table_offset) < postings_start → must be None.
+        let seg = MmapSegment::open(&crafted_path).unwrap();
+        let result = seg.lookup_gram(0x1111_2222_3333_4444u64);
+        assert!(
+            result.is_none(),
+            "lookup_gram must return None when abs_off({crafted_abs_off}) < \
+            postings_start({postings_start}): {result:?}"
         );
     }
 }
