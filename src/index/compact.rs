@@ -154,6 +154,40 @@ fn manifest_total_docs(segments: &[SegmentRef]) -> u32 {
     segments.iter().map(|segment| segment.doc_count).sum()
 }
 
+fn validate_snapshot_matches_manifest(
+    snapshot: &IndexSnapshot,
+    manifest_bases: &[u32],
+) -> Result<(), IndexError> {
+    let snapshot_segments = snapshot.base.segments.len();
+    let manifest_segments = manifest_bases.len();
+    if snapshot_segments != manifest_segments {
+        return Err(IndexError::CorruptIndex(format!(
+            "snapshot segment count {} diverges from manifest segment count {}",
+            snapshot_segments, manifest_segments
+        )));
+    }
+
+    let snapshot_base_ids = snapshot.base.base_ids.len();
+    if snapshot_base_ids != snapshot_segments {
+        return Err(IndexError::CorruptIndex(format!(
+            "snapshot base_ids length {} diverges from snapshot segment count {}",
+            snapshot_base_ids, snapshot_segments
+        )));
+    }
+
+    for (idx, &manifest_base) in manifest_bases.iter().enumerate() {
+        let snapshot_base = snapshot.base.base_ids[idx];
+        if snapshot_base != manifest_base {
+            return Err(IndexError::CorruptIndex(format!(
+                "snapshot base_id[{idx}]={} diverges from manifest base[{idx}]={}",
+                snapshot_base, manifest_base
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn batch_size_for_plan(snapshot: &IndexSnapshot, plan: &CompactionPlan) -> u64 {
     let total_bytes = live_snapshot_bytes_from(snapshot, plan.suffix_start);
     if total_bytes == 0 {
@@ -280,32 +314,10 @@ pub(super) fn compact_index(
         )));
     }
     let manifest_bases = manifest_segment_bases(&previous_manifest.segments);
-
-    // Consistency guard: snapshot base_ids must agree with manifest bases for
-    // the segments we are compacting. A divergence (e.g., manifest written by a
-    // concurrent build that the snapshot predates) would cause incorrect
-    // global_doc_id assignments in the rewritten segments.
-    //
-    // This should never fire in normal operation: base segments only change when
-    // compact_index or build_index hold the exclusive lock (which we hold here).
-    // It is a defence-in-depth assert, not a runtime error path.
-    #[cfg(debug_assertions)]
-    {
-        let check_end = snapshot.base.base_ids.len().min(manifest_bases.len());
-        for (idx, manifest_base) in manifest_bases
-            .iter()
-            .enumerate()
-            .take(check_end)
-            .skip(plan.suffix_start)
-        {
-            debug_assert_eq!(
-                snapshot.base.base_ids[idx], *manifest_base,
-                "snapshot base_id[{idx}]={} diverges from manifest base[{idx}]={} -- \
-                 compaction would assign wrong global doc_ids",
-                snapshot.base.base_ids[idx], manifest_base,
-            );
-        }
-    }
+    // Consistency guard: snapshot base_ids must agree with manifest bases
+    // before we rewrite any segment. A divergence means the snapshot predates
+    // some other rebuild and compacting it would assign incorrect global doc_ids.
+    validate_snapshot_matches_manifest(snapshot.as_ref(), &manifest_bases)?;
 
     let prefix_doc_id_limit = if plan.suffix_start == 0 {
         0
@@ -442,9 +454,10 @@ mod tests {
         segments: &[Vec<(u32, &'static str, u64)>],
         overlay: OverlayView,
         delete_set: RoaringBitmap,
-    ) -> (TempDir, IndexSnapshot) {
+    ) -> (TempDir, IndexSnapshot, Vec<SegmentRef>) {
         let dir = TempDir::new().unwrap();
         let mut mmap_segments = Vec::new();
+        let mut seg_refs = Vec::new();
         let mut base_ids = Vec::new();
         let mut base_doc_paths: Vec<Option<PathBuf>> = Vec::new();
         let mut path_doc_ids: HashMap<PathBuf, Vec<u32>> = HashMap::new();
@@ -471,6 +484,8 @@ mod tests {
             let meta = writer
                 .write_to_dir(dir.path())
                 .unwrap_or_else(|_| panic!("failed to write segment {seg_idx}"));
+            let seg_ref: SegmentRef = meta.clone().into();
+            seg_refs.push(seg_ref);
             mmap_segments.push(
                 MmapSegment::open_split(
                     &dir.path().join(&meta.dict_filename),
@@ -505,12 +520,12 @@ mod tests {
             doc_to_file_id,
             0.10,
         );
-        (dir, snapshot)
+        (dir, snapshot, seg_refs)
     }
 
     #[test]
     fn plan_uses_segment_limit_and_snapshot_sizes() {
-        let (_dir, snapshot) = build_snapshot(
+        let (_dir, snapshot, _seg_refs) = build_snapshot(
             &[
                 vec![(0, "a.rs", 300_000_000)],
                 vec![(1, "b.rs", 400_000_000)],
@@ -535,7 +550,7 @@ mod tests {
     fn plan_ignores_deleted_base_docs_when_sizing() {
         let mut delete_set = RoaringBitmap::new();
         delete_set.insert(0);
-        let (_dir, snapshot) = build_snapshot(
+        let (_dir, snapshot, _seg_refs) = build_snapshot(
             &[
                 vec![(0, "a.rs", 300_000_000)],
                 vec![(1, "b.rs", 500_000_000)],
@@ -570,7 +585,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let (_dir, snapshot) = build_snapshot(
+        let (_dir, snapshot, _seg_refs) = build_snapshot(
             &[
                 vec![(0, "base_0.rs", 10)],
                 vec![(1, "base_1.rs", 10)],
@@ -602,7 +617,7 @@ mod tests {
     fn forced_plan_rewrites_from_earliest_deleted_segment() {
         let mut delete_set = RoaringBitmap::new();
         delete_set.insert(1);
-        let (_dir, snapshot) = build_snapshot(
+        let (_dir, snapshot, _seg_refs) = build_snapshot(
             &[
                 vec![(0, "a.rs", 10)],
                 vec![(1, "b.rs", 10)],
@@ -620,5 +635,41 @@ mod tests {
         assert_eq!(plan.reason, CompactionReason::ExplicitRequest);
         assert_eq!(plan.suffix_start, 1);
         assert_eq!(plan.target_segments, 1);
+    }
+
+    #[test]
+    fn compact_rejects_snapshot_manifest_base_id_divergence() {
+        let repo = TempDir::new().unwrap();
+        let (index_dir, snapshot, mut seg_refs) = build_snapshot(
+            &[vec![(0, "a.rs", 10)]],
+            OverlayView::empty(),
+            RoaringBitmap::new(),
+        );
+        seg_refs[0].base_doc_id = Some(7);
+        let manifest = Manifest::new(seg_refs, 1);
+        manifest.save(index_dir.path()).unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let plan = CompactionPlan {
+            reason: CompactionReason::ExplicitRequest,
+            suffix_start: 0,
+            batch_size_bytes: 1,
+            target_segments: 1,
+        };
+
+        let result = compact_index(config, Arc::new(snapshot), plan);
+        let err = match result {
+            Err(IndexError::CorruptIndex(msg)) => msg,
+            Ok(_) => panic!("expected CorruptIndex for base-id divergence, got Ok(_)"),
+            Err(other) => panic!("expected CorruptIndex for base-id divergence, got {other}"),
+        };
+        assert!(
+            err.contains("snapshot base_id[0]=0 diverges from manifest base[0]=7"),
+            "unexpected error: {err}"
+        );
     }
 }
