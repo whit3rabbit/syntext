@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::index::segment::SegmentMeta;
+use crate::IndexError;
 
 /// Reference to an active base segment stored in the manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,7 +117,7 @@ impl Manifest {
     /// parsing begins. Post-parse, `MAX_TOTAL_DOCS` (50M, in `index/mod.rs`)
     /// caps the doc count derived from segment refs, preventing unbounded
     /// allocations from a crafted manifest with inflated `doc_count` values.
-    pub fn load(index_dir: &Path) -> io::Result<Self> {
+    pub fn load(index_dir: &Path) -> Result<Self, IndexError> {
         let path = index_dir.join(Self::FILENAME);
         let meta = std::fs::metadata(&path)?;
         if meta.len() > Self::MAX_MANIFEST_SIZE {
@@ -127,10 +128,25 @@ impl Manifest {
                     meta.len(),
                     Self::MAX_MANIFEST_SIZE
                 ),
-            ));
+            ).into());
         }
         let data = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        let manifest: Self = serde_json::from_str(&data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        // Validate that each segment_id is a well-formed UUID. The field is not
+        // currently used in filesystem paths, but future code (GC, logging,
+        // metrics) could join it to a path. Reject non-UUID values proactively.
+        for seg in &manifest.segments {
+            if uuid::Uuid::parse_str(&seg.segment_id).is_err() {
+                return Err(IndexError::CorruptIndex(format!(
+                    "segment_id is not a valid UUID: {:?}",
+                    seg.segment_id
+                )));
+            }
+        }
+
+        Ok(manifest)
     }
 
     /// Atomically persist the manifest to `index_dir/manifest.json`.
@@ -254,19 +270,20 @@ mod tests {
     #[test]
     fn segment_ref_round_trips_with_post_filename() {
         let dir = tempfile::TempDir::new().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
         let seg_ref = SegmentRef {
-            segment_id: "test-uuid".into(),
+            segment_id: id.clone(),
             filename: String::new(),
-            dict_filename: "test-uuid.dict".into(),
-            post_filename: "test-uuid.post".into(),
+            dict_filename: format!("{id}.dict"),
+            post_filename: format!("{id}.post"),
             doc_count: 5,
             gram_count: 10,
         };
         let manifest = Manifest::new(vec![seg_ref], 5);
         manifest.save(dir.path()).unwrap();
         let loaded = Manifest::load(dir.path()).unwrap();
-        assert_eq!(loaded.segments[0].dict_filename, "test-uuid.dict");
-        assert_eq!(loaded.segments[0].post_filename, "test-uuid.post");
+        assert_eq!(loaded.segments[0].dict_filename, format!("{id}.dict"));
+        assert_eq!(loaded.segments[0].post_filename, format!("{id}.post"));
     }
 
     #[test]
@@ -313,17 +330,18 @@ mod tests {
     #[test]
     fn v2_manifest_without_split_filenames_deserializes_cleanly() {
         let dir = tempfile::TempDir::new().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
         // Simulate a v2 manifest with no dict_filename / post_filename fields
-        let json = r#"{
+        let json = format!(r#"{{
         "version": 1,
         "base_commit": null,
         "segments": [
-            {
-                "segment_id": "old-uuid",
-                "filename": "old-uuid.seg",
+            {{
+                "segment_id": "{id}",
+                "filename": "{id}.seg",
                 "doc_count": 10,
                 "gram_count": 50
-            }
+            }}
         ],
         "overlay_gen": 0,
         "overlay_file": null,
@@ -331,11 +349,34 @@ mod tests {
         "total_files_indexed": 10,
         "created_at": 0,
         "opstamp": 0
-    }"#;
+    }}"#);
         std::fs::write(dir.path().join("manifest.json"), json).unwrap();
         let loaded = Manifest::load(dir.path()).unwrap();
-        assert_eq!(loaded.segments[0].filename, "old-uuid.seg");
+        assert_eq!(loaded.segments[0].filename, format!("{id}.seg"));
         assert_eq!(loaded.segments[0].dict_filename, ""); // defaults to empty
         assert_eq!(loaded.segments[0].post_filename, ""); // defaults to empty
+    }
+
+    #[test]
+    fn manifest_rejects_non_uuid_segment_id() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let seg_ref = SegmentRef {
+            segment_id: "../../etc/passwd".into(),
+            filename: String::new(),
+            dict_filename: "a.dict".into(),
+            post_filename: "a.post".into(),
+            doc_count: 1,
+            gram_count: 1,
+        };
+        let manifest = Manifest::new(vec![seg_ref], 1);
+        manifest.save(dir.path()).unwrap();
+
+        let result = Manifest::load(dir.path());
+        assert!(result.is_err(), "non-UUID segment_id must be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not a valid UUID"),
+            "error should mention UUID: {err_msg}"
+        );
     }
 }
