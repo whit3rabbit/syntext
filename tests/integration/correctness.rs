@@ -12,7 +12,8 @@
 //! cargo test --test correctness
 //! ```
 //!
-//! Requires `rg` on PATH. Tests are skipped (not failed) if `rg` is absent.
+//! Requires `rg` on PATH. The oracle is pinned to `ripgrep 15.1.0`, and tests
+//! are skipped (not failed) if `rg` is absent.
 //!
 //! # Test Pattern Set (T011)
 //!
@@ -40,15 +41,34 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OracleMatch {
+    path: String,
+    line_number: u32,
+    line_content: Vec<u8>,
+}
+
+fn normalize_oracle_line_content(mut line_content: Vec<u8>) -> Vec<u8> {
+    // Compatibility with rg terminal output: ripgrep's raw stdout preserves a
+    // trailing '\r' for CRLF lines, while syntext reports logical line content.
+    // Trim one terminal-invisible CR so exact checks do not fail on encoding noise.
+    if line_content.last() == Some(&b'\r') {
+        line_content.pop();
+    }
+    line_content
+}
+
 // ---------------------------------------------------------------------------
 // Oracle helpers
 // ---------------------------------------------------------------------------
 
-/// Run `rg` on the corpus and return `(relative_path, line_number)` pairs.
+const EXPECTED_RG_VERSION: &str = "ripgrep 15.1.0";
+
+/// Run `rg` on the corpus and return exact match tuples.
 ///
 /// Returns an empty set if the pattern matches no files. Panics if `rg` is
 /// not on PATH (tests skip via `rg_available()` guard before calling this).
-fn rg_matches(corpus: &Path, pattern: &str, extra_flags: &[&str]) -> BTreeSet<(String, u32)> {
+fn rg_matches(corpus: &Path, pattern: &str, extra_flags: &[&str]) -> BTreeSet<OracleMatch> {
     let mut cmd = Command::new("rg");
     cmd.arg("--line-number")
         .arg("--no-heading")
@@ -72,35 +92,48 @@ fn rg_matches(corpus: &Path, pattern: &str, extra_flags: &[&str]) -> BTreeSet<(S
         );
     }
 
-    let stdout = String::from_utf8(output.stdout).expect("rg output is not UTF-8");
-    parse_rg_output(&stdout, corpus)
+    parse_rg_output(&output.stdout, corpus)
 }
 
-/// Parse `rg --line-number --no-heading` output into `(relative_path, line_number)` pairs.
-fn parse_rg_output(stdout: &str, corpus: &Path) -> BTreeSet<(String, u32)> {
+/// Parse `rg --line-number --no-heading` output into exact match tuples.
+fn parse_rg_output(stdout: &[u8], corpus: &Path) -> BTreeSet<OracleMatch> {
     let mut out = BTreeSet::new();
-    for line in stdout.lines() {
+    for line in stdout.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
         // Format: /abs/path/to/file.rs:42:matched content
-        let mut parts = line.splitn(3, ':');
-        let path_str = match parts.next() {
+        let mut parts = line.splitn(3, |&b| b == b':');
+        let path_bytes = match parts.next() {
             Some(p) => p,
             None => continue,
         };
-        let line_num_str = match parts.next() {
+        let line_num_bytes = match parts.next() {
             Some(n) => n,
             None => continue,
         };
-        let line_num: u32 = match line_num_str.parse() {
-            Ok(n) => n,
-            Err(_) => continue,
+        let line_num: u32 = match std::str::from_utf8(line_num_bytes)
+            .ok()
+            .and_then(|s| s.parse().ok())
+        {
+            Some(n) => n,
+            None => continue,
         };
-        let abs = PathBuf::from(path_str);
+        let line_content = match parts.next() {
+            Some(content) => normalize_oracle_line_content(content.to_vec()),
+            None => continue,
+        };
+        let abs = PathBuf::from(String::from_utf8_lossy(path_bytes).into_owned());
         let rel = abs
             .strip_prefix(corpus)
             .unwrap_or(&abs)
             .to_string_lossy()
             .into_owned();
-        out.insert((rel, line_num));
+        out.insert(OracleMatch {
+            path: rel,
+            line_number: line_num,
+            line_content,
+        });
     }
     out
 }
@@ -108,6 +141,26 @@ fn parse_rg_output(stdout: &str, corpus: &Path) -> BTreeSet<(String, u32)> {
 /// Return true if `rg` is available on PATH.
 fn rg_available() -> bool {
     Command::new("rg").arg("--version").output().is_ok()
+}
+
+/// Compatibility with rg is intentionally pinned so oracle behavior does not
+/// drift silently when a new ripgrep release changes search semantics.
+fn assert_rg_version_pinned() {
+    let output = Command::new("rg")
+        .arg("--version")
+        .output()
+        .expect("rg --version failed");
+    assert!(
+        output.status.success(),
+        "rg --version failed with status {:?}",
+        output.status
+    );
+    let stdout = String::from_utf8(output.stdout).expect("rg --version output is not UTF-8");
+    let first_line = stdout.lines().next().unwrap_or("");
+    assert_eq!(
+        first_line, EXPECTED_RG_VERSION,
+        "correctness oracle pinned to {EXPECTED_RG_VERSION}, found {first_line}"
+    );
 }
 
 /// Absolute path to the fixture corpus.
@@ -142,14 +195,14 @@ fn build_test_index(corpus: &Path) -> (tempfile::TempDir, Index) {
     (tmp, index)
 }
 
-/// Run a syntext search and return `(relative_path, line_number)` pairs.
+/// Run a syntext search and return exact match tuples.
 fn syntext_matches(
     index: &Index,
     _corpus: &Path,
     pattern: &str,
     case_insensitive: bool,
     path_glob: Option<&str>,
-) -> BTreeSet<(String, u32)> {
+) -> BTreeSet<OracleMatch> {
     // If the glob is a simple extension filter like "*.py", use file_type
     // (extension match). Otherwise use path_filter (substring match).
     let (path_filter, file_type) = match path_glob {
@@ -166,14 +219,19 @@ fn syntext_matches(
     let results = index.search(pattern, &opts).expect("search failed");
     results
         .into_iter()
-        .map(|m| {
-            let path = m.path.to_string_lossy().into_owned();
-            (path, m.line_number)
+        .map(|m| OracleMatch {
+            path: m.path.to_string_lossy().into_owned(),
+            line_number: m.line_number,
+            line_content: normalize_oracle_line_content(m.line_content),
         })
         .collect()
 }
 
 /// Assert that syntext produces a superset of rg results (zero false negatives).
+///
+/// Keep this helper only for cases where syntext intentionally implements
+/// semantics that are narrower than rg's full CLI oracle, such as the `*.py`
+/// path-filter compatibility check below.
 ///
 /// syntext may return more candidates (false positives that survive to the
 /// result set indicate a verifier bug, not an index bug), but it must never
@@ -181,8 +239,8 @@ fn syntext_matches(
 #[allow(dead_code)]
 fn assert_no_false_negatives(
     corpus: &Path,
-    rg_result: &BTreeSet<(String, u32)>,
-    syntext_result: &BTreeSet<(String, u32)>,
+    rg_result: &BTreeSet<OracleMatch>,
+    syntext_result: &BTreeSet<OracleMatch>,
     pattern: &str,
 ) {
     let missed: Vec<_> = rg_result.difference(syntext_result).collect();
@@ -204,8 +262,8 @@ fn assert_no_false_negatives(
 #[allow(dead_code)]
 fn assert_exact_match(
     corpus: &Path,
-    rg_result: &BTreeSet<(String, u32)>,
-    syntext_result: &BTreeSet<(String, u32)>,
+    rg_result: &BTreeSet<OracleMatch>,
+    syntext_result: &BTreeSet<OracleMatch>,
     pattern: &str,
 ) {
     assert_eq!(
@@ -218,10 +276,8 @@ fn assert_exact_match(
 // ---------------------------------------------------------------------------
 // T011: Test pattern set
 //
-// These tests define the correctness contract. All tests are currently
-// SKIPPED if rg is unavailable. Once Index::build and search are
-// implemented (Phases 3-4), remove the early-return stubs and wire in
-// the real build_test_index / syntext_matches calls.
+// These tests define the correctness contract. They are skipped if rg is
+// unavailable, and otherwise pin the oracle to a specific ripgrep version.
 // ---------------------------------------------------------------------------
 
 /// Exact literal: `parse_query` appears in 3+ files.
@@ -232,6 +288,7 @@ fn literal_parse_query() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "parse_query", &[]);
     assert!(
@@ -241,7 +298,9 @@ fn literal_parse_query() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "parse_query", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse_query");
+    // Compatibility with rg: exact literal matches should agree on path, line,
+    // and visible line content, not just candidate inclusion.
+    assert_exact_match(&corpus, &rg_result, &syntext_result, "parse_query");
 }
 
 /// Exact literal: `process_batch` appears in 2+ files.
@@ -252,6 +311,7 @@ fn literal_process_batch() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "process_batch", &[]);
     assert!(
@@ -261,7 +321,9 @@ fn literal_process_batch() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "process_batch", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "process_batch");
+    // Compatibility with rg: exact literal matches should agree on path, line,
+    // and visible line content, not just candidate inclusion.
+    assert_exact_match(&corpus, &rg_result, &syntext_result, "process_batch");
 }
 
 /// Literal with punctuation: `parse_query(` -- the `(` is part of the literal.
@@ -272,6 +334,7 @@ fn literal_with_punctuation() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     // rg treats this as a fixed string with -F
     let rg_result = rg_matches(&corpus, "parse_query(", &["-F"]);
@@ -283,7 +346,9 @@ fn literal_with_punctuation() {
     // treats it as regex. Use the escaped form for the regex engine.
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, r"parse_query\(", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse_query(");
+    // Compatibility with rg: escaped punctuation should still produce the same
+    // final match set and visible line content as rg's fixed-string mode here.
+    assert_exact_match(&corpus, &rg_result, &syntext_result, "parse_query(");
 }
 
 /// Regex alternation: `parse_query|process_batch`.
@@ -294,6 +359,7 @@ fn regex_alternation() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "parse_query|process_batch", &[]);
     assert!(
@@ -302,7 +368,9 @@ fn regex_alternation() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "parse_query|process_batch", false, None);
-    assert_no_false_negatives(
+    // Compatibility with rg: this indexed regex is expected to produce exact
+    // parity with rg on the fixture corpus.
+    assert_exact_match(
         &corpus,
         &rg_result,
         &syntext_result,
@@ -318,6 +386,7 @@ fn regex_character_class() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "parse_quer[yi]", &[]);
     assert!(
@@ -326,7 +395,8 @@ fn regex_character_class() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "parse_quer[yi]", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse_quer[yi]");
+    // Compatibility with rg: simple indexed character-class regexes should be exact.
+    assert_exact_match(&corpus, &rg_result, &syntext_result, "parse_quer[yi]");
 }
 
 /// Indexed regex repetition: `(fn_parse_filter_query)+`.
@@ -337,6 +407,7 @@ fn indexed_regex_repetition() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "(fn_parse_filter_query)+", &[]);
     assert!(
@@ -345,7 +416,9 @@ fn indexed_regex_repetition() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "(fn_parse_filter_query)+", false, None);
-    assert_no_false_negatives(
+    // Compatibility with rg: required repetition preserves literal grams, so
+    // this remains an exact oracle check instead of only a subset check.
+    assert_exact_match(
         &corpus,
         &rg_result,
         &syntext_result,
@@ -361,6 +434,7 @@ fn case_insensitive_literal() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_ci = rg_matches(&corpus, "ParseQuery", &["-i"]);
     let rg_cs = rg_matches(&corpus, "ParseQuery", &[]);
@@ -374,7 +448,9 @@ fn case_insensitive_literal() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "ParseQuery", true, None);
-    assert_no_false_negatives(
+    // Compatibility with rg: case-folded literal search should agree exactly
+    // on the final visible matches for this UTF-8 fixture corpus.
+    assert_exact_match(
         &corpus,
         &rg_ci,
         &syntext_result,
@@ -390,6 +466,7 @@ fn no_match_pattern() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "xyzzy_no_match_sentinel_42", &[]);
     assert!(
@@ -414,6 +491,7 @@ fn unicode_identifier() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "café", &[]);
     assert!(
@@ -422,7 +500,8 @@ fn unicode_identifier() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "café", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "café");
+    // Compatibility with rg: UTF-8 literal search should be exact on supported text files.
+    assert_exact_match(&corpus, &rg_result, &syntext_result, "café");
 }
 
 /// Optional prefix pattern: `(foo)?bar`
@@ -444,6 +523,7 @@ fn optional_prefix_pattern() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     // rg with regex `(foo)?bar` finds all lines containing `bar` or `foobar`
     let rg_result = rg_matches(&corpus, "(foo)?bar", &[]);
@@ -458,12 +538,14 @@ fn optional_prefix_pattern() {
 
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "(foo)?bar", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "(foo)?bar");
+    // Compatibility with rg: optional prefixes are the key correctness trap
+    // here, so this should match rg exactly after verification.
+    assert_exact_match(&corpus, &rg_result, &syntext_result, "(foo)?bar");
 }
 
 /// `parse.*batch`: the `.*` contributes All which simplifies away, leaving
 /// And(Grams("parse"), Grams("batch")) as an indexed regex query.
-/// syntext must find every file that rg finds -- no false negatives.
+/// syntext must still match rg exactly after verification.
 #[test]
 fn dot_star_fallback_to_scan() {
     let _guard = correctness_build_lock().lock().unwrap();
@@ -471,6 +553,7 @@ fn dot_star_fallback_to_scan() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_result = rg_matches(&corpus, "parse.*batch", &[]);
     assert!(
@@ -480,7 +563,9 @@ fn dot_star_fallback_to_scan() {
     );
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "parse.*batch", false, None);
-    assert_no_false_negatives(&corpus, &rg_result, &syntext_result, "parse.*batch");
+    // Compatibility with rg: even when routing falls back to a broader scan,
+    // the final verified results should still be exact.
+    assert_exact_match(&corpus, &rg_result, &syntext_result, "parse.*batch");
 }
 
 /// Path filter: `parse_query` restricted to `*.py` files.
@@ -493,6 +578,7 @@ fn path_filter_py_only() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let rg_all = rg_matches(&corpus, "parse_query", &[]);
     let rg_py = rg_matches(&corpus, "parse_query", &["--glob=*.py"]);
@@ -502,21 +588,22 @@ fn path_filter_py_only() {
         "py filter must return fewer results than unfiltered"
     );
     // All py results must have .py extension
-    for (path, _) in &rg_py {
+    for m in &rg_py {
         assert!(
-            path.ends_with(".py"),
+            m.path.ends_with(".py"),
             "path filter returned non-.py file: {}",
-            path
+            m.path
         );
     }
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "parse_query", false, Some("*.py"));
-    // syntext path_filter uses extension match; verify subset correctness.
-    for (path, _) in &syntext_result {
+    // Compatibility with rg: keep this as an inclusion check because syntext's
+    // file_type/path_filter split is intentionally narrower than rg's glob engine.
+    for m in &syntext_result {
         assert!(
-            path.ends_with(".py"),
+            m.path.ends_with(".py"),
             "syntext path filter returned non-.py file: {}",
-            path
+            m.path
         );
     }
     assert_no_false_negatives(
@@ -537,23 +624,24 @@ fn gitignore_excludes_build_dir() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     // rg respects .gitignore by default; build/ should be excluded
     let rg_result = rg_matches(&corpus, "parse_query", &[]);
-    for (path, _) in &rg_result {
+    for m in &rg_result {
         assert!(
-            !path.starts_with("build/") && !path.contains("/build/"),
+            !m.path.starts_with("build/") && !m.path.contains("/build/"),
             "rg returned gitignored file: {}",
-            path
+            m.path
         );
     }
     let (_tmp, index) = build_test_index(&corpus);
     let syntext_result = syntext_matches(&index, &corpus, "parse_query", false, None);
-    for (path, _) in &syntext_result {
+    for m in &syntext_result {
         assert!(
-            !path.starts_with("build/") && !path.contains("/build/"),
+            !m.path.starts_with("build/") && !m.path.contains("/build/"),
             "syntext returned gitignored file: {}",
-            path
+            m.path
         );
     }
 }
@@ -665,6 +753,7 @@ fn oracle_is_deterministic() {
         eprintln!("SKIP: rg not on PATH");
         return;
     }
+    assert_rg_version_pinned();
     let corpus = corpus_path();
     let run1 = rg_matches(&corpus, "parse_query", &[]);
     let run2 = rg_matches(&corpus, "parse_query", &[]);

@@ -119,19 +119,22 @@ fn projected_overlay_doc_count(
             .count()
 }
 
-fn base_doc_id_limit(snapshot: &IndexSnapshot) -> u32 {
-    snapshot
-        .base_segments()
-        .iter()
-        .enumerate()
-        .filter_map(|(seg_idx, seg)| {
-            snapshot
-                .segment_base_ids()
-                .get(seg_idx)
-                .and_then(|base| base.checked_add(seg.doc_count))
-        })
-        .max()
-        .unwrap_or(0)
+fn base_doc_id_limit(snapshot: &IndexSnapshot) -> Result<u32, IndexError> {
+    let mut max_limit: u32 = 0;
+    for (seg_idx, seg) in snapshot.base_segments().iter().enumerate() {
+        if let Some(&base) = snapshot.segment_base_ids().get(seg_idx) {
+            let limit = base
+                .checked_add(seg.doc_count)
+                .ok_or(IndexError::DocIdOverflow {
+                    base_doc_count: base,
+                    overlay_docs: seg.doc_count as usize,
+                })?;
+            if limit > max_limit {
+                max_limit = limit;
+            }
+        }
+    }
+    Ok(max_limit)
 }
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
 pub struct Index {
@@ -518,7 +521,7 @@ impl Index {
 
         // Total base doc count for overlay doc_id assignment.
         let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
-        let base_doc_id_limit = base_doc_id_limit(&old_snap);
+        let base_doc_id_limit = base_doc_id_limit(&old_snap)?;
 
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
@@ -1625,6 +1628,65 @@ mod tests {
             "rebuilt snapshot must stop returning content from the old HEAD"
         );
         assert_eq!(index.stats().pending_edits, 0);
+    }
+
+    #[test]
+    fn base_doc_id_limit_overflow_returns_error() {
+        // B01: base_doc_id_limit must return an error when base + doc_count
+        // overflows u32, not silently drop the segment via filter_map.
+        let _serial = serial_index_lock();
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("a.rs"), b"fn alpha() {}\n").unwrap();
+
+        // Place segment at base_doc_id near u32::MAX so base + doc_count overflows.
+        let seg = write_segment_with_global_doc_id(
+            index_dir.path(),
+            u32::MAX - 1,
+            "a.rs",
+            b"fn alpha() {}\n",
+        );
+        // The segment has doc_count = 1; base = MAX-1, so checked_add(1) = MAX (ok).
+        // But if we craft a second segment that pushes past MAX, the function
+        // must return Err, not silently drop it.
+        let mut seg2_writer = crate::index::segment::SegmentWriter::new();
+        seg2_writer.add_document(
+            u32::MAX,
+            std::path::Path::new("b.rs"),
+            xxh64(b"fn beta() {}\n", 0),
+            13,
+        );
+        for gram_hash in crate::tokenizer::build_all(b"fn beta() {}\n") {
+            seg2_writer.add_gram_posting(gram_hash, u32::MAX);
+        }
+        let mut seg2: crate::index::manifest::SegmentRef =
+            seg2_writer.write_to_dir(index_dir.path()).unwrap().into();
+        seg2.base_doc_id = Some(u32::MAX);
+
+        let mut manifest = crate::index::manifest::Manifest::new(vec![seg, seg2], 2);
+        manifest.scan_threshold_fraction = Some(0.10);
+        manifest.save(index_dir.path()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(index_dir.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+
+        std::fs::write(repo.path().join("b.rs"), b"fn beta() {}\n").unwrap();
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::open(config).unwrap();
+        // commit_batch calls base_doc_id_limit, which must fail on overflow.
+        index.notify_change(repo.path().join("a.rs"));
+        let result = index.commit_batch();
+        assert!(
+            result.is_err(),
+            "commit_batch must propagate DocIdOverflow, not silently drop"
+        );
     }
 
     #[test]

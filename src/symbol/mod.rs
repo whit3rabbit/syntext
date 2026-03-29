@@ -299,7 +299,9 @@ mod tests {
             .unwrap();
         }
 
-        let results = idx.search("", None).unwrap();
+        // Query prefix that matches all three inserted symbol names
+        // (root_fn, escape_fn, real_fn). Empty string returns early (1c641db).
+        let results = idx.search("r", None).unwrap();
         let paths: Vec<_> = results
             .iter()
             .map(|m| m.path.display().to_string())
