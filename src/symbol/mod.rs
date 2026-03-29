@@ -155,6 +155,13 @@ impl SymbolIndex {
             .replace('_', r"\_");
         let like_pat = format!("{escaped}%");
 
+        // SAFETY INVARIANT: `kind_filter` is never interpolated into the SQL
+        // string. It is always bound via `?2` positional parameter. If a future
+        // change needs to vary the SQL based on kind_filter's VALUE (not just
+        // its presence), it must remain parameterized. Interpolating kind_filter
+        // into the SQL string would bypass the LIKE escaping above and enable
+        // SQL injection via crafted SymbolKind variants (if the enum ever gains
+        // user-controlled string payloads).
         let sql = if kind_filter.is_some() {
             "SELECT path, line, name FROM symbols \
              WHERE lower(name) LIKE ?1 ESCAPE '\\' AND kind = ?2 ORDER BY name, path LIMIT 1000"
