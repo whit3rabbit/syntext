@@ -2,6 +2,7 @@
 //!
 //! Provides the core index, search, and configuration APIs.
 
+pub mod base64;
 pub mod cli;
 pub mod index;
 pub mod path;
