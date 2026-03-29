@@ -316,21 +316,15 @@ pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
         }
     }
 
-    // Drop exclusive lock before open() acquires shared lock.
-    // Another process can grab exclusive in the gap; retry with backoff.
+    // Downgrade the exclusive directory lock to shared in-place.
+    // This ensures no competing build can start between unlock and re-lock.
+    lock_file.unlock().map_err(|e| {
+        IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}"))
+    })?;
+    lock_file.try_lock_shared().map_err(|_| {
+        IndexError::LockConflict(config.index_dir.clone())
+    })?;
+    // Drop writer lock only after the shared lock is held, closing the gap.
     drop(write_lock);
-    drop(lock_file);
-    // Retry open() if a competing process grabbed the exclusive lock in the gap
-    // between our drop and open()'s try_lock_shared.
-    let mut delay = std::time::Duration::from_millis(10);
-    for _ in 0..4u32 {
-        match super::Index::open(config.clone()) {
-            Err(IndexError::LockConflict(_)) => {
-                std::thread::sleep(delay);
-                delay = delay.saturating_mul(2);
-            }
-            result => return result,
-        }
-    }
-    super::Index::open(config)
+    super::Index::open_with_lock(config, lock_file)
 }

@@ -161,6 +161,20 @@ impl Index {
             }
         }
 
+        Self::open_inner(config, dir_lock)
+    }
+
+    /// Open an existing index using an already-held directory lock.
+    /// Called by `build_index` after downgrading the exclusive lock to shared,
+    /// avoiding the gap where a competing build could start.
+    pub(super) fn open_with_lock(config: Config, dir_lock: std::fs::File) -> Result<Self, IndexError> {
+        // Lock is already held (shared) and permissions were verified by
+        // build_index, so skip both checks.
+        Self::open_inner(config, dir_lock)
+    }
+
+    /// Shared implementation for `open` and `open_with_lock`.
+    fn open_inner(config: Config, dir_lock: std::fs::File) -> Result<Self, IndexError> {
         let manifest = Manifest::load(&config.index_dir)?;
 
         let scan_threshold = manifest
@@ -858,6 +872,21 @@ mod tests {
             Err(e) => panic!("expected CorruptIndex, got: {e}"),
             Ok(_) => panic!("open() must reject permissive dir mode"),
         }
+    }
+
+    #[test]
+    fn build_index_returns_valid_index_without_lock_gap() {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("lib.rs"), b"fn f() {}").unwrap();
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let snap = index.snapshot();
+        assert!(snap.base_segments().iter().map(|s| s.doc_count).sum::<u32>() > 0);
     }
 
     #[cfg(unix)]
