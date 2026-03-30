@@ -32,6 +32,7 @@
 //! ```
 
 pub mod base64;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cli;
 pub mod index;
 pub mod path;
@@ -42,6 +43,8 @@ pub mod search;
 #[cfg(feature = "symbols")]
 pub mod symbol;
 pub mod tokenizer;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use std::path::PathBuf;
 

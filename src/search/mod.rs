@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use resolver::resolve_doc;
 
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use regex::bytes::RegexBuilder;
 use roaring::RoaringBitmap;
@@ -128,9 +129,7 @@ pub fn search(
     // files may be processed near the boundary, which is acceptable since the
     // final truncate enforces the hard limit.
     let match_count = AtomicUsize::new(0);
-    let all_matches: Vec<SearchMatch> = candidates
-        .par_iter()
-        .filter_map(|&global_id| {
+    let do_match = |&global_id: &u32| -> Option<Vec<SearchMatch>> {
             // Early-exit: skip expensive I/O once we already have enough matches.
             if let Some(limit) = opts.max_results {
                 if match_count.load(Ordering::Relaxed) >= limit {
@@ -178,9 +177,13 @@ pub fn search(
                 }
             }
             Some(file_matches)
-        })
-        .flatten()
-        .collect();
+    };
+    #[cfg(feature = "rayon")]
+    let all_matches: Vec<SearchMatch> =
+        candidates.par_iter().filter_map(do_match).flatten().collect();
+    #[cfg(not(feature = "rayon"))]
+    let all_matches: Vec<SearchMatch> =
+        candidates.iter().filter_map(do_match).flatten().collect();
 
     let mut matches = sort_matches(all_matches);
     if let Some(max) = opts.max_results {

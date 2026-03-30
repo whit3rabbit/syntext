@@ -3,7 +3,9 @@
 use std::io::Read;
 use std::sync::Arc;
 
-use super::{encoding, helpers, io_util, snapshot, Index, OVERLAY_ENFORCE_THRESHOLD, OVERLAY_WARN_THRESHOLD};
+use super::{
+    encoding, helpers, io_util, snapshot, Index, OVERLAY_ENFORCE_THRESHOLD, OVERLAY_WARN_THRESHOLD,
+};
 use crate::index::overlay::{compute_delete_set, OverlayView};
 use crate::path::PathIndex;
 use crate::IndexError;
@@ -134,8 +136,11 @@ impl Index {
         // Vanished files act as deletions: evict any existing index entry.
         removed_paths.extend(vanished_paths.iter().cloned());
 
-        let projected_overlay_docs =
-            helpers::projected_overlay_doc_count(&old_snap.overlay, &visible_changed, &removed_paths);
+        let projected_overlay_docs = helpers::projected_overlay_doc_count(
+            &old_snap.overlay,
+            &visible_changed,
+            &removed_paths,
+        );
 
         // Enforce hard overlay size limit before rebuilding the overlay. Once
         // the overlay grows beyond 50% of base docs, the rebuild cost is

@@ -8,14 +8,18 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "fs2")]
 use fs2::FileExt;
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use xxhash_rust::xxh64::xxh64;
 
 use crate::index::manifest::{Manifest, SegmentRef};
 use crate::index::segment::SegmentWriter;
-use crate::index::walk::{enumerate_files, is_binary, split_batches};
+use crate::index::walk::is_binary;
+#[cfg(feature = "ignore")]
+use crate::index::walk::{enumerate_files, split_batches};
 use crate::tokenizer::build_all;
 use crate::{Config, IndexError};
 
@@ -105,10 +109,12 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
 
 /// Full-corpus index build. Called by `Index::build()`; returns a ready-to-use
 /// `Index` by delegating to `Index::open()` after writing all segments.
+#[cfg(feature = "ignore")]
 pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     build_index_with_batch_size(config, BATCH_SIZE_BYTES)
 }
 
+#[cfg(feature = "ignore")]
 pub(super) fn build_index_with_batch_size(
     config: Config,
     batch_size_bytes: u64,
@@ -167,32 +173,32 @@ pub(super) fn build_index_with_batch_size(
         // space. The overlay path already uses checked_add; this matches it.
         // Parallel: read file content and extract grams.
         // results[i] is None if file i was binary or could not be read.
-        let results: Vec<Option<(u64, Vec<u64>)>> = batch
-            .par_iter()
-            .map(|(abs_path, _, _)| {
-                // Security: close the TOCTOU window between enumerate_files()'s
-                // symlink resolution (symlink_metadata + canonicalize) and this
-                // read. A concurrent rename() could swap the canonical target
-                // after the walk's stat. open_readonly_nofollow blocks final-
-                // component symlink substitution (O_NOFOLLOW); verify_fd_matches_stat
-                // catches directory-component swaps by comparing dev/ino before
-                // open vs after open. This matches the same pattern used in
-                // commit_batch and the resolver hot path.
-                let pre_meta = std::fs::symlink_metadata(abs_path).ok()?;
-                let mut file = super::open_readonly_nofollow(abs_path).ok()?;
-                if !super::verify_fd_matches_stat(&file, &pre_meta) {
-                    return None;
-                }
-                let mut raw = Vec::new();
-                file.read_to_end(&mut raw).ok()?;
-                let content = crate::index::normalize_encoding(&raw, config.verbose);
-                if is_binary(&content) {
-                    return None;
-                }
-                let hash = xxh64(content.as_ref(), 0);
-                Some((hash, build_all(content.as_ref())))
-            })
-            .collect();
+        let map_fn = |(abs_path, _, _): &(PathBuf, PathBuf, u64)| -> Option<(u64, Vec<u64>)> {
+            // Security: close the TOCTOU window between enumerate_files()'s
+            // symlink resolution (symlink_metadata + canonicalize) and this
+            // read. open_readonly_nofollow blocks final-component substitution;
+            // verify_fd_matches_stat catches directory-component swaps.
+            let pre_meta = std::fs::symlink_metadata(abs_path).ok()?;
+            let mut file = super::open_readonly_nofollow(abs_path).ok()?;
+            #[cfg(unix)]
+            if !super::verify_fd_matches_stat(&file, &pre_meta) {
+                return None;
+            }
+            #[cfg(not(unix))]
+            let _ = &pre_meta;
+            let mut raw = Vec::new();
+            file.read_to_end(&mut raw).ok()?;
+            let content = crate::index::normalize_encoding(&raw, config.verbose);
+            if is_binary(&content) {
+                return None;
+            }
+            let hash = xxh64(content.as_ref(), 0);
+            Some((hash, build_all(content.as_ref())))
+        };
+        #[cfg(feature = "rayon")]
+        let results: Vec<Option<(u64, Vec<u64>)>> = batch.par_iter().map(map_fn).collect();
+        #[cfg(not(feature = "rayon"))]
+        let results: Vec<Option<(u64, Vec<u64>)>> = batch.iter().map(map_fn).collect();
 
         let batch_start_doc_id = next_doc_id;
         let mut writer = SegmentWriter::with_capacity(batch.len(), 120);

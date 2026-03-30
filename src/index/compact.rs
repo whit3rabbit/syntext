@@ -4,6 +4,7 @@
 use std::fs;
 use std::sync::Arc;
 
+#[cfg(feature = "fs2")]
 use fs2::FileExt;
 use xxhash_rust::xxh64::xxh64;
 
@@ -13,7 +14,7 @@ use crate::index::snapshot::IndexSnapshot;
 use crate::{Config, IndexError};
 
 #[allow(unused_imports)] // CompactionReason used by #[cfg(test)] via `use super::*`
-pub(super) use super::compact_plan::{plan, forced_plan, CompactionPlan, CompactionReason};
+pub(super) use super::compact_plan::{forced_plan, plan, CompactionPlan, CompactionReason};
 
 #[derive(Clone, Copy)]
 struct CompactedDocTarget {
