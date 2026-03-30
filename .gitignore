@@ -47,3 +47,7 @@ repomix.xml
 
 # Git worktrees
 .worktrees/
+
+# Local benchmark corpora (shallow clones of external repos)
+_syntext-bench/
+_ripline-bench/

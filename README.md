@@ -5,6 +5,10 @@
 [![docs.rs](https://docs.rs/syntext/badge.svg)](https://docs.rs/syntext)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**A faster grep for agentic AI. ~20X Faster than Ripgrep when indexed**
+
+This is largely based on information derivied from this [Cursor Blog Post](https://cursor.com/blog/fast-regex-search) and [GitHub Code Search](https://github.com/features/code-search).
+
 A hybrid code search index for agent workflows, built in Rust. Indexes repositories using sparse n-grams with a pre-trained frequency weight table, then narrows to a small candidate set before verification. Designed as a drop-in replacement for `rg` in AI agent loops where grep is called repeatedly and in parallel.
 
 **Status: stable (v1.0).** See [Project status](#project-status) below.
@@ -114,6 +118,13 @@ Notes:
   `syntext` relative to `rg`.
 - Historical and exploratory runs, including mismatched-count investigations,
   remain in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+### Performance Summary
+
+In indexed search scenarios, **syntext** significantly outperforms `ripgrep` by reducing the search space to a small candidate set. 
+
+* **Average Speedup:** ~20x faster than `rg`.
+* **Scalability:** While `rg` latency scales linearly with repository size, `syntext` remains effectively constant (under 200ms even on the Linux kernel).
 
 ### Index build time
 

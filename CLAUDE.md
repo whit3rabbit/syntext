@@ -194,6 +194,8 @@ If all weights are 65535, the script ran with no corpus. Check HF auth and datas
 
 ## Quality Gates
 
+**Known violations (to fix):** `index/mod.rs` (1314), `search/mod.rs` (671), `cli/mod.rs` (593), `index/compact.rs` (531), `tokenizer/mod.rs` (510). Do not add lines to these files; split further to bring them under 400.
+
 All PRs must pass before merge:
 
 1. `cargo test` -- no failures
@@ -219,16 +221,26 @@ All PRs must pass before merge:
 src/
   lib.rs                      # public API (Index, Config, SearchOptions)
   main.rs                     # binary entry point (st)
+  base64.rs                   # base64 encoding helpers
+  path_util.rs                # path normalization utilities
   tokenizer/
-    mod.rs                    # sparse n-gram extraction (build_all, build_covering)
+    mod.rs                    # sparse n-gram extraction (build_all, forced boundaries)
+    covering.rs               # build_covering and build_covering_inner (query gram extraction)
     weights.rs                # pre-trained [u16; 65536] byte-pair frequency table
   index/
-    mod.rs                    # Index struct, open, notify, commit_batch
+    mod.rs                    # Index struct, top-level re-exports
+    open.rs                   # open / open_inner entry points
+    commit.rs                 # commit_batch logic
+    helpers.rs                # free functions shared across index modules
     build.rs                  # build pipeline (calibrate_threshold, build_index)
+    compact.rs                # compaction execution
+    compact_plan.rs           # compaction planning types, plan / forced_plan
+    encoding.rs               # varint / posting encoding helpers
     io_util.rs                # secure file-open helpers (O_NOFOLLOW, inode check)
     snapshot.rs               # BaseSegments, IndexSnapshot, new_snapshot
     segment/
-      mod.rs                  # SNTX segment format constants, DocEntry, MmapSegment
+      mod.rs                  # SNTX segment format constants, DocEntry
+      reader.rs               # MmapSegment::open and open_split (mmap read path)
       segment_writer.rs       # SegmentWriter (serialize to SNTX)
     overlay.rs                # OverlayView + ArcSwap<IndexSnapshot>
     manifest.rs               # manifest.json + atomic write-then-rename
@@ -243,6 +255,7 @@ src/
     regex_decompose.rs        # HIR walker -> GramQuery tree
   search/
     mod.rs                    # search executor
+    lines.rs                  # line extraction for context rendering
     resolver.rs               # doc_id -> path + content resolver
     verifier.rs               # tiered: memchr for literals, regex for patterns
   path/
