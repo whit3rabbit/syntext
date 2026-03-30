@@ -188,10 +188,20 @@ jobs:
   update-homebrew-cask:
     name: Update Homebrew Cask
     needs: [release]
-    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Detect tap token
+        id: tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "${TAP_TOKEN}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set version
         id: ver
@@ -217,12 +227,14 @@ jobs:
           echo "x86=${X86_SHA}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
+        if: steps.tap.outputs.available == 'true'
         with:
           repository: whit3rabbit/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
       - name: Generate cask
+        if: steps.tap.outputs.available == 'true'
         env:
           VER: ${{ steps.ver.outputs.VER }}
           ARM: ${{ steps.sha.outputs.arm }}
@@ -238,6 +250,7 @@ jobs:
           ruby -c homebrew-tap/Casks/syntext.rb
 
       - name: Commit and push cask
+        if: steps.tap.outputs.available == 'true'
         working-directory: homebrew-tap
         run: |
           git config user.name "github-actions[bot]"
