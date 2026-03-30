@@ -1,12 +1,14 @@
 //! Output rendering: flat, heading, invert-match, context, and JSON formats.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::index::Index;
 use crate::path_util::path_bytes;
 use crate::Config;
 
-use super::search::{build_effective_pattern, SearchArgs};
+use super::search::{build_effective_pattern, collect_scoped_paths, SearchArgs};
 use crate::search::lines::for_each_line;
 use crate::search::REGEX_SIZE_LIMIT;
 
@@ -45,6 +47,24 @@ fn json_data(bytes: &[u8]) -> serde_json::Value {
     } else {
         serde_json::json!({ "bytes": crate::base64::encode(bytes) })
     }
+}
+
+fn json_stats(
+    searches: usize,
+    searches_with_match: usize,
+    bytes_searched: usize,
+    matched_lines: usize,
+    matches: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "elapsed": {"secs": 0, "nanos": 0, "human": "0s"},
+        "searches": searches,
+        "searches_with_match": searches_with_match,
+        "bytes_searched": bytes_searched,
+        "bytes_printed": 0,
+        "matched_lines": matched_lines,
+        "matches": matches
+    })
 }
 
 pub(super) fn render_flat(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
@@ -90,17 +110,10 @@ pub(super) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) 
 }
 
 pub(super) fn render_invert_match(
+    index: &Index,
     config: &Config,
-    candidate_matches: &[crate::SearchMatch],
     args: &SearchArgs,
 ) -> io::Result<i32> {
-    // NOTE: render_invert_match only inverts within files that the index identifies
-    // as candidates (files containing the pattern). When the pattern appears in no
-    // files, this returns exit 1 with no output. True corpus-wide invert-match would
-    // require walking all indexed files regardless of candidate set, which is a
-    // known v1 limitation.
-    use std::collections::BTreeSet;
-
     let pattern = build_effective_pattern(args);
     let re = match regex::bytes::RegexBuilder::new(&pattern)
         .case_insensitive(args.ignore_case)
@@ -115,24 +128,28 @@ pub(super) fn render_invert_match(
         }
     };
 
-    let files: BTreeSet<_> = candidate_matches
-        .iter()
-        .map(|m| config.repo_root.join(&m.path))
-        .collect();
+    let files = collect_scoped_paths(index, config, args);
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut found_any = false;
-    for abs_path in &files {
-        let rel_path = abs_path.strip_prefix(&config.repo_root).unwrap_or(abs_path);
-        let mut emitted_in_file = 0usize;
+    let mut total_bytes_searched = 0usize;
+    let mut total_matched_lines = 0usize;
+    let total_searches = files.len();
+    let mut searches_with_match = 0usize;
+    let mut counts: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    let mut matched_files = Vec::new();
+    for rel_path in &files {
+        let abs_path = config.repo_root.join(rel_path);
+        let mut selected_in_file = 0usize;
+        let mut file_selected = Vec::new();
 
         #[cfg(unix)]
-        let pre_open_meta = match std::fs::metadata(abs_path) {
+        let pre_open_meta = match std::fs::metadata(&abs_path) {
             Ok(meta) => meta,
             Err(_) => continue,
         };
-        let mut file = match crate::index::open_readonly_nofollow(abs_path) {
+        let mut file = match crate::index::open_readonly_nofollow(&abs_path) {
             Ok(file) => file,
             Err(_) => continue,
         };
@@ -144,21 +161,30 @@ pub(super) fn render_invert_match(
         if file.read_to_end(&mut raw_bytes).is_err() {
             continue;
         }
+        total_bytes_searched += raw_bytes.len();
         let file_bytes = crate::index::normalize_encoding(&raw_bytes, config.verbose);
 
-        for_each_line(file_bytes.as_ref(), |line_num, _line_start, line| {
-            if args.max_count.is_some_and(|limit| emitted_in_file >= limit) {
+        for_each_line(file_bytes.as_ref(), |line_num, line_start, line| {
+            if args
+                .max_count
+                .is_some_and(|limit| selected_in_file >= limit)
+            {
                 return;
             }
             if !re.is_match(line) {
                 found_any = true;
-                emitted_in_file += 1;
-                if !args.quiet {
+                selected_in_file += 1;
+                if args.quiet {
+                    return;
+                }
+                if args.json {
+                    file_selected.push((line_num as usize, line_start, line.to_vec()));
+                } else if !args.files_with_matches && !args.count {
                     let _ = write_formatted_line(
                         &mut out,
                         args.no_filename,
                         args.no_line_number,
-                        rel_path,
+                        rel_path.as_path(),
                         line_num as usize,
                         b':',
                         line,
@@ -166,6 +192,90 @@ pub(super) fn render_invert_match(
                 }
             }
         });
+
+        if args.quiet && found_any {
+            return Ok(0);
+        }
+        if selected_in_file == 0 {
+            continue;
+        }
+        total_matched_lines += selected_in_file;
+        searches_with_match += 1;
+        if args.files_with_matches {
+            matched_files.push(rel_path.clone());
+        } else if args.count {
+            counts.insert(rel_path.clone(), selected_in_file);
+        } else if args.json {
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({"type":"begin","data":{"path": json_data(path_bytes(rel_path).as_ref())}})
+            )?;
+            for (line_number, absolute_offset, line) in file_selected {
+                let mut line_with_newline = line;
+                line_with_newline.push(b'\n');
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({
+                        "type": "match",
+                        "data": {
+                            "path": json_data(path_bytes(rel_path).as_ref()),
+                            "lines": json_data(&line_with_newline),
+                            "line_number": line_number,
+                            "absolute_offset": absolute_offset,
+                            "submatches": []
+                        }
+                    })
+                )?;
+            }
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({
+                    "type": "end",
+                    "data": {
+                        "path": json_data(path_bytes(rel_path).as_ref()),
+                        "binary_offset": null,
+                        "stats": json_stats(1, 1, raw_bytes.len(), selected_in_file, 0)
+                    }
+                })
+            )?;
+        }
+    }
+
+    if args.files_with_matches {
+        for path in matched_files {
+            out.write_all(path_bytes(&path).as_ref())?;
+            out.write_all(b"\n")?;
+        }
+    } else if args.count {
+        for (path, count) in counts {
+            if args.no_filename {
+                writeln!(out, "{count}")?;
+            } else {
+                out.write_all(path_bytes(&path).as_ref())?;
+                writeln!(out, ":{count}")?;
+            }
+        }
+    } else if args.json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::json!({
+                "type": "summary",
+                "data": {
+                    "elapsed_total": {"secs": 0, "nanos": 0, "human": "0s"},
+                    "stats": json_stats(
+                        total_searches,
+                        searches_with_match,
+                        total_bytes_searched,
+                        total_matched_lines,
+                        0
+                    )
+                }
+            })
+        )?;
     }
 
     Ok(if found_any { 0 } else { 1 })
@@ -314,23 +424,19 @@ pub(super) fn format_match_json(m: &crate::SearchMatch) -> String {
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
 pub(super) fn render_json(matches: &[crate::SearchMatch]) -> io::Result<()> {
-    use std::collections::BTreeMap;
-
     let mut by_file: BTreeMap<PathBuf, Vec<&crate::SearchMatch>> = BTreeMap::new();
     for m in matches {
         by_file.entry(m.path.clone()).or_default().push(m);
     }
 
     let total_matches: usize = matches.len();
-    let zero_stats = serde_json::json!({
-        "elapsed": {"secs": 0, "nanos": 0, "human": "0s"},
-        "searches": 1,
-        "searches_with_match": if total_matches > 0 { 1 } else { 0 },
-        "bytes_searched": 0,
-        "bytes_printed": 0,
-        "matched_lines": total_matches,
-        "matches": total_matches
-    });
+    let zero_stats = json_stats(
+        1,
+        usize::from(total_matches > 0),
+        0,
+        total_matches,
+        total_matches,
+    );
 
     let stdout = io::stdout();
     let mut out = stdout.lock();

@@ -42,6 +42,15 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             return 2;
         }
     };
+    let output_args = args.with_effective_output_defaults(&config);
+
+    if output_args.invert_match {
+        return handle_output_code(super::render::render_invert_match(
+            &index,
+            &config,
+            &output_args,
+        ));
+    }
 
     let results = match run_search(&index, &config, args) {
         Ok(r) => r,
@@ -50,15 +59,6 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             return 2;
         }
     };
-    let output_args = args.with_effective_output_defaults(&config);
-
-    if output_args.invert_match {
-        return handle_output_code(super::render::render_invert_match(
-            &config,
-            &results,
-            &output_args,
-        ));
-    }
 
     if results.is_empty() {
         return 1;
@@ -339,6 +339,31 @@ fn matches_optional_glob(
     path_glob: Option<&str>,
 ) -> bool {
     matches_path_filter(path, file_type, exclude_type, path_glob)
+}
+
+pub(super) fn collect_scoped_paths(
+    index: &Index,
+    config: &Config,
+    args: &SearchArgs,
+) -> Vec<PathBuf> {
+    let snapshot = index.snapshot();
+    let explicit_specs = explicit_path_specs(config.repo_root.as_path(), &args.paths);
+    let mut paths: Vec<PathBuf> = snapshot
+        .path_index
+        .visible_paths()
+        .filter_map(|(_, path)| {
+            (matches_any_explicit_path(path, &explicit_specs)
+                && matches_optional_glob(
+                    path,
+                    args.file_type.as_deref(),
+                    args.type_not.as_deref(),
+                    args.glob.as_deref(),
+                ))
+            .then(|| path.to_path_buf())
+        })
+        .collect();
+    paths.sort_unstable();
+    paths
 }
 
 fn sort_and_dedup_matches(mut matches: Vec<crate::SearchMatch>) -> Vec<crate::SearchMatch> {

@@ -629,6 +629,128 @@ fn utf16_le_invert_match_output_is_utf8() {
 }
 
 #[test]
+fn invert_match_searches_full_scoped_corpus_without_positive_hits() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/invert.txt"), "alpha\nbeta\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["-v", "needle", "src/invert.txt"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_text(&output), "alpha\nbeta\n");
+}
+
+#[test]
+fn invert_match_count_and_files_with_matches_follow_selected_lines() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/one.txt"),
+        "needle\nkeep this\nneedle again\n",
+    );
+    write_text(&repo.path().join("src/two.txt"), "needle only\n");
+    write_text(&repo.path().join("src/three.txt"), "keep me too\n");
+    build_index(repo.path(), index.path());
+
+    let count = run_repo(repo.path(), index.path(), &["-v", "-c", "needle", "src"]);
+    assert_eq!(count.status.code(), Some(0));
+    assert_eq!(stdout_text(&count), "src/one.txt:1\nsrc/three.txt:1\n");
+
+    let files = run_repo(repo.path(), index.path(), &["-v", "-l", "needle", "src"]);
+    assert_eq!(files.status.code(), Some(0));
+    assert_eq!(stdout_text(&files), "src/one.txt\nsrc/three.txt\n");
+}
+
+#[test]
+fn invert_match_json_emits_match_messages_with_empty_submatches() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/invert.json"),
+        "alpha\nneedle\nbeta\n",
+    );
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--json", "-v", "needle", "src/invert.json"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    let messages: Vec<serde_json::Value> = stdout_text(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid NDJSON line"))
+        .collect();
+
+    let kinds: Vec<_> = messages
+        .iter()
+        .map(|msg| msg["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["begin", "match", "match", "end", "summary"]);
+
+    let match_messages: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg["type"] == "match")
+        .collect();
+    assert_eq!(match_messages.len(), 2);
+    assert_eq!(match_messages[0]["data"]["lines"]["text"], "alpha\n");
+    assert_eq!(
+        match_messages[0]["data"]["submatches"],
+        serde_json::json!([])
+    );
+    assert_eq!(match_messages[1]["data"]["lines"]["text"], "beta\n");
+    assert_eq!(
+        match_messages[1]["data"]["submatches"],
+        serde_json::json!([])
+    );
+
+    let end = messages
+        .iter()
+        .find(|msg| msg["type"] == "end")
+        .expect("end message");
+    assert_eq!(end["data"]["stats"]["matched_lines"], 2);
+    assert_eq!(end["data"]["stats"]["matches"], 0);
+
+    let summary = messages.last().expect("summary");
+    assert_eq!(summary["type"], "summary");
+    assert_eq!(summary["data"]["stats"]["matched_lines"], 2);
+    assert_eq!(summary["data"]["stats"]["matches"], 0);
+}
+
+#[test]
+fn invert_match_json_searches_full_scoped_corpus_without_positive_hits() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/full.json"), "alpha\nbeta\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--json", "-v", "needle", "src/full.json"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    let messages: Vec<serde_json::Value> = stdout_text(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid NDJSON line"))
+        .collect();
+
+    let match_messages: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg["type"] == "match")
+        .collect();
+    assert_eq!(match_messages.len(), 2);
+    assert_eq!(match_messages[0]["data"]["lines"]["text"], "alpha\n");
+    assert_eq!(match_messages[1]["data"]["lines"]["text"], "beta\n");
+}
+
+#[test]
 fn broken_pipe_exits_cleanly_instead_of_panicking() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
