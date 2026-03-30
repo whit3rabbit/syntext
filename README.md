@@ -28,14 +28,18 @@ INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=1.0.0 \
   curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
 ```
 
-### macOS (Homebrew)
+<details>
+<summary>macOS (Homebrew)</summary>
 
 ```bash
 brew tap whit3rabbit/tap
 brew install --cask whit3rabbit/tap/syntext
 ```
 
-### Linux
+</details>
+
+<details>
+<summary>Linux (manual)</summary>
 
 ```bash
 VERSION=1.0.0
@@ -50,6 +54,8 @@ ARCH=amd64   # or arm64
 curl -L "https://github.com/whit3rabbit/syntext/releases/download/v${VERSION}/st-${VERSION}-linux-${ARCH}" -o st
 chmod +x st && sudo mv st /usr/local/bin/
 ```
+
+</details>
 
 ### From source
 
