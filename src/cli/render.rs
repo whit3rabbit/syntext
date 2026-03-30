@@ -601,7 +601,7 @@ pub(super) fn render_invert_match(
         }
     } else if args.files_without_match {
         for path in &files_without_selected {
-            out.write_all(path_bytes(&path).as_ref())?;
+            out.write_all(path_bytes(path).as_ref())?;
             out.write_all(b"\n")?;
         }
     } else if args.count {

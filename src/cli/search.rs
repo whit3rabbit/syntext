@@ -400,16 +400,16 @@ pub(super) fn collect_scoped_paths(
     let mut paths: Vec<PathBuf> = snapshot
         .path_index
         .visible_paths()
-        .filter_map(|(_, path)| {
-            (matches_any_explicit_path(path, &explicit_specs)
+        .filter(|(_, path)| {
+            matches_any_explicit_path(path, &explicit_specs)
                 && matches_optional_glob(
                     path,
                     args.file_type.as_deref(),
                     args.type_not.as_deref(),
                     args.glob.as_deref(),
-                ))
-            .then(|| path.to_path_buf())
+                )
         })
+        .map(|(_, path)| path.to_path_buf())
         .collect();
     paths.sort_unstable();
     paths

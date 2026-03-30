@@ -348,7 +348,7 @@ impl MmapSegment {
         // read before all pages are faulted into the private mapping.
         let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
         let len = mmap.len();
-        let layout = parse_segment_mmap(&*mmap, &[FORMAT_VERSION_V3])?;
+        let layout = parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3])?;
         let post_file = std::fs::File::open(post_path)?;
         post_file
             .try_lock_shared()

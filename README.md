@@ -17,6 +17,8 @@ A hybrid code search index for agent workflows, built in Rust. Indexes repositor
 
 ### macOS (Homebrew)
 
+Homebrew casks are published in [whit3rabbit/homebrew-tap](https://github.com/whit3rabbit/homebrew-tap).
+
 ```bash
 brew tap whit3rabbit/tap
 brew install --cask whit3rabbit/tap/syntext
@@ -24,14 +26,17 @@ brew install --cask whit3rabbit/tap/syntext
 
 ### Linux
 
-Download the latest `.deb` or raw binary from the [releases page](https://github.com/whit3rabbit/syntext/releases).
+Download release artifacts from the [GitHub releases page](https://github.com/whit3rabbit/syntext/releases).
 
 ```bash
+VERSION=1.0.0
+
 # Debian/Ubuntu
-sudo dpkg -i syntext_<version>_amd64.deb
+curl -L "https://github.com/whit3rabbit/syntext/releases/download/v${VERSION}/syntext_${VERSION}_amd64.deb" -o "syntext_${VERSION}_amd64.deb"
+sudo dpkg -i "syntext_${VERSION}_amd64.deb"
 
 # Any Linux (x86_64)
-curl -L https://github.com/whit3rabbit/syntext/releases/latest/download/st-<version>-linux-amd64 -o st
+curl -L "https://github.com/whit3rabbit/syntext/releases/download/v${VERSION}/st-${VERSION}-linux-amd64" -o st
 chmod +x st && sudo mv st /usr/local/bin/
 ```
 
@@ -51,68 +56,49 @@ syntext builds a content index so queries only touch candidate files, not all fi
 
 Real-world benchmark runs are tracked in
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The table below is
-the current snapshot of preset-backed external runs using the shared harness
-`scripts/bench_compare.py`.
+the current 2026-03-29 snapshot from preset-backed external runs using the
+shared harness `scripts/bench_compare.py`.
 
 ### Search latency
 
-Search Latency (Log Scale, Lower is Better →)
+The chart uses the mean latency across each preset's exact-count queries. It
+compares the two tools that ran on every preset. `grep` is listed in the table
+below, but the Linux preset intentionally skips it.
 
-Legend:
+```mermaid
+xychart-beta
+    title "External preset search latency (ms, lower is better)"
+    x-axis ["React", "Rust", "TypeScript", "Node", "Linux"]
+    y-axis "Milliseconds" 0 --> 4000
+    bar "syntext" [21, 100, 112, 70, 155]
+    bar "rg" [113, 2183, 3094, 1493, 3681]
+```
 
-🟩 syntext (<200 ms)
-
-🟨 rg (100 ms – 2 s)
-
-🟥 grep (>2 s)
-
-React
-
-syntext  🟩 25 ms  
-rg       🟨 103 ms  
-grep     🟥🟥 275 ms  
-
-Rust compiler
-
-syntext  🟩 93 ms  
-rg       🟥🟥🟥 1781 ms  
-grep     🟥🟥🟥🟥 2393 ms  
-
-TypeScript
-
-syntext  🟩 103 ms  
-rg       🟥🟥🟥🟥 2940 ms  
-grep     🟥🟥🟥🟥🟥 3214 ms  
-
-Node.js
-
-syntext  🟩 66 ms  
-rg       🟥🟥🟥 1455 ms  
-grep     🟥🟥🟥🟥🟥 3130 ms  
-
-Linux kernel
-
-syntext  🟩 151 ms  
-rg       🟥🟥🟥🟥🟥 3500 ms  
-grep     n/a
+| Repo | `syntext` avg | `rg` avg | `grep` avg | Speedup vs `rg` |
+|---|---:|---:|---:|---:|
+| React | `20.7 ms` | `112.9 ms` | `314.3 ms` | `5.5x` |
+| Rust compiler | `99.9 ms` | `2183.2 ms` | `2412.8 ms` | `21.9x` |
+| TypeScript | `111.9 ms` | `3093.8 ms` | `3171.8 ms` | `27.7x` |
+| Node.js | `69.5 ms` | `1492.6 ms` | `3186.4 ms` | `21.5x` |
+| Linux kernel | `154.5 ms` | `3681.3 ms` | `n/a` | `23.8x` |
 
 Method:
 
 - **Note**: These benchmarks were run against `syntext` version `1.0.0`.
 - External repos use the same harness and preset catalog.
-- Times below are single-shot preset runs on macOS unless noted otherwise.
+- The chart and table use arithmetic means across each preset's exact-count queries.
+- Times are single-run preset medians on macOS unless noted otherwise.
 - `syntext` search time excludes index build time. Build time is shown separately.
 - Linux uses the cheaper shared large-corpus mode (`syntext` + `rg`) because the
   full three-tool run is too expensive on the benchmark machine.
 
 Notes:
 
-- Latency grows ~log-linearly for scan tools as repo size increases, while syntext remains effectively constant due to indexing.
+- Latency grows roughly with repo size for scan tools, while `syntext` stays under `155 ms` on every preset in this matrix.
 - The exact-count validated preset terms are documented in
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - This refreshed matrix covers React, Rust, TypeScript, Node.js, and Linux.
-- Linux now matches default `rg` counts on all three preset queries after the
-  directory-symlink fixes in both full builds and incremental updates.
+- Every query in the 2026-03-29 matrix matched the comparator tool counts.
 - Substring-heavy terms such as `ReactElement`, `useEffect`, and `TyCtxt` are
   intentionally not in the headline README table because they can undercount in
   `syntext` relative to `rg`.
@@ -121,20 +107,22 @@ Notes:
 
 ### Performance Summary
 
-In indexed search scenarios, **syntext** significantly outperforms `ripgrep` by reducing the search space to a small candidate set. 
+In indexed search scenarios, `syntext` materially outperforms `rg` by shrinking
+the candidate set before verification.
 
-* **Average Speedup:** ~20x faster than `rg`.
-* **Scalability:** While `rg` latency scales linearly with repository size, `syntext` remains effectively constant (under 200ms even on the Linux kernel).
+- Average speedup across the five presets above: `20.1x` versus `rg`.
+- Worst case in this matrix is still `5.5x` faster than `rg` on React.
+- Largest corpus in this matrix, the Linux kernel, still averaged `154.5 ms`.
 
 ### Index build time
 
 | Repo | Preset | Tracked files | Tools | `st index` |
 |---|---|---:|---|---:|
-| React | `react_token_aligned` | 6,840 | `syntext`, `rg`, `grep` | `290.457 ms` |
-| Rust compiler | `rust_token_aligned` | 58,698 | `syntext`, `rg`, `grep` | `2202.514 ms` |
-| TypeScript | `typescript_compiler` | 81,362 | `syntext`, `rg`, `grep` | `3274.67 ms` |
-| Node.js | `node_runtime` | 47,364 | `syntext`, `rg`, `grep` | `2964.754 ms` |
-| Linux kernel | `linux_token_aligned` | 93,018 | `syntext`, `rg` | `6913.323 ms` |
+| React | `react_token_aligned` | 6,840 | `syntext`, `rg`, `grep` | `746.003 ms` |
+| Rust compiler | `rust_token_aligned` | 58,698 | `syntext`, `rg`, `grep` | `3376.174 ms` |
+| TypeScript | `typescript_compiler` | 81,362 | `syntext`, `rg`, `grep` | `4807.992 ms` |
+| Node.js | `node_runtime` | 47,364 | `syntext`, `rg`, `grep` | `3991.465 ms` |
+| Linux kernel | `linux_token_aligned` | 93,018 | `syntext`, `rg` | `8357.722 ms` |
 
 
 ## Usage

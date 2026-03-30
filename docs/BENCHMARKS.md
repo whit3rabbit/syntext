@@ -59,15 +59,21 @@ python3 scripts/bench_compare.py --list-presets
 
 Run a preset:
 ```sh
-python3 scripts/bench_compare.py --preset react_token_aligned
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --repo _syntext-bench/react
 ```
 
 Emit a copy-paste-friendly Markdown table only:
 
 ```sh
-python3 scripts/bench_compare.py --preset react_token_aligned --markdown-table-only
 python3 scripts/bench_compare.py \
   --preset react_token_aligned \
+  --repo _syntext-bench/react \
+  --markdown-table-only
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --repo _syntext-bench/react \
   --markdown-table-only \
   --output /tmp/react-bench.md
 ```
@@ -77,6 +83,7 @@ Measure repeated queries against one already-opened `syntext` index in a single 
 ```sh
 python3 scripts/bench_compare.py \
   --preset react_token_aligned \
+  --repo _syntext-bench/react \
   --syntext-search-mode persistent
 ```
 
@@ -87,6 +94,7 @@ Report both `syntext` modes side by side in one run:
 ```sh
 python3 scripts/bench_compare.py \
   --preset react_token_aligned \
+  --repo _syntext-bench/react \
   --syntext-search-mode both
 ```
 
@@ -96,6 +104,7 @@ For very large repos, or large-corpus preset:
 ```sh
 python3 scripts/bench_compare.py \
   --preset linux_token_aligned \
+  --repo _syntext-bench/linux \
   --build-iterations 1 \
   --search-iterations 1 \
   --warmups 0
@@ -106,6 +115,7 @@ Measure repeated build time and on-disk index size without running any search qu
 ```sh
 python3 scripts/bench_compare.py \
   --preset react_token_aligned \
+  --repo _syntext-bench/react \
   --build-only \
   --build-iterations 5 \
   --json
@@ -253,7 +263,7 @@ The two-file split (dictionary separate from postings) reduces working set for l
 ### Current snapshot
 
 Date: 2026-03-29  
-Commit base: `d7b10f8` (dirty worktree during the run)
+Workspace state: release candidate before the 1.0 tag
 
 #### Synthetic corpus
 
@@ -261,72 +271,65 @@ Commit base: `d7b10f8` (dirty worktree during the run)
 
 | Benchmark | Time (estimate) | Range |
 |---|---|---|
-| `literal_common` | 4.1273 ms | [4.0932 ms – 4.1584 ms] |
-| `indexed_regex_rare` | 158.53 µs | [156.61 µs – 160.38 µs] |
-| `full_scan_regex` | 4.2382 ms | [4.1932 ms – 4.3026 ms] |
+| `literal_common` | 4.2580 ms | [4.2280 ms - 4.2793 ms] |
+| `indexed_regex_rare` | 138.68 µs | [136.77 µs - 142.39 µs] |
+| `full_scan_regex` | 4.3191 ms | [4.2929 ms - 4.3443 ms] |
 
 `cargo bench --bench index_build -- --sample-size 10`
 
 | Benchmark | Time (estimate) | Range |
 |---|---|---|
-| `full_build_300_files` | 28.139 ms | [28.041 ms – 28.201 ms] |
-| `commit_batch_single_edit` | 158.04 µs | [156.01 µs – 160.07 µs] |
+| `full_build_300_files` | 41.080 ms | [40.882 ms - 41.252 ms] |
+| `commit_batch_single_edit` | 156.29 µs | [154.12 µs - 158.34 µs] |
 
 `cargo bench --bench selectivity -- --sample-size 10`
 
 | Benchmark | Time (estimate) | Range |
 |---|---|---|
-| `literal_no_match` | 4.1824 ms | [4.1625 ms – 4.1962 ms] |
-| `indexed_regex_selective` | 138.22 µs | [137.47 µs – 139.85 µs] |
-| `literal_broad` | 4.2022 ms | [4.1809 ms – 4.2264 ms] |
+| `literal_no_match` | 4.1458 ms | [4.1314 ms - 4.1573 ms] |
+| `indexed_regex_selective` | 139.27 µs | [138.13 µs - 140.50 µs] |
+| `literal_broad` | 4.1859 ms | [4.1486 ms - 4.2616 ms] |
 
-Compared with the last recorded v3 synthetic snapshot from 2026-03-28, the current search path is modestly better across all three `query_latency` cases (`literal_common` -9.7%, `indexed_regex_rare` -1.8%, `full_scan_regex` -5.4%), and `commit_batch_single_edit` improved from 183.22 µs to 158.04 µs (-13.7%).
-
-`full_build_300_files` moved the other direction, from 18.275 ms to 28.139 ms (+54.0%). The Criterion benchmark source for this synthetic workload has not changed since the last recorded v3 entry, so treat this as the new current full-build baseline rather than a documentation artifact.
-
-Criterion's stored local baselines also report statistically significant improvements for `commit_batch_single_edit`, `literal_no_match`, and `indexed_regex_selective`, while `query_latency` remained within noise.
+Relative to the previous 2026-03-29 snapshot that was already in this document,
+the selective regex path improved materially (`indexed_regex_rare` from `158.53 µs`
+to `138.68 µs`), while most scan-heavy cases moved only a few percent. The
+largest synthetic regression remains initial full build time, which rose from
+`28.139 ms` to `41.080 ms`. Single-edit incremental commit stayed effectively
+flat (`158.04 µs` to `156.29 µs`).
 
 #### External repo spot checks
 
-These runs used the current local `_ripline-bench` corpus available on the benchmarking machine, not the older pinned corpus snapshots from the setup section. Treat them as present-day spot checks, not strict before/after regressions against earlier external tables. The local corpus for this rerun contains `react`, `rust`, `typescript`, `node`, and `linux`; `zed` was not present and was not rerun.
+These runs used the local `_syntext-bench` corpus from the setup section and the
+current `target/release/st` binary. Treat them as release-candidate spot checks,
+not strict before/after regressions against every older historical table.
 
 Preset-backed external matrix (`python3 scripts/bench_compare.py --repo ... --preset ... --json`):
 
-| Repo | Commit | Tracked files | Build median | Build min | Build max | Index bytes |
-|---|---|---|---|---|---|---|
-| `react` | `3cb2c42` | 6,840 | 290.457 ms | 290.457 ms | 290.457 ms | 6,553,661 |
-| `rust` | `23903d01` | 58,698 | 2,202.514 ms | 2,202.514 ms | 2,202.514 ms | 13,865,683 |
-| `typescript` | `7881fe530` | 81,362 | 3,274.670 ms | 3,274.670 ms | 3,274.670 ms | 19,943,071 |
-| `node` | `53bcd114` | 47,364 | 2,964.754 ms | 2,964.754 ms | 2,964.754 ms | 79,016,816 |
-| `linux` | `46b513250-dirty` | 93,018 | 6,913.323 ms | 6,913.323 ms | 6,913.323 ms | 80,772,167 |
+| Repo | Commit | Tracked files | Build median | Index bytes | `syntext` avg | `rg` avg | `grep` avg | Speedup vs `rg` |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `react` | `3cb2c42` | 6,840 | `746.003 ms` | `6,553,696` | `20.662 ms` | `112.946 ms` | `314.278 ms` | `5.5x` |
+| `rust` | `23903d01` | 58,698 | `3376.174 ms` | `13,860,347` | `99.911 ms` | `2183.234 ms` | `2412.816 ms` | `21.9x` |
+| `typescript` | `7881fe530` | 81,362 | `4807.992 ms` | `19,943,106` | `111.857 ms` | `3093.845 ms` | `3171.794 ms` | `27.7x` |
+| `node` | `53bcd114` | 47,364 | `3991.465 ms` | `79,012,633` | `69.495 ms` | `1492.564 ms` | `3186.352 ms` | `21.5x` |
+| `linux` | `46b513250-dirty` | 93,018 | `8357.722 ms` | `80,624,410` | `154.457 ms` | `3681.269 ms` | `n/a` | `23.8x` |
 
 Search results from the same matrix runs:
 
 | Repo | Query | Count match | `syntext` | `rg` | `grep` |
 |---|---|---|---|---|---|
-| `react` | `useState` | yes (`2708`) | 24.909 ms | 103.728 ms | 275.523 ms |
-| `react` | `getDisplayNameForReactElement` | yes (`13`) | 13.376 ms | 101.945 ms | 314.732 ms |
-| `rust` | `rustc_middle` | yes (`3757`) | 95.822 ms | 1,781.763 ms | 2,393.570 ms |
-| `rust` | `mir::Body` | yes (`141`) | 90.010 ms | 2,007.275 ms | 2,214.030 ms |
-| `typescript` | `TransformationContext` | yes (`142`) | 101.403 ms | 2,940.724 ms | 3,214.135 ms |
-| `typescript` | `NodeBuilderFlags` | yes (`255`) | 105.575 ms | 2,970.204 ms | 2,971.841 ms |
-| `node` | `EnvironmentOptions` | yes (`158`) | 65.326 ms | 1,455.443 ms | 3,330.274 ms |
-| `node` | `MaybeStackBuffer` | yes (`93`) | 66.135 ms | 1,507.757 ms | 2,949.335 ms |
-| `linux` | `irq_work_queue` | yes (`128`) | 156.980 ms | 3,421.463 ms | n/a |
-| `linux` | `sched_clock` | yes (`817`) | 145.740 ms | 3,483.316 ms | n/a |
-| `linux` | `raw_spin_lock` | yes (`2321`) | 150.697 ms | 3,596.556 ms | n/a |
+| `react` | `useState` | yes (`2708`) | `27.813 ms` | `113.921 ms` | `300.000 ms` |
+| `react` | `getDisplayNameForReactElement` | yes (`13`) | `13.510 ms` | `111.970 ms` | `328.555 ms` |
+| `rust` | `rustc_middle` | yes (`3757`) | `105.699 ms` | `2210.204 ms` | `2521.141 ms` |
+| `rust` | `mir::Body` | yes (`141`) | `94.123 ms` | `2156.264 ms` | `2304.491 ms` |
+| `typescript` | `TransformationContext` | yes (`142`) | `108.736 ms` | `3115.297 ms` | `3262.582 ms` |
+| `typescript` | `NodeBuilderFlags` | yes (`255`) | `114.978 ms` | `3072.393 ms` | `3081.006 ms` |
+| `node` | `EnvironmentOptions` | yes (`158`) | `68.623 ms` | `1457.499 ms` | `3390.259 ms` |
+| `node` | `MaybeStackBuffer` | yes (`93`) | `70.368 ms` | `1527.629 ms` | `2982.445 ms` |
+| `linux` | `irq_work_queue` | yes (`128`) | `163.728 ms` | `3591.790 ms` | `n/a` |
+| `linux` | `sched_clock` | yes (`817`) | `150.043 ms` | `3768.749 ms` | `n/a` |
+| `linux` | `raw_spin_lock` | yes (`2321`) | `149.601 ms` | `3683.267 ms` | `n/a` |
 
-This Linux rerun was taken after fixing the directory-symlink mismatch in incremental updates as well as full builds. The earlier extra `sched_clock` hit from `scripts/dtc/include-prefixes/arm/rockchip/rk3xxx.dtsi:84` is gone, so the preset now has default-`rg` count parity on all three Linux queries.
-
-#### Node.js v20.12.0 preset run (2026-03-29)
-
-Corpus: commit `94fb8542`, shallow clone, 40,812 tracked files.
-
-| Query | syntext | rg | Count match |
-|---|---|---|---|
-| `EnvironmentOptions` | 57.8 ms | 1,330 ms | no (118 vs 119) |
-| `MaybeStackBuffer` | 57.1 ms | 1,313 ms | yes (82) |
-
-Build median: 2,571 ms, index bytes: 67,478,965.
-
-`EnvironmentOptions` is off by 1: `tools/node_modules/eslint/node_modules/comment-parser/jest.config.cjs` contains `testEnvironmentOptions` (a commented-out key). The query `EnvironmentOptions` is a suffix of the longer camelCase identifier `testEnvironmentOptions`; the cross-boundary bigram between `Environment` and `Options` is not indexed when the tokenizer splits at the uppercase `O`, so the candidate set misses this file. This is a known edge case for queries that span camelCase sub-token junctions. `MaybeStackBuffer` is exact-match because it appears as a standalone identifier throughout the corpus.
+Every query in this refreshed matrix had exact count parity with its comparator
+tools. The Linux clone remained `-dirty` during the run because the local macOS
+checkout still carries the case-collision modifications called out in the setup
+warning above.
