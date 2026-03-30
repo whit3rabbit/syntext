@@ -215,6 +215,55 @@ fn json_output_reports_all_submatches_on_a_matching_line() {
 }
 
 #[test]
+fn json_output_summary_counts_full_scoped_corpus() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/hit.txt"), "needle\n");
+    write_text(&repo.path().join("src/miss.txt"), "miss\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["--json", "needle", "src"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let summary = stdout_text(&output)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid NDJSON line"))
+        .find(|msg| msg["type"] == "summary")
+        .expect("summary message");
+
+    let stats = &summary["data"]["stats"];
+    assert_eq!(stats["searches"], 2);
+    assert_eq!(stats["searches_with_match"], 1);
+    assert_eq!(stats["bytes_searched"], 12);
+    assert_eq!(stats["matched_lines"], 1);
+    assert_eq!(stats["matches"], 1);
+}
+
+#[test]
+fn json_output_on_no_matches_emits_summary_only() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "miss\n");
+    write_text(&repo.path().join("src/two.txt"), "also miss\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["--json", "needle", "src"]);
+    assert_eq!(output.status.code(), Some(1));
+
+    let messages: Vec<serde_json::Value> = stdout_text(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid NDJSON line"))
+        .collect();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["type"], "summary");
+    assert_eq!(messages[0]["data"]["stats"]["searches"], 2);
+    assert_eq!(messages[0]["data"]["stats"]["searches_with_match"], 0);
+    assert_eq!(messages[0]["data"]["stats"]["bytes_searched"], 15);
+    assert_eq!(messages[0]["data"]["stats"]["matched_lines"], 0);
+    assert_eq!(messages[0]["data"]["stats"]["matches"], 0);
+}
+
+#[test]
 fn json_output_emits_context_messages_when_requested() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
@@ -331,6 +380,26 @@ fn files_with_matches_count_heading_and_context_modes_work() {
     assert!(text.contains("src/sample.rs-line 3"));
     assert!(text.contains("src/sample.rs:needle on line 6"));
     assert!(text.contains("--\n"));
+}
+
+#[test]
+fn heading_with_context_groups_results_by_file() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "before\nneedle\nafter\n");
+    write_text(&repo.path().join("src/two.txt"), "x\nneedle\ny\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--heading", "-n", "-C", "1", "needle", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&output),
+        "src/one.txt\n1-before\n2:needle\n3-after\n\nsrc/two.txt\n1-x\n2:needle\n3-y\n"
+    );
 }
 
 #[test]

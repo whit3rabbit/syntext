@@ -102,6 +102,22 @@ fn json_line_message(
     .to_string()
 }
 
+fn read_repo_file_bytes(config: &Config, rel_path: &Path) -> io::Result<Vec<u8>> {
+    let abs_path = config.repo_root.join(rel_path);
+
+    #[cfg(unix)]
+    let pre_open_meta = std::fs::metadata(&abs_path)?;
+    let mut file = crate::index::open_readonly_nofollow(&abs_path)?;
+    #[cfg(unix)]
+    if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
+        return Err(io::Error::other("path changed during verification"));
+    }
+
+    let mut raw_content = Vec::new();
+    file.read_to_end(&mut raw_content)?;
+    Ok(raw_content)
+}
+
 #[cfg(test)]
 pub(super) fn format_match_json(m: &crate::SearchMatch) -> String {
     let submatch = serde_json::json!({
@@ -632,6 +648,8 @@ pub(super) fn render_with_context_to(
 
     let before = args.before_context;
     let after = args.after_context;
+    let grouped_heading = args.heading && (by_file.len() > 1 || !args.no_filename);
+    let suppress_path_prefix = args.heading;
 
     let mut first_file = true;
     for (rel_path, match_lines) in &by_file {
@@ -676,9 +694,17 @@ pub(super) fn render_with_context_to(
             }
         }
 
-        // Print a file-level separator between files (rg behavior: -- between files too).
+        // Ripgrep uses blank lines between headed file groups, but `--` for flat file separators.
         if !first_file {
-            writeln!(out, "--")?;
+            if grouped_heading {
+                writeln!(out)?;
+            } else {
+                writeln!(out, "--")?;
+            }
+        }
+        if grouped_heading && !args.no_filename {
+            out.write_all(path_bytes(rel_path).as_ref())?;
+            out.write_all(b"\n")?;
         }
         first_file = false;
 
@@ -698,7 +724,7 @@ pub(super) fn render_with_context_to(
 
             write_formatted_line(
                 out,
-                args.no_filename,
+                suppress_path_prefix || args.no_filename,
                 args.no_line_number,
                 rel_path,
                 line_num,
@@ -716,6 +742,7 @@ pub(super) fn render_with_context_to(
 /// Returns a single NDJSON line (no trailing newline).
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
 pub(super) fn render_json(
+    index: &Index,
     config: &Config,
     matches: &[crate::SearchMatch],
     args: &SearchArgs,
@@ -736,27 +763,14 @@ pub(super) fn render_json(
     let mut total_bytes_searched = 0usize;
     let mut total_matched_lines = 0usize;
     let mut total_matches = 0usize;
+    let scoped_paths = collect_scoped_paths(index, config, args);
+    let total_searches = scoped_paths.len();
+    let searches_with_match = by_file.len();
 
     for (path, match_lines) in &by_file {
-        let abs_path = config.repo_root.join(path);
-
-        #[cfg(unix)]
-        let pre_open_meta = match std::fs::metadata(&abs_path) {
-            Ok(meta) => meta,
-            Err(_) => continue,
-        };
-        let mut file = match crate::index::open_readonly_nofollow(&abs_path) {
-            Ok(file) => file,
-            Err(_) => continue,
-        };
-        #[cfg(unix)]
-        if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
+        let Ok(raw_content) = read_repo_file_bytes(config, path) else {
             continue;
-        }
-        let mut raw_content = Vec::new();
-        if file.read_to_end(&mut raw_content).is_err() {
-            continue;
-        }
+        };
         total_bytes_searched += raw_content.len();
         let file_content = crate::index::normalize_encoding(&raw_content, config.verbose);
         let mut file_lines: Vec<(usize, usize, Vec<u8>)> = Vec::new();
@@ -827,20 +841,29 @@ pub(super) fn render_json(
         )?;
     }
 
+    for path in scoped_paths {
+        if by_file.contains_key(&path) {
+            continue;
+        }
+        if let Ok(raw_content) = read_repo_file_bytes(config, &path) {
+            total_bytes_searched += raw_content.len();
+        }
+    }
+
     // summary
     writeln!(
         out,
         "{}",
         serde_json::json!({
             "type": "summary",
-            "data": {
-                "elapsed_total": {"secs": 0, "nanos": 0, "human": "0s"},
-                "stats": json_stats(
-                    by_file.len(),
-                    by_file.len(),
-                    total_bytes_searched,
-                    total_matched_lines,
-                    total_matches
+                "data": {
+                    "elapsed_total": {"secs": 0, "nanos": 0, "human": "0s"},
+                    "stats": json_stats(
+                        total_searches,
+                        searches_with_match,
+                        total_bytes_searched,
+                        total_matched_lines,
+                        total_matches
                 )
             }
         })

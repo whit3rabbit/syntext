@@ -63,6 +63,13 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         }
     };
 
+    if results.is_empty() && output_args.json {
+        if let Err(err) = super::render::render_json(&index, &config, &results, &output_args) {
+            return handle_output(err);
+        }
+        return 1;
+    }
+
     if results.is_empty() {
         return 1;
     }
@@ -151,7 +158,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let has_context = output_args.after_context > 0 || output_args.before_context > 0;
 
     let render = if output_args.json {
-        super::render::render_json(&config, &results, &output_args)
+        super::render::render_json(&index, &config, &results, &output_args)
     } else if output_args.only_matching {
         super::render::render_only_matching(&config, &results, &output_args)
     } else if has_context {
