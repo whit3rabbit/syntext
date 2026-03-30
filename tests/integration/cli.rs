@@ -717,6 +717,48 @@ fn count_matches_counts_individual_matches_per_file() {
 }
 
 #[test]
+fn only_matching_prints_each_non_empty_match_on_its_own_line() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/one.txt"),
+        "needle needle\nalpha needle beta\n",
+    );
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["-o", "needle", "src/one.txt"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_text(&output), "needle\nneedle\nneedle\n");
+
+    let numbered = run_repo(
+        repo.path(),
+        index.path(),
+        &["-o", "-n", "-H", "needle", "src/one.txt"],
+    );
+    assert_eq!(numbered.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&numbered),
+        "src/one.txt:1:needle\nsrc/one.txt:1:needle\nsrc/one.txt:2:needle\n"
+    );
+}
+
+#[test]
+fn count_with_only_matching_acts_like_count_matches() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "needle needle\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["-c", "-o", "needle", "src/one.txt"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_text(&output), "2\n");
+}
+
+#[test]
 fn invert_match_json_emits_match_messages_with_empty_submatches() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();

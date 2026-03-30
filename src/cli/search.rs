@@ -25,6 +25,7 @@ pub(super) struct SearchArgs {
     pub count_matches: bool,
     pub max_count: Option<usize>,
     pub quiet: bool,
+    pub only_matching: bool,
     pub json: bool,
     pub heading: bool,
     pub no_line_number: bool,
@@ -117,6 +118,14 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         ));
     }
 
+    if output_args.count && output_args.only_matching {
+        return handle_output_code(super::render::render_count_matches(
+            &config,
+            &results,
+            &output_args,
+        ));
+    }
+
     if output_args.count {
         let stdout = io::stdout();
         let mut out = stdout.lock();
@@ -143,6 +152,8 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
 
     let render = if output_args.json {
         super::render::render_json(&results)
+    } else if output_args.only_matching {
+        super::render::render_only_matching(&results, &output_args)
     } else if has_context {
         super::render::render_with_context(&config, &results, &output_args)
     } else if output_args.heading {

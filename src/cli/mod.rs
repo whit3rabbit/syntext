@@ -107,6 +107,10 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
+    /// Print only the matched (non-empty) parts of matching lines.
+    #[arg(short = 'o', long = "only-matching")]
+    pub only_matching: bool,
+
     /// Output as NDJSON (ripgrep-style format).
     #[arg(long = "json", overrides_with_all = ["files_with_matches", "files_without_match", "count", "count_matches"])]
     pub json: bool,
@@ -265,6 +269,7 @@ pub fn run() -> i32 {
                 count_matches: cli.count_matches,
                 max_count: cli.max_count,
                 quiet: cli.quiet,
+                only_matching: cli.only_matching,
                 json: cli.json,
                 heading: cli.heading,
                 no_line_number: cli.no_line_number,

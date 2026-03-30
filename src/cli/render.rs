@@ -152,6 +152,34 @@ pub(super) fn render_count_matches(
     Ok(if found_any { 0 } else { 1 })
 }
 
+pub(super) fn render_only_matching(
+    matches: &[crate::SearchMatch],
+    args: &SearchArgs,
+) -> io::Result<()> {
+    let re = compile_output_regex(args)?;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    for m in matches {
+        for matched in re.find_iter(&m.line_content) {
+            if matched.start() == matched.end() {
+                continue;
+            }
+            write_formatted_line(
+                &mut out,
+                args.no_filename,
+                args.no_line_number,
+                &m.path,
+                m.line_number as usize,
+                b':',
+                &m.line_content[matched.start()..matched.end()],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -175,6 +203,15 @@ pub(super) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) 
         }
     }
     Ok(())
+}
+
+fn compile_output_regex(args: &SearchArgs) -> io::Result<regex::bytes::Regex> {
+    regex::bytes::RegexBuilder::new(&build_effective_pattern(args))
+        .case_insensitive(args.ignore_case)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
 }
 
 pub(super) fn render_invert_match(

@@ -59,6 +59,12 @@ fn output_mode_flags_use_last_one_wins() {
 }
 
 #[test]
+fn only_matching_short_flag_is_lowercase_o() {
+    let cli = Cli::try_parse_from(["st", "-o", "pattern"]).expect("parse failed");
+    assert!(cli.only_matching);
+}
+
+#[test]
 fn context_flag_sets_both_before_and_after() {
     let cli = Cli::try_parse_from(["st", "-C", "3", "pattern"]).expect("parse failed");
     assert_eq!(cli.context, Some(3));
