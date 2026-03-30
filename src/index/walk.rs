@@ -117,9 +117,13 @@ fn push_file_record(
 ///   3. `seen_canonical` deduplication prevents N symlinks to the same file target from
 ///      producing duplicate file records.
 ///
-/// Multi-hop symlink chains are rejected at step 1 (the initial `symlink_metadata`
-/// check rejects targets that are themselves symlinks, limiting to one level of
-/// indirection). Tests: `enumerate_files_skips_symlink_outside_repo`,
+/// Multi-hop symlink chains: the immediate-target `symlink_metadata` check
+/// (step 1) rejects targets that are themselves symlinks, which covers chains
+/// where every hop is a plain symlink name.  However, `canonicalize` at step 2
+/// follows the full chain regardless; the escape guard is
+/// `starts_with(canonical_root)` applied to the fully resolved path.  The
+/// per-hop check is defence-in-depth, not the primary protection.
+/// Tests: `enumerate_files_skips_symlink_outside_repo`,
 /// `collect_symlink_entry_rejects_canonical_symlink`.
 fn collect_symlink_entry(
     symlink_path: &Path,
