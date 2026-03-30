@@ -10,6 +10,7 @@
 //! V3 format splits into `{uuid}.dict` (header + doc table + dictionary) and
 //! `{uuid}.post` (postings). See `open_split()`.
 
+#[cfg(feature = "memmap2")]
 use memmap2::Mmap;
 use uuid::Uuid;
 use xxhash_rust::xxh64::xxh64;
@@ -79,23 +80,49 @@ mod reader;
 // T022: MmapSegment (reader)
 // ---------------------------------------------------------------------------
 
-/// How postings are loaded: from the combined mmap (v2) or a separate .post
-/// file via pread (v3).
-pub(super) enum PostingsBacking {
-    /// v2: postings data lives in the segment mmap at absolute file offsets.
-    V2Mmap,
-    /// v3: postings are in a separate .post file; offsets are from byte 0.
-    V3File(std::fs::File),
+/// Backing storage for a loaded segment's bytes.
+///
+/// On native targets the dict file is memory-mapped (zero-copy, lazy
+/// fault-in). On WASM there is no mmap; bytes are heap-allocated instead.
+pub(super) enum SegmentData {
+    #[cfg(feature = "memmap2")]
+    Mmap(Mmap),
+    Heap(Vec<u8>),
 }
 
-/// Memory-mapped read-only SNTX segment.
+impl std::ops::Deref for SegmentData {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            #[cfg(feature = "memmap2")]
+            SegmentData::Mmap(m) => m,
+            SegmentData::Heap(v) => v,
+        }
+    }
+}
+
+/// How postings are loaded: from the combined mmap (v2), a separate .post
+/// file via pread (v3), or an in-memory Vec<u8> (WASM / tests).
+pub(super) enum PostingsBacking {
+    /// v2: postings data lives in the segment mmap at absolute file offsets.
+    #[cfg(feature = "memmap2")]
+    V2Mmap,
+    /// v3: postings are in a separate .post file; offsets are from byte 0.
+    #[cfg(feature = "memmap2")]
+    V3File(std::fs::File),
+    /// WASM / in-memory: entire postings file bytes (including SNTXPOST magic
+    /// and checksum trailer) held in a heap Vec.
+    InMemory(Vec<u8>),
+}
+
+/// Memory-mapped (native) or heap-backed (WASM) read-only SNTX segment.
 ///
-/// Retains the open `File` handle so the OS keeps the inode alive even if the
-/// directory entry is removed (e.g. by GC). `expected_len` enables O(1)
-/// staleness detection on every read.
+/// On native targets, retains the open `File` handle so the OS keeps the inode
+/// alive even if the directory entry is removed (e.g. by GC).
+/// `expected_len` enables O(1) staleness detection on every read.
 pub struct MmapSegment {
-    pub(super) _file: std::fs::File,
-    pub(super) mmap: Mmap,
+    pub(super) _file: Option<std::fs::File>,
+    pub(super) mmap: SegmentData,
     pub(super) expected_len: usize,
     /// Number of documents in this segment.
     pub doc_count: u32,
@@ -104,6 +131,7 @@ pub struct MmapSegment {
     pub(super) doc_table_offset: usize,
     pub(super) dict_offset: usize,
     /// Conservative lower bound for postings in V2 mmap reads. 0 for V3.
+    #[cfg_attr(not(feature = "memmap2"), allow(dead_code))]
     pub(super) postings_start: usize,
     pub(super) postings: PostingsBacking,
 }
@@ -165,6 +193,7 @@ impl MmapSegment {
         Some(self.dict_lookup(gram_hash)?.1)
     }
 
+    #[cfg_attr(not(feature = "memmap2"), allow(dead_code))]
     pub(crate) fn gram_hashes(&self) -> Result<Vec<u64>, IndexError> {
         self.check_len()
             .ok_or_else(|| IndexError::CorruptIndex("segment length changed".into()))?;
@@ -261,13 +290,37 @@ impl MmapSegment {
 
     fn read_posting_list(&self, abs_off: usize) -> Option<PostingList> {
         match &self.postings {
+            #[cfg(feature = "memmap2")]
             PostingsBacking::V2Mmap => self.read_posting_list_mmap(abs_off),
+            #[cfg(feature = "memmap2")]
             PostingsBacking::V3File(post_file) => {
                 reader::read_posting_list_pread(post_file, abs_off as u64).ok()
+            }
+            PostingsBacking::InMemory(bytes) => {
+                // bytes layout: [SNTXPOST magic (8)] [postings data] [checksum (8)]
+                // abs_off is relative to the start of postings data (after magic).
+                use crate::posting::PostingList;
+                const POST_MAGIC_SIZE: usize = 8;
+                let off = POST_MAGIC_SIZE + abs_off;
+                let b = bytes.get(off..)?;
+                // Entry header: encoding(1) + count(4) + byte_len(4) = 9 bytes
+                const MIN_POSTING_BYTES: usize = 9;
+                if b.len() < MIN_POSTING_BYTES {
+                    return None;
+                }
+                let encoding = b[0];
+                let byte_len = u32::from_le_bytes(b[5..9].try_into().ok()?) as usize;
+                let data = b.get(9..9 + byte_len)?;
+                match encoding {
+                    0 => Some(PostingList::Small(data.to_vec())),
+                    1 => roaring_util::deserialize(data).ok().map(PostingList::Large),
+                    _ => None,
+                }
             }
         }
     }
 
+    #[cfg_attr(not(feature = "memmap2"), allow(dead_code))]
     fn read_posting_list_mmap(&self, abs_off: usize) -> Option<PostingList> {
         // Security: validate abs_off points within the postings section of a V2
         // combined segment. Postings precede the dictionary; minimum entry size is

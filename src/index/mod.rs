@@ -1,8 +1,12 @@
 //! Index builder (`Index::build`) and reader (`Index::open`).
 
+#[cfg(not(target_arch = "wasm32"))]
 mod build;
+#[cfg(not(target_arch = "wasm32"))]
 mod commit;
+#[cfg(not(target_arch = "wasm32"))]
 mod compact;
+#[cfg(not(target_arch = "wasm32"))]
 mod compact_plan;
 pub(crate) mod encoding;
 mod helpers;
@@ -10,30 +14,42 @@ pub(crate) mod io_util;
 pub(crate) use io_util::open_readonly_nofollow;
 #[cfg(unix)]
 pub(crate) use io_util::verify_fd_matches_stat;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod manifest;
+#[cfg(not(target_arch = "wasm32"))]
 mod open;
 pub mod overlay;
 pub mod pending;
 pub mod segment;
 pub mod snapshot;
+#[cfg(not(target_arch = "wasm32"))]
 mod stats;
 pub mod walk;
+#[cfg(feature = "wasm")]
+pub mod wasm_index;
 
 pub use snapshot::{BaseSegments, IndexSnapshot};
 
 pub(crate) use encoding::normalize_encoding;
 pub use walk::is_binary;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Component, Path};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use arc_swap::ArcSwap;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::index::manifest::Manifest;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::index::overlay::PendingEdits;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
 
 /// Fraction of base docs beyond which the overlay is considered too large.
+#[cfg(not(target_arch = "wasm32"))]
 const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
 
 /// Hard cap on total indexed documents across all segments in a manifest.
@@ -42,12 +58,15 @@ const OVERLAY_WARN_THRESHOLD: f64 = 0.30;
 /// --index-dir) could claim billions of docs to force a multi-GB
 /// `doc_to_file_id` allocation. 50 million is well above any realistic
 /// codebase and bounds the allocation to ~200 MB.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_TOTAL_DOCS: u32 = 50_000_000;
 
 /// Fraction of base docs beyond which `commit_batch` returns `IndexError::OverlayFull`.
+#[cfg(not(target_arch = "wasm32"))]
 const OVERLAY_ENFORCE_THRESHOLD: f64 = 0.50;
 
 /// Top-level index handle. Thread-safe via `ArcSwap<IndexSnapshot>`.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Index {
     /// The index configuration.
     pub config: Config,
@@ -63,6 +82,7 @@ pub struct Index {
     pub symbol_index: Option<std::sync::Arc<crate::symbol::SymbolIndex>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Index {
     fn install_rebuilt_index(&self, rebuilt: &Index) -> Result<IndexStats, IndexError> {
         self.snapshot.store(rebuilt.snapshot());
@@ -277,5 +297,5 @@ impl Index {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

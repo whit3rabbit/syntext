@@ -12,48 +12,61 @@ repository = "https://github.com/whit3rabbit/syntext"
 name = "st"
 path = "src/main.rs"
 
+[lib]
+name = "syntext"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 # Regex and verification
 regex = "1"
 regex-syntax = "0.8"
 memchr = "2"
 
-# Memory-mapped I/O
-memmap2 = "0.9"
-# POSIX constants (O_NOFOLLOW). libc compiles on all targets; usage is gated
-# by #[cfg(unix)] in io_util.rs. See io_util.rs for why the old hardcoded
-# constants were wrong on MIPS/SPARC Linux.
-libc = "0.2"
+# Memory-mapped I/O (native only; WASM uses in-memory Vec<u8>)
+memmap2 = { version = "0.9", optional = true }
 
 # Bitmap posting lists
 roaring = "0.11"
 
-# Parallel index building
-rayon = "1"
+# Parallel index building (native only; WASM is single-threaded)
+rayon = { version = "1", optional = true }
 
 # Zero-copy segment format
 
 # Lock-free snapshot swapping
 arc-swap = "1"
 
-# Advisory file locking
-fs2 = "0.4"
+# Advisory file locking (native only)
+fs2 = { version = "0.4", optional = true }
 
-# Gitignore and file-type filtering
-ignore = "0.4"
+# Gitignore and file-type filtering (native only)
+ignore = { version = "0.4", optional = true }
 
-# CLI
-clap = { version = "4", features = ["derive", "env"] }
+# CLI (native only)
+clap = { version = "4", features = ["derive", "env"], optional = true }
 
-# Serialization (manifest)
+# WASM bindings (wasm feature only)
+wasm-bindgen = { version = "0.2", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+# getrandom/js needed for uuid v4 and regex on wasm32-unknown-unknown
+getrandom = { version = "0.2", features = ["js"], optional = true }
+js-sys = { version = "0.3", optional = true }
+
+# UUIDs for segment IDs — also needed on WASM for segment type-checking
+# `js` feature activates getrandom/js so uuid::Uuid::new_v4() works on wasm32
+uuid = { version = "1", features = ["v4", "js"] }
+
+# Checksum — pure arithmetic, WASM-compatible
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# UUIDs for segment IDs
-uuid = { version = "1", features = ["v4"] }
-
-# Checksum
-xxhash-rust = { version = "0.8", features = ["xxh64"] }
+[target.'cfg(unix)'.dependencies]
+# POSIX constants (O_NOFOLLOW). Usage is gated by #[cfg(unix)] in io_util.rs.
+# See io_util.rs for why the old hardcoded constants were wrong on MIPS/SPARC.
+libc = "0.2"
 
 # Symbol index (optional)
 tree-sitter = { version = "0.26", optional = true }
@@ -68,7 +81,10 @@ tree-sitter-c = { version = "0.24", optional = true }
 tree-sitter-cpp = { version = "0.23", optional = true }
 
 [features]
-default = []
+# Native default: everything enabled.
+default = ["memmap2", "rayon", "fs2", "ignore", "clap"]
+# WASM target: in-memory index, wasm-bindgen API, no filesystem.
+wasm = ["wasm-bindgen", "serde-wasm-bindgen", "getrandom", "js-sys"]
 symbols = [
     "tree-sitter", "rusqlite",
     "tree-sitter-rust", "tree-sitter-python", "tree-sitter-javascript",

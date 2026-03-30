@@ -1,12 +1,18 @@
 //! Free-standing helper functions used by the index subsystem.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::Command;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::index::overlay::OverlayView;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::index::snapshot::IndexSnapshot;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::IndexError;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn resolve_git_binary() -> std::path::PathBuf {
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
@@ -21,6 +27,7 @@ pub(super) fn resolve_git_binary() -> std::path::PathBuf {
     std::path::PathBuf::from("/usr/bin/git")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn current_repo_head(repo_root: &Path) -> Result<Option<String>, IndexError> {
     let canonical_root = std::fs::canonicalize(repo_root)?;
     let output = match Command::new(resolve_git_binary())
@@ -45,6 +52,7 @@ pub(super) fn current_repo_head(repo_root: &Path) -> Result<Option<String>, Inde
     }
 }
 
+#[cfg(feature = "fs2")]
 pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
     use fs2::FileExt;
     let write_lock_path = index_dir.join("write.lock");
@@ -60,6 +68,7 @@ pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, Ind
     Ok(write_lock)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn projected_overlay_doc_count(
     old_overlay: &OverlayView,
     visible_changed: &std::collections::HashSet<std::path::PathBuf>,
@@ -76,6 +85,7 @@ pub(super) fn projected_overlay_doc_count(
             .count()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn base_doc_id_limit(snapshot: &IndexSnapshot) -> Result<u32, IndexError> {
     let mut max_limit: u32 = 0;
     for (seg_idx, seg) in snapshot.base_segments().iter().enumerate() {

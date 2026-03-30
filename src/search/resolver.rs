@@ -42,6 +42,7 @@ pub(super) fn resolve_doc(
         return None;
     }
     // Mitigate TOCTOU: stat before open, then verify fd matches the same inode.
+    #[cfg(unix)]
     let pre_meta = std::fs::metadata(&canonical).ok()?;
     let file = crate::index::open_readonly_nofollow(&canonical).ok()?;
     #[cfg(unix)]

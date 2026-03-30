@@ -2,16 +2,19 @@
 //!
 //! Extracted from `mod.rs` to keep non-test line count under 400.
 
+#[cfg(feature = "memmap2")]
 use std::path::Path;
 
-use memmap2::{Mmap, MmapOptions};
+#[cfg(feature = "memmap2")]
+use memmap2::MmapOptions;
 use xxhash_rust::xxh64::xxh64;
 
+#[cfg(feature = "memmap2")]
+use crate::index::segment::MAX_SEGMENT_SIZE;
 use crate::index::segment::{
-    MmapSegment, PostingsBacking, FORMAT_VERSION_V2, FORMAT_VERSION_V3, FOOTER_SIZE, HEADER_SIZE,
-    MAGIC, MAX_SEGMENT_SIZE,
+    MmapSegment, PostingsBacking, SegmentData, FOOTER_SIZE, FORMAT_VERSION_V2, FORMAT_VERSION_V3,
+    HEADER_SIZE, MAGIC,
 };
-use crate::posting::{roaring_util, PostingList};
 use crate::IndexError;
 
 /// Parsed offsets and counts extracted from a segment mmap's footer.
@@ -30,7 +33,7 @@ pub(super) struct SegmentLayout {
 /// `accepted_versions`: slice of version numbers this caller accepts.
 /// Returns an error if the mmap is malformed or the version is not in the list.
 pub(super) fn parse_segment_mmap(
-    mmap: &Mmap,
+    mmap: &[u8],
     accepted_versions: &[u32],
 ) -> Result<SegmentLayout, IndexError> {
     let len = mmap.len();
@@ -137,6 +140,7 @@ pub(super) fn parse_segment_mmap(
 
 /// Cross-platform positional read: reads exactly `buf.len()` bytes from `file`
 /// starting at `offset` without changing the file cursor.
+#[cfg(feature = "memmap2")]
 pub(super) fn read_exact_at(
     file: &std::fs::File,
     buf: &mut [u8],
@@ -162,6 +166,7 @@ pub(super) fn read_exact_at(
 /// Size of the `.post` file magic header in bytes.
 /// Posting offsets stored in dict entries are relative to the start of postings
 /// data (i.e., byte 0 of postings data = byte POST_MAGIC_SIZE of the file).
+#[cfg(feature = "memmap2")]
 pub(super) const POST_MAGIC_SIZE: u64 = 8;
 
 /// Read a posting list from the `.post` file at byte offset `abs_off`.
@@ -171,11 +176,14 @@ pub(super) const POST_MAGIC_SIZE: u64 = 8;
 ///
 /// Security: `byte_len` is bounded to 64 MB before allocation to prevent OOM
 /// from a malformed `.post` file.
+#[cfg(feature = "memmap2")]
 pub(super) fn read_posting_list_pread(
     post_file: &std::fs::File,
     abs_off: u64,
-) -> std::io::Result<PostingList> {
+) -> std::io::Result<crate::posting::PostingList> {
     use std::io::{Error, ErrorKind};
+
+    use crate::posting::{roaring_util, PostingList};
 
     // abs_off is relative to start of postings data (byte POST_MAGIC_SIZE of .post file).
     // Add POST_MAGIC_SIZE to convert to file-absolute offset.
@@ -232,7 +240,29 @@ pub(super) fn read_posting_list_pread(
 // ---------------------------------------------------------------------------
 
 impl MmapSegment {
+    /// Load a segment entirely from in-memory bytes (WASM / tests).
+    ///
+    /// `dict_bytes`: the full `.dict` file content.
+    /// `post_bytes`: the full `.post` file content (including SNTXPOST magic and checksum).
+    /// No filesystem access, no mmap, no advisory locking.
+    pub fn from_bytes(dict_bytes: Vec<u8>, post_bytes: Vec<u8>) -> Result<Self, IndexError> {
+        let layout = parse_segment_mmap(&dict_bytes, &[FORMAT_VERSION_V2, FORMAT_VERSION_V3])?;
+        let len = dict_bytes.len();
+        Ok(MmapSegment {
+            _file: None,
+            expected_len: len,
+            doc_count: layout.doc_count,
+            gram_count: layout.gram_count,
+            doc_table_offset: layout.doc_table_offset,
+            dict_offset: layout.dict_offset,
+            postings_start: layout.postings_start,
+            mmap: SegmentData::Heap(dict_bytes),
+            postings: PostingsBacking::InMemory(post_bytes),
+        })
+    }
+
     /// Open a combined (v2) segment file, verify magic, version, and checksum.
+    #[cfg(feature = "memmap2")]
     pub fn open(path: &Path) -> Result<Self, IndexError> {
         let file = std::fs::File::open(path)?;
         let file_meta = file.metadata()?;
@@ -276,8 +306,8 @@ impl MmapSegment {
         let layout = parse_segment_mmap(&mmap, &[FORMAT_VERSION_V2, FORMAT_VERSION_V3])?;
 
         Ok(MmapSegment {
-            _file: file,
-            mmap,
+            _file: Some(file),
+            mmap: SegmentData::Mmap(mmap),
             expected_len: len,
             doc_count: layout.doc_count,
             gram_count: layout.gram_count,
@@ -292,6 +322,7 @@ impl MmapSegment {
     ///
     /// The `.dict` file is fully mmap'd (small, always needed for binary
     /// search). Postings are read on demand from `.post` via positional reads.
+    #[cfg(feature = "memmap2")]
     pub fn open_split(dict_path: &Path, post_path: &Path) -> Result<Self, IndexError> {
         let file = std::fs::File::open(dict_path)?;
         let file_meta = file.metadata()?;
@@ -317,7 +348,7 @@ impl MmapSegment {
         // read before all pages are faulted into the private mapping.
         let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
         let len = mmap.len();
-        let layout = parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3])?;
+        let layout = parse_segment_mmap(&*mmap, &[FORMAT_VERSION_V3])?;
         let post_file = std::fs::File::open(post_path)?;
         post_file
             .try_lock_shared()
@@ -368,8 +399,8 @@ impl MmapSegment {
         }
 
         Ok(MmapSegment {
-            _file: file,
-            mmap,
+            _file: Some(file),
+            mmap: SegmentData::Mmap(mmap),
             expected_len: len,
             doc_count: layout.doc_count,
             gram_count: layout.gram_count,

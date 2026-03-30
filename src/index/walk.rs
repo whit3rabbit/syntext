@@ -1,17 +1,24 @@
 //! Repository walking and file utilities.
 
+#[cfg(feature = "ignore")]
 use std::collections::HashSet;
+#[cfg(feature = "ignore")]
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "ignore")]
+use std::path::Path;
+use std::path::PathBuf;
 
+#[cfg(feature = "ignore")]
 use ignore::WalkBuilder;
 
+#[cfg(feature = "ignore")]
 use crate::{Config, IndexError};
 
 /// A record of a scanned file pending indexing: `(absolute_path, relative_path, size_bytes)`.
 pub type FileRecord = (PathBuf, PathBuf, u64);
 
 /// Walk the repository collecting indexable files. Respects `.gitignore`.
+#[cfg(feature = "ignore")]
 pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
     let mut files: Vec<FileRecord> = Vec::new();
     let canonical_root = fs::canonicalize(&config.repo_root)?;
@@ -81,6 +88,7 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
     Ok(files)
 }
 
+#[cfg(feature = "ignore")]
 fn push_file_record(
     read_path: PathBuf,
     display_path: &Path,
@@ -125,6 +133,7 @@ fn push_file_record(
 /// per-hop check is defence-in-depth, not the primary protection.
 /// Tests: `enumerate_files_skips_symlink_outside_repo`,
 /// `collect_symlink_entry_rejects_canonical_symlink`.
+#[cfg(feature = "ignore")]
 fn collect_symlink_entry(
     symlink_path: &Path,
     repo_root: &Path,
@@ -340,13 +349,20 @@ mod tests {
         assert!(
             symlinked_files.is_empty(),
             "symlink aliases to an already-indexed real file must not appear in results, got: {:?}",
-            symlinked_files.iter().map(|(_, r, _)| r).collect::<Vec<_>>()
+            symlinked_files
+                .iter()
+                .map(|(_, r, _)| r)
+                .collect::<Vec<_>>()
         );
         let real_files: Vec<_> = files
             .iter()
             .filter(|(_, rel, _)| rel.to_str().unwrap_or("") == "real.rs")
             .collect();
-        assert_eq!(real_files.len(), 1, "the real file must appear exactly once");
+        assert_eq!(
+            real_files.len(),
+            1,
+            "the real file must appear exactly once"
+        );
     }
 
     #[cfg(unix)]
