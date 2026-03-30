@@ -188,6 +188,79 @@ fn json_output_emits_begin_match_end_and_summary_messages() {
 }
 
 #[test]
+fn json_output_reports_all_submatches_on_a_matching_line() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/multi.rs"), "needle needle\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["--json", "needle"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let matched = stdout_text(&output)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid NDJSON line"))
+        .find(|msg| msg["type"] == "match")
+        .expect("match message");
+
+    assert_eq!(matched["data"]["absolute_offset"], 0);
+    let submatches = matched["data"]["submatches"]
+        .as_array()
+        .expect("submatches array");
+    assert_eq!(submatches.len(), 2);
+    assert_eq!(submatches[0]["start"], 0);
+    assert_eq!(submatches[0]["end"], 6);
+    assert_eq!(submatches[1]["start"], 7);
+    assert_eq!(submatches[1]["end"], 13);
+}
+
+#[test]
+fn json_output_emits_context_messages_when_requested() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/context.rs"),
+        "before\nneedle here\nafter\n",
+    );
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["--json", "-C", "1", "needle"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let messages: Vec<serde_json::Value> = stdout_text(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("valid NDJSON line"))
+        .collect();
+
+    let kinds: Vec<_> = messages
+        .iter()
+        .map(|msg| msg["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["begin", "context", "match", "context", "end", "summary"]
+    );
+
+    let context_messages: Vec<_> = messages
+        .iter()
+        .filter(|msg| msg["type"] == "context")
+        .collect();
+    assert_eq!(context_messages.len(), 2);
+    assert_eq!(context_messages[0]["data"]["lines"]["text"], "before\n");
+    assert_eq!(
+        context_messages[0]["data"]["submatches"],
+        serde_json::json!([])
+    );
+    assert_eq!(context_messages[1]["data"]["lines"]["text"], "after\n");
+
+    let matched = messages
+        .iter()
+        .find(|msg| msg["type"] == "match")
+        .expect("match message");
+    assert_eq!(matched["data"]["absolute_offset"], 7);
+}
+
+#[test]
 fn json_output_escapes_special_characters_in_paths_and_lines() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
@@ -739,6 +812,28 @@ fn only_matching_prints_each_non_empty_match_on_its_own_line() {
     assert_eq!(
         stdout_text(&numbered),
         "src/one.txt:1:needle\nsrc/one.txt:1:needle\nsrc/one.txt:2:needle\n"
+    );
+}
+
+#[test]
+fn only_matching_with_context_keeps_context_lines() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/one.txt"),
+        "before\nneedle needle\nafter\n",
+    );
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["-o", "-n", "-C", "1", "needle", "src/one.txt"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&output),
+        "1-before\n2:needle\n2:needle\n3-after\n"
     );
 }
 

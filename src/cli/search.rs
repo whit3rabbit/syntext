@@ -151,9 +151,9 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let has_context = output_args.after_context > 0 || output_args.before_context > 0;
 
     let render = if output_args.json {
-        super::render::render_json(&results)
+        super::render::render_json(&config, &results, &output_args)
     } else if output_args.only_matching {
-        super::render::render_only_matching(&results, &output_args)
+        super::render::render_only_matching(&config, &results, &output_args)
     } else if has_context {
         super::render::render_with_context(&config, &results, &output_args)
     } else if output_args.heading {
