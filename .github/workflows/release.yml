@@ -217,22 +217,16 @@ jobs:
         id: ver
         run: echo "VER=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-arm64
-          path: zips/arm64/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos-x86_64
-          path: zips/x86_64/
-
-      - name: Compute SHA256
+      - name: Compute SHA256 from published release assets
         id: sha
+        env:
+          VER: ${{ steps.ver.outputs.VER }}
         run: |
-          VER="${{ steps.ver.outputs.VER }}"
-          ARM_SHA=$(sha256sum "zips/arm64/st-${VER}-macos-arm64.zip" | awk '{print $1}')
-          X86_SHA=$(sha256sum "zips/x86_64/st-${VER}-macos-x86_64.zip" | awk '{print $1}')
+          BASE="https://github.com/whit3rabbit/syntext/releases/download/v${VER}"
+          curl -fsSL "${BASE}/st-${VER}-macos-arm64.zip" -o arm64.zip
+          curl -fsSL "${BASE}/st-${VER}-macos-x86_64.zip" -o x86_64.zip
+          ARM_SHA=$(sha256sum arm64.zip | awk '{print $1}')
+          X86_SHA=$(sha256sum x86_64.zip | awk '{print $1}')
           echo "arm=${ARM_SHA}" >> "$GITHUB_OUTPUT"
           echo "x86=${X86_SHA}" >> "$GITHUB_OUTPUT"
 
