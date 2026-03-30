@@ -69,6 +69,14 @@ The `wasm` feature enables `WasmIndex` in `src/wasm.rs` via `src/index/wasm_inde
 All documents live in the overlay (no disk writes, no mmap, no locking).
 The `wasm32-unknown-unknown` target is also added in `release.yml` as a `build-wasm` job.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
+```
+
+See `install.sh` at the repo root for platform detection logic (macOS: Homebrew cask first; Linux: `.deb` on Debian/Ubuntu amd64, raw binary otherwise).
+
 ## Commands
 
 ```
