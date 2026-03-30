@@ -5,7 +5,24 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::index::Index;
+use crate::path_util::path_from_bytes;
 use crate::Config;
+
+/// Walk PATH for a file named `filename`, canonicalizing the first match.
+/// Returns `None` if no matching file is found.
+/// Skips directories (e.g. a dir named "git" on PATH) via `is_file()`.
+fn find_in_path(filename: &str) -> Option<PathBuf> {
+    let path_var = std::env::var("PATH").ok()?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(filename);
+        if candidate.is_file() {
+            if let Ok(resolved) = candidate.canonicalize() {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
 
 /// Resolves the absolute path to the `git` binary by walking PATH entries.
 ///
@@ -22,30 +39,13 @@ use crate::Config;
 /// the TOCTOU window between path resolution and `Command::new` exec.
 #[cfg(unix)]
 fn resolve_git_binary() -> PathBuf {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join("git");
-            if candidate.is_file() {
-                if let Ok(resolved) = candidate.canonicalize() {
-                    return resolved;
-                }
-            }
-        }
-    }
-    PathBuf::from("/usr/bin/git")
+    find_in_path("git").unwrap_or_else(|| PathBuf::from("/usr/bin/git"))
 }
 
 #[cfg(not(unix))]
 fn resolve_git_binary() -> PathBuf {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join("git.exe");
-            if candidate.is_file() {
-                if let Ok(resolved) = candidate.canonicalize() {
-                    return resolved;
-                }
-            }
-        }
+    if let Some(p) = find_in_path("git.exe") {
+        return p;
     }
     // Common Git for Windows install locations.
     for fallback in &[
@@ -83,23 +83,6 @@ fn is_safe_git_path(path: &Path) -> bool {
     true
 }
 
-/// Convert a NUL-terminated byte slice (from git stdout with `-z`) to a `PathBuf`.
-///
-/// On Unix: preserves non-UTF-8 byte sequences using `OsStringExt::from_vec`.
-/// On non-Unix (Windows): git emits UTF-8 paths in all standard configurations;
-/// non-UTF-8 bytes are replaced with U+FFFD (lossy conversion).
-fn bytes_to_path(s: &[u8]) -> PathBuf {
-    #[cfg(unix)]
-    {
-        use std::ffi::OsString;
-        use std::os::unix::ffi::OsStringExt;
-        PathBuf::from(OsString::from_vec(s.to_vec()))
-    }
-    #[cfg(not(unix))]
-    {
-        PathBuf::from(String::from_utf8_lossy(s).into_owned())
-    }
-}
 
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
     // Index::build always rebuilds; --force is accepted for rg/ug compat.
@@ -229,7 +212,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let parse_nul_paths = |bytes: &[u8]| -> Vec<PathBuf> {
         bytes
             .split(|&b| b == 0)
-            .map(bytes_to_path)
+            .map(path_from_bytes)
             .filter(|path| is_safe_git_path(path))
             .collect()
     };
