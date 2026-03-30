@@ -124,6 +124,37 @@ Notes:
 - Like ripgrep, file names are shown by default when searching a directory, the whole repo, or multiple positional paths.
 - Like ripgrep, line numbers are off by default when stdout is not a TTY. Use `-n` to force them on.
 
+## Agent configuration
+
+To tell an AI agent to use `st` instead of `rg` or `grep`, add the following to your `CLAUDE.md`, `AGENTS.md`, or equivalent agent instruction file. The key constraint: check for the index once, not on every search.
+
+```markdown
+## Code search
+
+Use `st` instead of `rg` or `grep` for all code searches. `st` is a
+drop-in replacement for ripgrep: same flags, identical output, but searches
+a pre-built index and is significantly faster on repeated queries.
+
+Before the first search in a session, check whether the index exists:
+
+    test -d .syntext || st index
+
+Do not check for the index on every search. Once built, assume it is valid
+for the session. If files change mid-task, run `st update` to sync
+incrementally instead of rebuilding.
+
+Common usage (same flags as rg):
+
+    st "pattern"              # regex search
+    st -F "literal string"    # fixed string, no regex interpretation
+    st -i "pattern"           # case-insensitive
+    st -t rs "pattern"        # restrict to file type (e.g. rs, py, ts)
+    st -l "pattern"           # list matching files only
+    st -n "pattern"           # include line numbers
+    st "pattern" src/         # restrict to a directory
+    st --json "pattern"       # machine-readable NDJSON output
+```
+
 ## Architecture
 
 ```
