@@ -15,7 +15,7 @@ A hybrid code search index for agent workflows, built in Rust. Indexes repositor
 
 ```bash
 brew tap whit3rabbit/tap
-brew install --cask syntext
+brew install --cask whit3rabbit/tap/syntext
 ```
 
 ### Linux

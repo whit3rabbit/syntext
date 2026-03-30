@@ -46,8 +46,8 @@ jobs:
           VER="${VERSION#v}"
           mkdir -p dist
           cp "target/${TARGET}/release/st" "dist/st-${VER}-linux-${DEB_ARCH}"
-          cargo deb --no-build --target "${TARGET}"
-          cp "target/${TARGET}/debian/syntext_${VER}_${DEB_ARCH}.deb" dist/
+          cargo deb --no-build --target "${TARGET}" \
+            --output "dist/syntext_${VER}_${DEB_ARCH}.deb"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -141,6 +141,8 @@ jobs:
     needs: [release]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+
       - name: Set version
         id: ver
         run: echo "VER=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
@@ -176,24 +178,14 @@ jobs:
           ARM: ${{ steps.sha.outputs.arm }}
           X86: ${{ steps.sha.outputs.x86 }}
         run: |
-          mkdir -p homebrew-tap/Casks
-          cat > homebrew-tap/Casks/syntext.rb <<'CASK'
-          cask "syntext" do
-            arch arm: "arm64", intel: "x86_64"
-
-            version "VER_PLACEHOLDER"
-            sha256 arm:   "ARM_PLACEHOLDER",
-                   intel: "X86_PLACEHOLDER"
-
-            url "https://github.com/whit3rabbit/syntext/releases/download/v#{version}/st-#{version}-macos-#{arch}.zip"
-            name "syntext"
-            desc "Hybrid code search index for agent workflows"
-            homepage "https://github.com/whit3rabbit/syntext"
-
-            binary "st"
-          end
-          CASK
-          sed -i "s/VER_PLACEHOLDER/${VER}/g; s/ARM_PLACEHOLDER/${ARM}/g; s/X86_PLACEHOLDER/${X86}/g" homebrew-tap/Casks/syntext.rb
+          chmod +x scripts/render_homebrew_cask.sh
+          scripts/render_homebrew_cask.sh \
+            packaging/homebrew/Casks/syntext.rb \
+            homebrew-tap/Casks/syntext.rb \
+            "${VER}" \
+            "${ARM}" \
+            "${X86}"
+          ruby -c homebrew-tap/Casks/syntext.rb
 
       - name: Commit and push cask
         working-directory: homebrew-tap
