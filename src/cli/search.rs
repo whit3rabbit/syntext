@@ -20,7 +20,9 @@ pub(super) struct SearchArgs {
     pub with_filename: bool,
     pub invert_match: bool,
     pub files_with_matches: bool,
+    pub files_without_match: bool,
     pub count: bool,
+    pub count_matches: bool,
     pub max_count: Option<usize>,
     pub quiet: bool,
     pub json: bool,
@@ -84,6 +86,35 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             }
         }
         return 0;
+    }
+
+    if output_args.files_without_match {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        let matched: std::collections::BTreeSet<_> =
+            results.iter().map(|m| m.path.clone()).collect();
+        let mut found_any = false;
+        for path in collect_scoped_paths(&index, &config, &output_args) {
+            if matched.contains(&path) {
+                continue;
+            }
+            found_any = true;
+            let result = out
+                .write_all(path_bytes(&path).as_ref())
+                .and_then(|_| out.write_all(b"\n"));
+            if let Err(err) = result {
+                return handle_output(err);
+            }
+        }
+        return if found_any { 0 } else { 1 };
+    }
+
+    if output_args.count_matches {
+        return handle_output_code(super::render::render_count_matches(
+            &config,
+            &results,
+            &output_args,
+        ));
     }
 
     if output_args.count {

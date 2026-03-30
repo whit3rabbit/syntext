@@ -84,6 +84,74 @@ pub(super) fn render_flat(matches: &[crate::SearchMatch], args: &SearchArgs) -> 
     Ok(())
 }
 
+pub(super) fn render_count_matches(
+    config: &Config,
+    matches: &[crate::SearchMatch],
+    args: &SearchArgs,
+) -> io::Result<i32> {
+    let pattern = build_effective_pattern(args);
+    let re = match regex::bytes::RegexBuilder::new(&pattern)
+        .case_insensitive(args.ignore_case)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_SIZE_LIMIT)
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("st: invalid pattern: {e}");
+            return Ok(2);
+        }
+    };
+
+    let mut per_file: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    for m in matches {
+        per_file.entry(m.path.clone()).or_insert(0);
+    }
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let mut found_any = false;
+    for path in per_file.keys() {
+        let abs_path = config.repo_root.join(path);
+
+        #[cfg(unix)]
+        let pre_open_meta = match std::fs::metadata(&abs_path) {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        let mut file = match crate::index::open_readonly_nofollow(&abs_path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        #[cfg(unix)]
+        if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
+            continue;
+        }
+        let mut raw_bytes = Vec::new();
+        if file.read_to_end(&mut raw_bytes).is_err() {
+            continue;
+        }
+        let file_bytes = crate::index::normalize_encoding(&raw_bytes, config.verbose);
+
+        let mut count = 0usize;
+        for_each_line(file_bytes.as_ref(), |_, _, line| {
+            count += re.find_iter(line).count();
+        });
+        if count == 0 {
+            continue;
+        }
+        found_any = true;
+        if args.no_filename {
+            writeln!(out, "{count}")?;
+        } else {
+            out.write_all(path_bytes(path).as_ref())?;
+            writeln!(out, ":{count}")?;
+        }
+    }
+
+    Ok(if found_any { 0 } else { 1 })
+}
+
 pub(super) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -133,6 +201,7 @@ pub(super) fn render_invert_match(
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut found_any = false;
+    let mut files_without_selected = Vec::new();
     let mut total_bytes_searched = 0usize;
     let mut total_matched_lines = 0usize;
     let total_searches = files.len();
@@ -179,7 +248,7 @@ pub(super) fn render_invert_match(
                 }
                 if args.json {
                     file_selected.push((line_num as usize, line_start, line.to_vec()));
-                } else if !args.files_with_matches && !args.count {
+                } else if !args.files_with_matches && !args.files_without_match && !args.count {
                     let _ = write_formatted_line(
                         &mut out,
                         args.no_filename,
@@ -197,6 +266,9 @@ pub(super) fn render_invert_match(
             return Ok(0);
         }
         if selected_in_file == 0 {
+            if args.files_without_match {
+                files_without_selected.push(rel_path.clone());
+            }
             continue;
         }
         total_matched_lines += selected_in_file;
@@ -249,6 +321,11 @@ pub(super) fn render_invert_match(
             out.write_all(path_bytes(&path).as_ref())?;
             out.write_all(b"\n")?;
         }
+    } else if args.files_without_match {
+        for path in &files_without_selected {
+            out.write_all(path_bytes(&path).as_ref())?;
+            out.write_all(b"\n")?;
+        }
     } else if args.count {
         for (path, count) in counts {
             if args.no_filename {
@@ -278,7 +355,13 @@ pub(super) fn render_invert_match(
         )?;
     }
 
-    Ok(if found_any { 0 } else { 1 })
+    let mode_found_any = if args.files_without_match {
+        !files_without_selected.is_empty()
+    } else {
+        found_any
+    };
+
+    Ok(if mode_found_any { 0 } else { 1 })
 }
 
 /// Print matches with surrounding context lines to stdout.

@@ -663,6 +663,57 @@ fn invert_match_count_and_files_with_matches_follow_selected_lines() {
     let files = run_repo(repo.path(), index.path(), &["-v", "-l", "needle", "src"]);
     assert_eq!(files.status.code(), Some(0));
     assert_eq!(stdout_text(&files), "src/one.txt\nsrc/three.txt\n");
+
+    let without = run_repo(
+        repo.path(),
+        index.path(),
+        &["-v", "--files-without-match", "needle", "src"],
+    );
+    assert_eq!(without.status.code(), Some(0));
+    assert_eq!(stdout_text(&without), "src/two.txt\n");
+}
+
+#[test]
+fn files_without_match_lists_only_unmatched_files() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "needle\n");
+    write_text(&repo.path().join("src/two.txt"), "alpha\n");
+    write_text(&repo.path().join("src/three.txt"), "beta\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--files-without-match", "needle", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_text(&output), "src/three.txt\nsrc/two.txt\n");
+}
+
+#[test]
+fn count_matches_counts_individual_matches_per_file() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "needle needle\nalpha\n");
+    write_text(&repo.path().join("src/two.txt"), "needle\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--count-matches", "needle", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_text(&output), "src/one.txt:2\nsrc/two.txt:1\n");
+
+    let no_filename = run_repo(
+        repo.path(),
+        index.path(),
+        &["--count-matches", "-I", "needle", "src"],
+    );
+    assert_eq!(no_filename.status.code(), Some(0));
+    assert_eq!(stdout_text(&no_filename), "2\n1\n");
 }
 
 #[test]

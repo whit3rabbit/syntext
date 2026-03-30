@@ -43,6 +43,19 @@ fn output_mode_flags_use_last_one_wins() {
     let cli = Cli::try_parse_from(["st", "-c", "-l", "pattern"]).expect("parse failed");
     assert!(cli.files_with_matches, "last output mode should win");
     assert!(!cli.count, "overridden output mode should be cleared");
+
+    let cli = Cli::try_parse_from(["st", "-l", "--files-without-match", "pattern"])
+        .expect("parse failed");
+    assert!(cli.files_without_match, "last output mode should win");
+    assert!(
+        !cli.files_with_matches,
+        "overridden output mode should be cleared"
+    );
+
+    let cli =
+        Cli::try_parse_from(["st", "-c", "--count-matches", "pattern"]).expect("parse failed");
+    assert!(cli.count_matches, "last output mode should win");
+    assert!(!cli.count, "overridden output mode should be cleared");
 }
 
 #[test]

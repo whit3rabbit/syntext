@@ -73,13 +73,31 @@ pub struct Cli {
     #[arg(
         short = 'l',
         long = "files-with-matches",
-        overrides_with_all = ["count", "json"]
+        overrides_with_all = ["count", "json", "files_without_match"]
     )]
     pub files_with_matches: bool,
 
+    /// Print only paths of files with zero matches.
+    #[arg(
+        long = "files-without-match",
+        overrides_with_all = ["files_with_matches", "count", "count_matches", "json"]
+    )]
+    pub files_without_match: bool,
+
     /// Print count of matching lines per file.
-    #[arg(short = 'c', long = "count", overrides_with_all = ["files_with_matches", "json"])]
+    #[arg(
+        short = 'c',
+        long = "count",
+        overrides_with_all = ["files_with_matches", "files_without_match", "count_matches", "json"]
+    )]
     pub count: bool,
+
+    /// Print count of individual matches per file.
+    #[arg(
+        long = "count-matches",
+        overrides_with_all = ["files_with_matches", "files_without_match", "count", "json"]
+    )]
+    pub count_matches: bool,
 
     /// Limit the number of matching lines printed per file.
     #[arg(short = 'm', long = "max-count", value_name = "NUM")]
@@ -90,7 +108,7 @@ pub struct Cli {
     pub quiet: bool,
 
     /// Output as NDJSON (ripgrep-style format).
-    #[arg(long = "json", overrides_with_all = ["files_with_matches", "count"])]
+    #[arg(long = "json", overrides_with_all = ["files_with_matches", "files_without_match", "count", "count_matches"])]
     pub json: bool,
 
     /// Group matches under their file name (like rg default on a tty).
@@ -242,7 +260,9 @@ pub fn run() -> i32 {
                 with_filename: cli.with_filename,
                 invert_match: cli.invert_match,
                 files_with_matches: cli.files_with_matches,
+                files_without_match: cli.files_without_match,
                 count: cli.count,
+                count_matches: cli.count_matches,
                 max_count: cli.max_count,
                 quiet: cli.quiet,
                 json: cli.json,
