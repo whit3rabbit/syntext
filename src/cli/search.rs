@@ -1,19 +1,22 @@
 //! Search argument parsing, query execution, and result rendering.
 
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::io::{self, IsTerminal, Write};
+use std::path::{Component, Path, PathBuf};
 
 use crate::index::Index;
 use crate::path_util::path_bytes;
 use crate::{Config, SearchOptions};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct SearchArgs {
     pub pattern: String,
     pub paths: Vec<PathBuf>,
     pub fixed_strings: bool,
     pub ignore_case: bool,
     pub word_regexp: bool,
+    pub line_regexp: bool,
+    pub line_number: bool,
+    pub with_filename: bool,
     pub invert_match: bool,
     pub files_with_matches: bool,
     pub count: bool,
@@ -31,12 +34,6 @@ pub(super) struct SearchArgs {
 }
 
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
-    if args.paths.len() > 1 {
-        eprintln!(
-            "st: warning: multiple path arguments not yet supported; using only {:?}",
-            args.paths[0]
-        );
-    }
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         Err(e) => {
@@ -45,27 +42,32 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         }
     };
 
-    let results = match run_search(&index, args) {
+    let results = match run_search(&index, &config, args) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("st: {e}");
             return 2;
         }
     };
+    let output_args = args.with_effective_output_defaults(&config);
 
-    if args.invert_match {
-        return handle_output_code(super::render::render_invert_match(&config, &results, args));
+    if output_args.invert_match {
+        return handle_output_code(super::render::render_invert_match(
+            &config,
+            &results,
+            &output_args,
+        ));
     }
 
     if results.is_empty() {
         return 1;
     }
 
-    if args.quiet {
+    if output_args.quiet {
         return 0;
     }
 
-    if args.files_with_matches {
+    if output_args.files_with_matches {
         let stdout = io::stdout();
         let mut out = stdout.lock();
         let mut seen = std::collections::BTreeSet::new();
@@ -83,7 +85,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         return 0;
     }
 
-    if args.count {
+    if output_args.count {
         let stdout = io::stdout();
         let mut out = stdout.lock();
         let mut counts: std::collections::BTreeMap<PathBuf, usize> =
@@ -92,9 +94,12 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             *counts.entry(m.path.clone()).or_default() += 1;
         }
         for (path, n) in &counts {
-            let result = out
-                .write_all(path_bytes(path).as_ref())
-                .and_then(|_| writeln!(out, ":{n}"));
+            let result = if output_args.no_filename {
+                writeln!(out, "{n}")
+            } else {
+                out.write_all(path_bytes(path).as_ref())
+                    .and_then(|_| writeln!(out, ":{n}"))
+            };
             if let Err(err) = result {
                 return handle_output(err);
             }
@@ -102,16 +107,16 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         return 0;
     }
 
-    let has_context = args.after_context > 0 || args.before_context > 0;
+    let has_context = output_args.after_context > 0 || output_args.before_context > 0;
 
-    let render = if args.json {
+    let render = if output_args.json {
         super::render::render_json(&results)
     } else if has_context {
-        super::render::render_with_context(&config, &results, args)
-    } else if args.heading {
-        super::render::render_heading(&results, args)
+        super::render::render_with_context(&config, &results, &output_args)
+    } else if output_args.heading {
+        super::render::render_heading(&results, &output_args)
     } else {
-        super::render::render_flat(&results, args)
+        super::render::render_flat(&results, &output_args)
     };
 
     if let Err(err) = render {
@@ -143,7 +148,9 @@ pub(super) fn build_effective_pattern(args: &SearchArgs) -> String {
     } else {
         args.pattern.clone()
     };
-    if args.word_regexp {
+    if args.line_regexp {
+        format!("^(?:{pat})$")
+    } else if args.word_regexp {
         format!(r"\b{pat}\b")
     } else {
         pat
@@ -152,29 +159,143 @@ pub(super) fn build_effective_pattern(args: &SearchArgs) -> String {
 
 pub(super) fn run_search(
     index: &Index,
+    config: &Config,
     args: &SearchArgs,
 ) -> Result<Vec<crate::SearchMatch>, crate::IndexError> {
     let effective_pattern = build_effective_pattern(args);
-
-    let path_filter = args.glob.clone().or_else(|| paths_to_glob(&args.paths));
+    let explicit_specs = explicit_path_specs(&config.repo_root, &args.paths);
 
     let opts = SearchOptions {
         case_insensitive: args.ignore_case,
         file_type: args.file_type.clone(),
         exclude_type: args.type_not.clone(),
-        max_results: args.max_count,
-        path_filter,
+        max_results: None,
+        path_filter: args.glob.clone(),
     };
 
-    index.search(&effective_pattern, &opts)
+    let mut results = index.search(&effective_pattern, &opts)?;
+    if !explicit_specs.is_empty() {
+        results.retain(|m| matches_any_explicit_path(&m.path, &explicit_specs));
+    }
+    if let Some(limit) = args.max_count {
+        results = truncate_matches_per_file(results, limit);
+    }
+    Ok(results)
 }
 
-pub(super) fn paths_to_glob(paths: &[PathBuf]) -> Option<String> {
-    let first = paths.first()?;
-    let s = first.to_string_lossy();
-    if first.is_dir() {
-        Some(format!("{s}/**"))
-    } else {
-        Some(s.into_owned())
+fn truncate_matches_per_file(
+    matches: Vec<crate::SearchMatch>,
+    limit: usize,
+) -> Vec<crate::SearchMatch> {
+    let mut kept = Vec::with_capacity(matches.len().min(limit));
+    let mut current_path: Option<PathBuf> = None;
+    let mut kept_in_file = 0usize;
+
+    for m in matches {
+        if current_path.as_ref() != Some(&m.path) {
+            current_path = Some(m.path.clone());
+            kept_in_file = 0;
+        }
+        if kept_in_file < limit {
+            kept.push(m);
+            kept_in_file += 1;
+        }
     }
+
+    kept
+}
+
+impl SearchArgs {
+    fn with_effective_output_defaults(&self, config: &Config) -> Self {
+        let mut effective = self.clone();
+        let stdout_is_tty = io::stdout().is_terminal();
+
+        if !self.line_number && !self.no_line_number {
+            effective.no_line_number = !stdout_is_tty;
+        }
+
+        if self.with_filename {
+            effective.no_filename = false;
+        } else if !self.no_filename {
+            effective.no_filename = !shows_filename_by_default(config, &self.paths);
+        }
+
+        effective
+    }
+}
+
+#[derive(Clone)]
+struct ExplicitPathSpec {
+    rel_path: PathBuf,
+    is_dir: bool,
+}
+
+fn explicit_path_specs(repo_root: &Path, paths: &[PathBuf]) -> Vec<ExplicitPathSpec> {
+    paths
+        .iter()
+        .map(|path| ExplicitPathSpec {
+            rel_path: relativize_cli_path(repo_root, path),
+            is_dir: path_is_directory(repo_root, path),
+        })
+        .collect()
+}
+
+fn matches_any_explicit_path(path: &Path, specs: &[ExplicitPathSpec]) -> bool {
+    specs.iter().any(|spec| explicit_path_matches(path, spec))
+}
+
+fn explicit_path_matches(path: &Path, spec: &ExplicitPathSpec) -> bool {
+    if spec.rel_path.as_os_str().is_empty() {
+        return true;
+    }
+    if spec.is_dir {
+        path.starts_with(&spec.rel_path)
+    } else {
+        path == spec.rel_path
+    }
+}
+
+fn shows_filename_by_default(config: &Config, paths: &[PathBuf]) -> bool {
+    match explicit_path_specs(config.repo_root.as_path(), paths).as_slice() {
+        [] => true,
+        [spec] => spec.is_dir,
+        _ => true,
+    }
+}
+
+fn path_is_directory(repo_root: &Path, path: &Path) -> bool {
+    cli_path_on_disk(repo_root, path)
+        .metadata()
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false)
+}
+
+fn relativize_cli_path(repo_root: &Path, path: &Path) -> PathBuf {
+    let rel = if path.is_absolute() {
+        path.strip_prefix(repo_root).unwrap_or(path)
+    } else {
+        path
+    };
+    normalize_relative_path(rel)
+}
+
+fn cli_path_on_disk(repo_root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo_root.join(path)
+    }
+}
+
+fn normalize_relative_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir => normalized.push(component.as_os_str()),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }

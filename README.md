@@ -145,13 +145,24 @@ In indexed search scenarios, **syntext** significantly outperforms `ripgrep` by 
 # Build the index
 st index --stats
 
-# Search
-st search "fn parse_query"          # literal
-st search "fn\s+\w+_query"          # regex
-st search -l "parse_query("         # explicit literal (pattern has metachar)
-st search -i "parsequery"           # case-insensitive
-st search -t rs "impl.*Iterator"    # restrict to Rust files
-st search --json "TODO"             # JSON output for tooling
+# Search the whole repo
+st "fn parse_query"                 # regex
+st -F "parse_query("                # literal (metacharacters stay literal)
+st -i "parsequery"                  # case-insensitive
+st -x "TODO"                        # whole-line match
+st -n "impl.*Iterator"              # force line numbers
+
+# Restrict search scope with positional paths
+st "needle" src/                    # search one directory
+st "needle" src/lib.rs              # search one file
+st "needle" src/lib.rs tests/       # search multiple files/directories
+
+# Additional filters and output modes
+st -t rs "impl.*Iterator"           # restrict to Rust files
+st -g "src/" "TODO"                 # restrict by glob
+st -c "parse_query" src/lib.rs      # count matches in one file
+st -l "parse_query"                 # print matching file paths
+st --json "TODO"                    # NDJSON output for tooling
 
 # Incremental update after edits
 st update
@@ -159,6 +170,12 @@ st update
 # Status
 st status
 ```
+
+Notes:
+
+- Search is the default command, there is no `st search` subcommand.
+- Like ripgrep, file names are shown by default when searching a directory, the whole repo, or multiple positional paths.
+- Like ripgrep, line numbers are off by default when stdout is not a TTY. Use `-n` to force them on.
 
 ### Library
 

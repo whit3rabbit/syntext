@@ -125,6 +125,7 @@ pub(super) fn render_invert_match(
     let mut found_any = false;
     for abs_path in &files {
         let rel_path = abs_path.strip_prefix(&config.repo_root).unwrap_or(abs_path);
+        let mut emitted_in_file = 0usize;
 
         #[cfg(unix)]
         let pre_open_meta = match std::fs::metadata(abs_path) {
@@ -146,8 +147,12 @@ pub(super) fn render_invert_match(
         let file_bytes = crate::index::normalize_encoding(&raw_bytes, config.verbose);
 
         for_each_line(file_bytes.as_ref(), |line_num, _line_start, line| {
+            if args.max_count.is_some_and(|limit| emitted_in_file >= limit) {
+                return;
+            }
             if !re.is_match(line) {
                 found_any = true;
+                emitted_in_file += 1;
                 if !args.quiet {
                     let _ = write_formatted_line(
                         &mut out,

@@ -254,10 +254,69 @@ fn files_with_matches_count_heading_and_context_modes_work() {
     let context = run_repo(repo.path(), index.path(), &["-C", "1", "needle"]);
     assert_eq!(context.status.code(), Some(0));
     let text = stdout_text(&context);
-    assert!(text.contains("src/sample.rs:2:needle on line 2"));
-    assert!(text.contains("src/sample.rs-3-line 3"));
-    assert!(text.contains("src/sample.rs:6:needle on line 6"));
+    assert!(text.contains("src/sample.rs:needle on line 2"));
+    assert!(text.contains("src/sample.rs-line 3"));
+    assert!(text.contains("src/sample.rs:needle on line 6"));
     assert!(text.contains("--\n"));
+}
+
+#[test]
+fn default_filename_and_line_number_heuristics_match_scope() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.rs"), "needle\n");
+    write_text(&repo.path().join("src/two.rs"), "needle\n");
+    build_index(repo.path(), index.path());
+
+    let single_file = run_repo(repo.path(), index.path(), &["needle", "src/one.rs"]);
+    assert_eq!(single_file.status.code(), Some(0));
+    assert_eq!(stdout_text(&single_file), "needle\n");
+
+    let single_file_with_number =
+        run_repo(repo.path(), index.path(), &["-n", "needle", "src/one.rs"]);
+    assert_eq!(single_file_with_number.status.code(), Some(0));
+    assert_eq!(stdout_text(&single_file_with_number), "1:needle\n");
+
+    let single_file_with_name =
+        run_repo(repo.path(), index.path(), &["-H", "needle", "src/one.rs"]);
+    assert_eq!(single_file_with_name.status.code(), Some(0));
+    assert_eq!(stdout_text(&single_file_with_name), "src/one.rs:needle\n");
+
+    let dir_scope = run_repo(repo.path(), index.path(), &["needle", "src"]);
+    assert_eq!(dir_scope.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&dir_scope),
+        "src/one.rs:needle\nsrc/two.rs:needle\n"
+    );
+
+    let count_single = run_repo(repo.path(), index.path(), &["-c", "needle", "src/one.rs"]);
+    assert_eq!(count_single.status.code(), Some(0));
+    assert_eq!(stdout_text(&count_single), "1\n");
+
+    let count_single_named = run_repo(
+        repo.path(),
+        index.path(),
+        &["-c", "-H", "needle", "src/one.rs"],
+    );
+    assert_eq!(count_single_named.status.code(), Some(0));
+    assert_eq!(stdout_text(&count_single_named), "src/one.rs:1\n");
+}
+
+#[test]
+fn multiple_path_arguments_are_all_searched() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.rs"), "needle in one\n");
+    write_text(&repo.path().join("lib/two.rs"), "needle in two\n");
+    write_text(&repo.path().join("tests/three.rs"), "needle in three\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["needle", "src/one.rs", "lib"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&output),
+        "lib/two.rs:needle in two\nsrc/one.rs:needle in one\n"
+    );
 }
 
 #[test]
@@ -287,7 +346,7 @@ fn non_utf8_file_content_matches_in_literal_and_regex_modes() {
     write_bytes(&repo.path().join("src/non_utf8.txt"), line);
     build_index(repo.path(), index.path());
 
-    let expected = b"src/non_utf8.txt:1:prefix\xFFneedle\x80suffix\n";
+    let expected = b"src/non_utf8.txt:prefix\xFFneedle\x80suffix\n";
 
     let literal = run_repo(repo.path(), index.path(), &["-F", "needle"]);
     assert_eq!(literal.status.code(), Some(0));
@@ -353,7 +412,7 @@ fn non_utf8_filename_is_reported_verbatim_in_flat_output() {
 
     let output = run_repo(repo.path(), index.path(), &["-F", "needle"]);
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(output.stdout, b"src/odd\xff.rs:1:needle\n");
+    assert_eq!(output.stdout, b"src/odd\xff.rs:needle\n");
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]

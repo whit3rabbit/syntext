@@ -75,7 +75,7 @@ pub(super) fn cmd_bench_search(
         }
     };
 
-    let index = match Index::open(config) {
+    let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         Err(e) => {
             eprintln!("st bench-search: {e}");
@@ -91,7 +91,7 @@ pub(super) fn cmd_bench_search(
             ..SearchArgs::default()
         };
 
-        let count = match run_search(&index, &args) {
+        let count = match run_search(&index, &config, &args) {
             Ok(r) => r.len(),
             Err(e) => {
                 eprintln!("st bench-search: {e}");
@@ -100,7 +100,7 @@ pub(super) fn cmd_bench_search(
         };
 
         for _ in 0..warmups {
-            if let Err(e) = run_search(&index, &args) {
+            if let Err(e) = run_search(&index, &config, &args) {
                 eprintln!("st bench-search: {e}");
                 return 2;
             }
@@ -109,7 +109,7 @@ pub(super) fn cmd_bench_search(
         let mut samples = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             let start = Instant::now();
-            if let Err(e) = run_search(&index, &args) {
+            if let Err(e) = run_search(&index, &config, &args) {
                 eprintln!("st bench-search: {e}");
                 return 2;
             }

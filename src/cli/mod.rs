@@ -238,6 +238,8 @@ pub fn run() -> i32 {
                 ignore_case: cli.ignore_case,
                 word_regexp: cli.word_regexp,
                 line_regexp: cli.line_regexp,
+                line_number: cli.line_number,
+                with_filename: cli.with_filename,
                 invert_match: cli.invert_match,
                 files_with_matches: cli.files_with_matches,
                 count: cli.count,
