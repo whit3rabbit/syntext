@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::index::Index;
 use crate::path_util::path_bytes;
@@ -50,20 +51,37 @@ fn json_data(bytes: &[u8]) -> serde_json::Value {
 }
 
 fn json_stats(
+    elapsed: Duration,
     searches: usize,
     searches_with_match: usize,
     bytes_searched: usize,
+    bytes_printed: usize,
     matched_lines: usize,
     matches: usize,
 ) -> serde_json::Value {
     serde_json::json!({
-        "elapsed": {"secs": 0, "nanos": 0, "human": "0s"},
+        "elapsed": json_elapsed(elapsed),
         "searches": searches,
         "searches_with_match": searches_with_match,
         "bytes_searched": bytes_searched,
-        "bytes_printed": 0,
+        "bytes_printed": bytes_printed,
         "matched_lines": matched_lines,
         "matches": matches
+    })
+}
+
+fn json_elapsed(elapsed: Duration) -> serde_json::Value {
+    let human = if elapsed.is_zero() {
+        "0s".to_string()
+    } else if elapsed.as_secs() == 0 {
+        format!("{:.6}s", elapsed.as_secs_f64())
+    } else {
+        format!("{:.3}s", elapsed.as_secs_f64())
+    };
+    serde_json::json!({
+        "secs": elapsed.as_secs(),
+        "nanos": elapsed.subsec_nanos(),
+        "human": human
     })
 }
 
@@ -100,6 +118,12 @@ fn json_line_message(
         }
     })
     .to_string()
+}
+
+fn write_json_line(out: &mut dyn Write, line: &str) -> io::Result<usize> {
+    out.write_all(line.as_bytes())?;
+    out.write_all(b"\n")?;
+    Ok(line.len() + 1)
 }
 
 fn read_repo_file_bytes(config: &Config, rel_path: &Path) -> io::Result<Vec<u8>> {
@@ -429,6 +453,7 @@ pub(super) fn render_invert_match(
     config: &Config,
     args: &SearchArgs,
 ) -> io::Result<i32> {
+    let total_start = Instant::now();
     let pattern = build_effective_pattern(args);
     let re = match regex::bytes::RegexBuilder::new(&pattern)
         .case_insensitive(args.ignore_case)
@@ -450,12 +475,14 @@ pub(super) fn render_invert_match(
     let mut found_any = false;
     let mut files_without_selected = Vec::new();
     let mut total_bytes_searched = 0usize;
+    let mut total_bytes_printed = 0usize;
     let mut total_matched_lines = 0usize;
     let total_searches = files.len();
     let mut searches_with_match = 0usize;
     let mut counts: BTreeMap<PathBuf, usize> = BTreeMap::new();
     let mut matched_files = Vec::new();
     for rel_path in &files {
+        let file_start = Instant::now();
         let abs_path = config.repo_root.join(rel_path);
         let mut selected_in_file = 0usize;
         let mut file_selected = Vec::new();
@@ -525,41 +552,45 @@ pub(super) fn render_invert_match(
         } else if args.count {
             counts.insert(rel_path.clone(), selected_in_file);
         } else if args.json {
-            writeln!(
-                out,
-                "{}",
-                serde_json::json!({"type":"begin","data":{"path": json_data(path_bytes(rel_path).as_ref())}})
-            )?;
+            let mut file_bytes_printed = 0usize;
+            let begin = serde_json::json!({"type":"begin","data":{"path": json_data(path_bytes(rel_path).as_ref())}})
+                .to_string();
+            file_bytes_printed += write_json_line(&mut out, &begin)?;
             for (line_number, absolute_offset, line) in file_selected {
                 let mut line_with_newline = line;
                 line_with_newline.push(b'\n');
-                writeln!(
-                    out,
-                    "{}",
-                    serde_json::json!({
-                        "type": "match",
-                        "data": {
-                            "path": json_data(path_bytes(rel_path).as_ref()),
-                            "lines": json_data(&line_with_newline),
-                            "line_number": line_number,
-                            "absolute_offset": absolute_offset,
-                            "submatches": []
-                        }
-                    })
-                )?;
-            }
-            writeln!(
-                out,
-                "{}",
-                serde_json::json!({
-                    "type": "end",
+                let match_line = serde_json::json!({
+                    "type": "match",
                     "data": {
                         "path": json_data(path_bytes(rel_path).as_ref()),
-                        "binary_offset": null,
-                        "stats": json_stats(1, 1, raw_bytes.len(), selected_in_file, 0)
+                        "lines": json_data(&line_with_newline),
+                        "line_number": line_number,
+                        "absolute_offset": absolute_offset,
+                        "submatches": []
                     }
                 })
-            )?;
+                .to_string();
+                file_bytes_printed += write_json_line(&mut out, &match_line)?;
+            }
+            total_bytes_printed += file_bytes_printed;
+            let end = serde_json::json!({
+                "type": "end",
+                "data": {
+                    "path": json_data(path_bytes(rel_path).as_ref()),
+                    "binary_offset": null,
+                    "stats": json_stats(
+                        file_start.elapsed(),
+                        1,
+                        1,
+                        raw_bytes.len(),
+                        file_bytes_printed,
+                        selected_in_file,
+                        0
+                    )
+                }
+            })
+            .to_string();
+            write_json_line(&mut out, &end)?;
         }
     }
 
@@ -589,11 +620,13 @@ pub(super) fn render_invert_match(
             serde_json::json!({
                 "type": "summary",
                 "data": {
-                    "elapsed_total": {"secs": 0, "nanos": 0, "human": "0s"},
+                    "elapsed_total": json_elapsed(total_start.elapsed()),
                     "stats": json_stats(
+                        total_start.elapsed(),
                         total_searches,
                         searches_with_match,
                         total_bytes_searched,
+                        total_bytes_printed,
                         total_matched_lines,
                         0
                     )
@@ -747,6 +780,7 @@ pub(super) fn render_json(
     matches: &[crate::SearchMatch],
     args: &SearchArgs,
 ) -> io::Result<()> {
+    let total_start = Instant::now();
     let re = compile_output_regex(args)?;
     let mut by_file: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
     for m in matches {
@@ -761,6 +795,7 @@ pub(super) fn render_json(
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut total_bytes_searched = 0usize;
+    let mut total_bytes_printed = 0usize;
     let mut total_matched_lines = 0usize;
     let mut total_matches = 0usize;
     let scoped_paths = collect_scoped_paths(index, config, args);
@@ -768,6 +803,7 @@ pub(super) fn render_json(
     let searches_with_match = by_file.len();
 
     for (path, match_lines) in &by_file {
+        let file_start = Instant::now();
         let Ok(raw_content) = read_repo_file_bytes(config, path) else {
             continue;
         };
@@ -795,11 +831,10 @@ pub(super) fn render_json(
         let mut file_total_matches = 0usize;
 
         // begin
-        writeln!(
-            out,
-            "{}",
-            serde_json::json!({"type":"begin","data":{"path": json_data(path_bytes(path).as_ref())}})
-        )?;
+        let mut file_bytes_printed = 0usize;
+        let begin = serde_json::json!({"type":"begin","data":{"path": json_data(path_bytes(path).as_ref())}})
+            .to_string();
+        file_bytes_printed += write_json_line(&mut out, &begin)?;
 
         for idx in to_print {
             let Some((line_number, line_start, line)) = file_lines.get(idx) else {
@@ -809,36 +844,39 @@ pub(super) fn render_json(
                 let submatches = json_submatches(&re, line);
                 file_matched_lines += 1;
                 file_total_matches += submatches.len();
-                writeln!(
-                    out,
-                    "{}",
-                    json_line_message("match", path, *line_number, *line_start, line, submatches)
-                )?;
+                let message =
+                    json_line_message("match", path, *line_number, *line_start, line, submatches);
+                file_bytes_printed += write_json_line(&mut out, &message)?;
             } else {
-                writeln!(
-                    out,
-                    "{}",
-                    json_line_message("context", path, *line_number, *line_start, line, Vec::new())
-                )?;
+                let message =
+                    json_line_message("context", path, *line_number, *line_start, line, Vec::new());
+                file_bytes_printed += write_json_line(&mut out, &message)?;
             }
         }
 
+        total_bytes_printed += file_bytes_printed;
         total_matched_lines += file_matched_lines;
         total_matches += file_total_matches;
 
         // end
-        writeln!(
-            out,
-            "{}",
-            serde_json::json!({
-                "type": "end",
-                "data": {
-                    "path": json_data(path_bytes(path).as_ref()),
-                    "binary_offset": null,
-                    "stats": json_stats(1, 1, raw_content.len(), file_matched_lines, file_total_matches)
-                }
-            })
-        )?;
+        let end = serde_json::json!({
+            "type": "end",
+            "data": {
+                "path": json_data(path_bytes(path).as_ref()),
+                "binary_offset": null,
+                "stats": json_stats(
+                    file_start.elapsed(),
+                    1,
+                    1,
+                    raw_content.len(),
+                    file_bytes_printed,
+                    file_matched_lines,
+                    file_total_matches
+                )
+            }
+        })
+        .to_string();
+        write_json_line(&mut out, &end)?;
     }
 
     for path in scoped_paths {
@@ -857,14 +895,16 @@ pub(super) fn render_json(
         serde_json::json!({
             "type": "summary",
                 "data": {
-                    "elapsed_total": {"secs": 0, "nanos": 0, "human": "0s"},
+                    "elapsed_total": json_elapsed(total_start.elapsed()),
                     "stats": json_stats(
+                        total_start.elapsed(),
                         total_searches,
                         searches_with_match,
                         total_bytes_searched,
+                        total_bytes_printed,
                         total_matched_lines,
                         total_matches
-                )
+                    )
             }
         })
     )?;

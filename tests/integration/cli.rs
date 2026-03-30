@@ -25,6 +25,13 @@ fn stdout_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+fn stdout_lines_with_newlines(output: &Output) -> Vec<&[u8]> {
+    output
+        .stdout
+        .split_inclusive(|&byte| byte == b'\n')
+        .collect()
+}
+
 fn stderr_text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -237,6 +244,54 @@ fn json_output_summary_counts_full_scoped_corpus() {
     assert_eq!(stats["bytes_searched"], 12);
     assert_eq!(stats["matched_lines"], 1);
     assert_eq!(stats["matches"], 1);
+}
+
+#[test]
+fn json_output_stats_report_emitted_payload_bytes() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/one.txt"),
+        "before\nneedle needle\nafter\n",
+    );
+    write_text(&repo.path().join("src/two.txt"), "miss\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--json", "-C", "1", "needle", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    let raw_lines = stdout_lines_with_newlines(&output);
+    let messages: Vec<serde_json::Value> = raw_lines
+        .iter()
+        .map(|line| serde_json::from_slice(line).expect("valid NDJSON line"))
+        .collect();
+
+    let expected_bytes: usize = raw_lines
+        .iter()
+        .zip(messages.iter())
+        .filter(|(_, msg)| {
+            matches!(
+                msg["type"].as_str(),
+                Some("begin") | Some("context") | Some("match")
+            )
+        })
+        .map(|(line, _)| line.len())
+        .sum();
+
+    let end = messages
+        .iter()
+        .find(|msg| msg["type"] == "end")
+        .expect("end message");
+    let summary = messages
+        .iter()
+        .find(|msg| msg["type"] == "summary")
+        .expect("summary message");
+    assert_eq!(end["data"]["stats"]["bytes_printed"], expected_bytes);
+    assert_eq!(summary["data"]["stats"]["bytes_printed"], expected_bytes);
 }
 
 #[test]
@@ -1020,6 +1075,16 @@ fn invert_match_json_emits_match_messages_with_empty_submatches() {
     assert_eq!(summary["type"], "summary");
     assert_eq!(summary["data"]["stats"]["matched_lines"], 2);
     assert_eq!(summary["data"]["stats"]["matches"], 0);
+
+    let raw_lines = stdout_lines_with_newlines(&output);
+    let expected_bytes: usize = raw_lines
+        .iter()
+        .zip(messages.iter())
+        .filter(|(_, msg)| matches!(msg["type"].as_str(), Some("begin") | Some("match")))
+        .map(|(line, _)| line.len())
+        .sum();
+    assert_eq!(end["data"]["stats"]["bytes_printed"], expected_bytes);
+    assert_eq!(summary["data"]["stats"]["bytes_printed"], expected_bytes);
 }
 
 #[test]
