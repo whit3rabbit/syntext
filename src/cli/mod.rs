@@ -18,7 +18,7 @@ use bench::cmd_bench_search;
 use manage::{cmd_index, cmd_status, cmd_update};
 use search::{cmd_search, SearchArgs};
 
-/// Fast code search with index acceleration. rg-compatible interface.
+/// Fast code search with index acceleration. ripgrep-style interface.
 ///
 /// Use `st index` to build the index first, then `st <pattern>` to search.
 #[derive(Parser)]
@@ -37,13 +37,21 @@ pub struct Cli {
     #[arg(short = 'F', long = "fixed-strings")]
     pub fixed_strings: bool,
 
+    /// Execute the search case sensitively (the default).
+    #[arg(short = 's', long = "case-sensitive", overrides_with = "ignore_case")]
+    pub case_sensitive: bool,
+
     /// Case-insensitive search.
-    #[arg(short = 'i', long = "ignore-case")]
+    #[arg(short = 'i', long = "ignore-case", overrides_with = "case_sensitive")]
     pub ignore_case: bool,
 
     /// Only match whole words (wraps pattern in \b...\b).
-    #[arg(short = 'w', long = "word-regexp")]
+    #[arg(short = 'w', long = "word-regexp", overrides_with = "line_regexp")]
     pub word_regexp: bool,
+
+    /// Only match lines where the entire line participates in a match.
+    #[arg(short = 'x', long = "line-regexp", overrides_with = "word_regexp")]
+    pub line_regexp: bool,
 
     /// Invert matching: print lines that do NOT match the pattern within candidate files.
     /// Unlike grep -v and rg -v, this only examines files identified by the index as containing
@@ -62,14 +70,18 @@ pub struct Cli {
 
     // --- Output format ---
     /// Print only paths of files with at least one match.
-    #[arg(short = 'l', long = "files-with-matches")]
+    #[arg(
+        short = 'l',
+        long = "files-with-matches",
+        overrides_with_all = ["count", "json"]
+    )]
     pub files_with_matches: bool,
 
     /// Print count of matching lines per file.
-    #[arg(short = 'c', long = "count")]
+    #[arg(short = 'c', long = "count", overrides_with_all = ["files_with_matches", "json"])]
     pub count: bool,
 
-    /// Stop after NUM total matches.
+    /// Limit the number of matching lines printed per file.
     #[arg(short = 'm', long = "max-count", value_name = "NUM")]
     pub max_count: Option<usize>,
 
@@ -77,8 +89,8 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
-    /// Output as NDJSON (ripgrep-compatible format).
-    #[arg(long = "json")]
+    /// Output as NDJSON (ripgrep-style format).
+    #[arg(long = "json", overrides_with_all = ["files_with_matches", "count"])]
     pub json: bool,
 
     /// Group matches under their file name (like rg default on a tty).
@@ -89,12 +101,20 @@ pub struct Cli {
     #[arg(long = "no-heading", overrides_with = "heading")]
     pub no_heading: bool,
 
+    /// Show line numbers.
+    #[arg(short = 'n', long = "line-number", overrides_with = "no_line_number")]
+    pub line_number: bool,
+
     /// Suppress line numbers in output.
-    #[arg(short = 'N', long = "no-line-number")]
+    #[arg(short = 'N', long = "no-line-number", overrides_with = "line_number")]
     pub no_line_number: bool,
 
+    /// Show file names with matches.
+    #[arg(short = 'H', long = "with-filename", overrides_with = "no_filename")]
+    pub with_filename: bool,
+
     /// Suppress file names in output.
-    #[arg(long = "no-filename")]
+    #[arg(short = 'I', long = "no-filename", overrides_with = "with_filename")]
     pub no_filename: bool,
 
     // --- Context lines ---
@@ -217,6 +237,7 @@ pub fn run() -> i32 {
                 fixed_strings: cli.fixed_strings,
                 ignore_case: cli.ignore_case,
                 word_regexp: cli.word_regexp,
+                line_regexp: cli.line_regexp,
                 invert_match: cli.invert_match,
                 files_with_matches: cli.files_with_matches,
                 count: cli.count,
@@ -366,228 +387,4 @@ fn validate_index_dir(_index_dir: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use clap::Parser;
-
-    use crate::index::Index;
-    use crate::{Config, SearchOptions};
-
-    use super::{manage::cmd_index, manage::cmd_update, Cli, ManageCommand};
-
-    #[test]
-    fn search_works_without_subcommand() {
-        let cli = Cli::try_parse_from(["st", "fn_hello"]).expect("parse failed");
-        assert!(cli.command.is_none());
-        assert_eq!(cli.pattern.as_deref(), Some("fn_hello"));
-    }
-
-    #[test]
-    fn fixed_strings_short_flag_is_capital_f() {
-        let cli = Cli::try_parse_from(["st", "-F", "fn.hello"]).expect("parse failed");
-        assert!(cli.fixed_strings);
-        assert_eq!(cli.pattern.as_deref(), Some("fn.hello"));
-    }
-
-    #[test]
-    fn files_with_matches_short_flag_is_lowercase_l() {
-        let cli = Cli::try_parse_from(["st", "-l", "pattern"]).expect("parse failed");
-        assert!(cli.files_with_matches);
-    }
-
-    #[test]
-    fn context_flag_sets_both_before_and_after() {
-        let cli = Cli::try_parse_from(["st", "-C", "3", "pattern"]).expect("parse failed");
-        assert_eq!(cli.context, Some(3));
-    }
-
-    #[test]
-    fn manage_index_subcommand_still_routes_correctly() {
-        let cli = Cli::try_parse_from(["st", "index"]).expect("parse failed");
-        assert!(cli.pattern.is_none());
-        assert!(matches!(cli.command, Some(ManageCommand::Index { .. })));
-    }
-
-    #[test]
-    fn cmd_index_rebuilds_existing_index_without_force() {
-        let repo = tempfile::TempDir::new().unwrap();
-        let index_dir = tempfile::TempDir::new().unwrap();
-
-        fs::create_dir_all(repo.path().join("src")).unwrap();
-        let file = repo.path().join("src/main.rs");
-        fs::write(&file, "fn first_version() {}\n").unwrap();
-
-        let config = Config {
-            index_dir: index_dir.path().to_path_buf(),
-            repo_root: repo.path().to_path_buf(),
-            ..Config::default()
-        };
-
-        assert_eq!(cmd_index(config.clone(), false, false, true), 0);
-
-        fs::write(&file, "fn second_version() {}\n").unwrap();
-        assert_eq!(cmd_index(config.clone(), false, false, true), 0);
-
-        let index = Index::open(config).unwrap();
-        let opts = SearchOptions::default();
-        let first = index.search("first_version", &opts).unwrap();
-        let second = index.search("second_version", &opts).unwrap();
-
-        assert!(first.is_empty(), "old content should be gone after rebuild");
-        assert_eq!(
-            second.len(),
-            1,
-            "new content should be indexed after rebuild"
-        );
-    }
-
-    #[test]
-    fn render_with_context_emits_separator_between_blocks() {
-        use std::fs;
-        let dir = tempfile::TempDir::new().unwrap();
-
-        // 20-line file; matches on lines 3 and 18 (far enough apart that context=2 creates two separate blocks).
-        let content: String = (1..=20)
-            .map(|i| {
-                if i == 3 || i == 18 {
-                    format!("target_token line {i}\n")
-                } else {
-                    format!("other line {i}\n")
-                }
-            })
-            .collect();
-        let path = dir.path().join("sample.rs");
-        fs::write(&path, &content).unwrap();
-
-        let matches = vec![
-            crate::SearchMatch {
-                path: std::path::PathBuf::from("sample.rs"),
-                line_number: 3,
-                line_content: b"target_token line 3".to_vec(),
-                byte_offset: 0,
-                submatch_start: 0,
-                submatch_end: "target_token".len(),
-            },
-            crate::SearchMatch {
-                path: std::path::PathBuf::from("sample.rs"),
-                line_number: 18,
-                line_content: b"target_token line 18".to_vec(),
-                byte_offset: 0,
-                submatch_start: 0,
-                submatch_end: "target_token".len(),
-            },
-        ];
-
-        let config = Config {
-            repo_root: dir.path().to_path_buf(),
-            ..Config::default()
-        };
-
-        let args = super::search::SearchArgs {
-            pattern: "target_token".to_string(),
-            after_context: 2,
-            before_context: 2,
-            ..super::search::SearchArgs::default()
-        };
-
-        let mut buf = Vec::<u8>::new();
-        super::render::render_with_context_to(&config, &matches, &args, &mut buf).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-
-        // Should contain a -- separator between the two non-contiguous context blocks.
-        // Block 1: lines 1-5 (around match at line 3)
-        // Block 2: lines 16-20 (around match at line 18)
-        // Gap between: lines 6-15 are not printed.
-        assert!(
-            output.contains("--\n"),
-            "Expected '--' separator between context blocks, got:\n{output}"
-        );
-
-        // Match lines should use ':' separator.
-        assert!(
-            output.contains(":target_token line 3"),
-            "Expected ':' for match line"
-        );
-        assert!(
-            output.contains(":target_token line 18"),
-            "Expected ':' for match line"
-        );
-
-        // Context lines should use '-' separator.
-        assert!(
-            output.contains("-other line 1") || output.contains("-other line 2"),
-            "Expected '-' for context lines before first match"
-        );
-    }
-
-    #[test]
-    fn json_output_is_ndjson_with_type_envelope() {
-        let m = crate::SearchMatch {
-            path: std::path::PathBuf::from("src/foo.rs"),
-            line_number: 5,
-            line_content: b"fn foo() {}".to_vec(),
-            byte_offset: 3,
-            submatch_start: 3,
-            submatch_end: 6,
-        };
-        let line = super::render::format_match_json(&m);
-        let parsed: serde_json::Value = serde_json::from_str(&line).expect("must be valid JSON");
-        assert_eq!(parsed["type"], "match");
-        assert_eq!(parsed["data"]["line_number"], 5);
-        assert_eq!(parsed["data"]["lines"]["text"], "fn foo() {}\n");
-        assert_eq!(parsed["data"]["path"]["text"], "src/foo.rs");
-    }
-
-    #[test]
-    fn cmd_update_on_repo_with_no_commits() {
-        let repo = tempfile::TempDir::new().unwrap();
-        let index_dir = tempfile::TempDir::new().unwrap();
-
-        // Initialize git repo with no commits.
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(["init"])
-            .output()
-            .unwrap();
-
-        // Create a file and build the index.
-        fs::write(repo.path().join("hello.rs"), "fn hello() {}\n").unwrap();
-        let config = Config {
-            index_dir: index_dir.path().to_path_buf(),
-            repo_root: repo.path().to_path_buf(),
-            ..Config::default()
-        };
-        assert_eq!(cmd_index(config.clone(), false, false, true), 0);
-
-        // cmd_update should not crash on a repo with no commits.
-        // git diff HEAD fails, but we fall through to untracked file detection.
-        let code = cmd_update(config, false, true);
-        assert_ne!(
-            code, 2,
-            "cmd_update should not error on repo with no commits"
-        );
-    }
-
-    #[test]
-    fn max_file_size_is_clamped_to_1gb() {
-        // Use clamp_max_file_size() directly rather than setting the env var.
-        // std::env::set_var is not thread-safe: the test harness runs tests in
-        // parallel, so a set_var / remove_var pair in one test can affect any
-        // concurrent test that reads SYNTEXT_MAX_FILE_SIZE from the environment,
-        // causing non-deterministic failures. Testing the inner function avoids
-        // the global process state entirely.
-        let result = super::clamp_max_file_size(Some(2_147_483_648)); // 2 GiB raw
-        assert_eq!(
-            result,
-            super::MAX_FILE_SIZE_CEILING,
-            "value above 1 GiB must be clamped to MAX_FILE_SIZE_CEILING"
-        );
-        // The +1 used in commit_batch must not overflow after clamping.
-        assert!(
-            result.checked_add(1).is_some(),
-            "clamped value + 1 must not overflow"
-        );
-    }
-}
+mod tests;
