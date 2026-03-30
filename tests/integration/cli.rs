@@ -320,6 +320,35 @@ fn multiple_path_arguments_are_all_searched() {
 }
 
 #[test]
+fn overlapping_path_scopes_do_not_duplicate_matches() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.rs"), "needle once\n");
+    write_text(&repo.path().join("src/two.rs"), "needle twice\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["needle", "src", "src/one.rs"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&output),
+        "src/one.rs:needle once\nsrc/two.rs:needle twice\n"
+    );
+}
+
+#[test]
+fn exact_file_scope_does_not_match_similar_prefix_paths() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/foo.rs"), "needle target\n");
+    write_text(&repo.path().join("src/foo.rs.bak"), "needle backup\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(repo.path(), index.path(), &["needle", "src/foo.rs"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_text(&output), "needle target\n");
+}
+
+#[test]
 fn binary_file_is_skipped_in_cli_search_results() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();

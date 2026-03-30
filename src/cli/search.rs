@@ -4,6 +4,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::index::Index;
+use crate::path::filter::matches_path_filter;
 use crate::path_util::path_bytes;
 use crate::{Config, SearchOptions};
 
@@ -164,18 +165,28 @@ pub(super) fn run_search(
 ) -> Result<Vec<crate::SearchMatch>, crate::IndexError> {
     let effective_pattern = build_effective_pattern(args);
     let explicit_specs = explicit_path_specs(&config.repo_root, &args.paths);
-
-    let opts = SearchOptions {
-        case_insensitive: args.ignore_case,
-        file_type: args.file_type.clone(),
-        exclude_type: args.type_not.clone(),
-        max_results: None,
-        path_filter: args.glob.clone(),
+    let mut results = if explicit_specs.is_empty() {
+        index.search(&effective_pattern, &search_options(args, args.glob.clone()))?
+    } else {
+        let mut merged = Vec::new();
+        for spec in &explicit_specs {
+            merged.extend(index.search(
+                &effective_pattern,
+                &search_options(args, Some(spec.path_filter())),
+            )?);
+        }
+        sort_and_dedup_matches(merged)
     };
-
-    let mut results = index.search(&effective_pattern, &opts)?;
-    if !explicit_specs.is_empty() {
-        results.retain(|m| matches_any_explicit_path(&m.path, &explicit_specs));
+    if !explicit_specs.is_empty() || args.glob.is_some() {
+        results.retain(|m| {
+            matches_any_explicit_path(&m.path, &explicit_specs)
+                && matches_optional_glob(
+                    &m.path,
+                    args.file_type.as_deref(),
+                    args.type_not.as_deref(),
+                    args.glob.as_deref(),
+                )
+        });
     }
     if let Some(limit) = args.max_count {
         results = truncate_matches_per_file(results, limit);
@@ -230,6 +241,17 @@ struct ExplicitPathSpec {
     is_dir: bool,
 }
 
+impl ExplicitPathSpec {
+    fn path_filter(&self) -> String {
+        let rel = self.rel_path.to_string_lossy();
+        if self.is_dir {
+            format!("{rel}/")
+        } else {
+            rel.into_owned()
+        }
+    }
+}
+
 fn explicit_path_specs(repo_root: &Path, paths: &[PathBuf]) -> Vec<ExplicitPathSpec> {
     paths
         .iter()
@@ -241,7 +263,7 @@ fn explicit_path_specs(repo_root: &Path, paths: &[PathBuf]) -> Vec<ExplicitPathS
 }
 
 fn matches_any_explicit_path(path: &Path, specs: &[ExplicitPathSpec]) -> bool {
-    specs.iter().any(|spec| explicit_path_matches(path, spec))
+    specs.is_empty() || specs.iter().any(|spec| explicit_path_matches(path, spec))
 }
 
 fn explicit_path_matches(path: &Path, spec: &ExplicitPathSpec) -> bool {
@@ -298,4 +320,42 @@ fn normalize_relative_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+fn search_options(args: &SearchArgs, path_filter: Option<String>) -> SearchOptions {
+    SearchOptions {
+        case_insensitive: args.ignore_case,
+        file_type: args.file_type.clone(),
+        exclude_type: args.type_not.clone(),
+        max_results: None,
+        path_filter,
+    }
+}
+
+fn matches_optional_glob(
+    path: &Path,
+    file_type: Option<&str>,
+    exclude_type: Option<&str>,
+    path_glob: Option<&str>,
+) -> bool {
+    matches_path_filter(path, file_type, exclude_type, path_glob)
+}
+
+fn sort_and_dedup_matches(mut matches: Vec<crate::SearchMatch>) -> Vec<crate::SearchMatch> {
+    matches.sort_unstable_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.line_number.cmp(&b.line_number))
+            .then_with(|| a.byte_offset.cmp(&b.byte_offset))
+            .then_with(|| a.submatch_start.cmp(&b.submatch_start))
+            .then_with(|| a.submatch_end.cmp(&b.submatch_end))
+    });
+    matches.dedup_by(|a, b| {
+        a.path == b.path
+            && a.line_number == b.line_number
+            && a.byte_offset == b.byte_offset
+            && a.submatch_start == b.submatch_start
+            && a.submatch_end == b.submatch_end
+    });
+    matches
 }
