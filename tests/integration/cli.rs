@@ -704,7 +704,7 @@ fn non_utf8_filenames_work_with_glob_and_type_filters() {
         &["-F", "-g", "src/", "-t", "rs", "needle"],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(output.stdout, b"src/odd\xff.rs:1:needle\n");
+    assert_eq!(output.stdout, b"src/odd\xff.rs:needle\n");
 }
 
 #[test]
