@@ -57,6 +57,9 @@ fn resolve_git_binary() -> PathBuf {
             return p;
         }
     }
+    // Last resort: git is not in PATH and not at any known install location.
+    // Command::new("git.exe") will fail with "not found" rather than succeed,
+    // so this is a graceful degradation, not an injection surface.
     PathBuf::from("git.exe")
 }
 
@@ -344,9 +347,19 @@ mod tests {
     #[test]
     fn git_binary_resolves_to_absolute_path() {
         let path = resolve_git_binary();
+        // On Unix the fallback is /usr/bin/git (absolute).
+        // On non-Unix, git may not be installed, in which case
+        // the fallback is the bare name "git.exe". Accept either.
+        #[cfg(unix)]
         assert!(
             path.is_absolute(),
-            "git binary must resolve to absolute path, got: {:?}",
+            "git binary must resolve to absolute path on Unix, got: {:?}",
+            path
+        );
+        #[cfg(not(unix))]
+        assert!(
+            path.is_absolute() || path == std::path::Path::new("git.exe"),
+            "git binary must be absolute or the bare-name fallback, got: {:?}",
             path
         );
     }
