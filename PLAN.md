@@ -338,3 +338,4 @@ These are tracked as v1.1+ work and must not block the release:
 - **Rate limiting on commit_batch**: accepted risk AR-002
 - **Persistent overlay (Cow/persistent map)**: optimization for large overlays
 - **Two-file dictionary-only mmap**: separate dictionary from postings for large indexes
+- **v/--invert-match is still limited to indexed candidate files, not true corpus-wide ripgrep parity.**
