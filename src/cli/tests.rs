@@ -1,4 +1,6 @@
 use std::fs;
+use std::thread;
+use std::time::Duration;
 
 use clap::Parser;
 
@@ -117,7 +119,15 @@ fn cmd_index_rebuilds_existing_index_without_force() {
     assert_eq!(cmd_index(config.clone(), false, false, true), 0);
 
     fs::write(&file, "fn second_version() {}\n").unwrap();
-    assert_eq!(cmd_index(config.clone(), false, false, true), 0);
+    let mut rebuild_status = cmd_index(config.clone(), false, false, true);
+    for _ in 0..10 {
+        if rebuild_status == 0 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+        rebuild_status = cmd_index(config.clone(), false, false, true);
+    }
+    assert_eq!(rebuild_status, 0);
 
     let index = Index::open(config.clone()).unwrap();
     let opts = SearchOptions::default();

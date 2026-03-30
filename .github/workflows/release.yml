@@ -167,7 +167,20 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Detect existing crates.io release
+        id: crate
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VER="${VERSION#v}"
+          if curl -fsSL "https://crates.io/api/v1/crates/syntext/${VER}" >/dev/null; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: cargo publish
+        if: steps.crate.outputs.published != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish
@@ -175,6 +188,7 @@ jobs:
   update-homebrew-cask:
     name: Update Homebrew Cask
     needs: [release]
+    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
