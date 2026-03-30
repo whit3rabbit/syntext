@@ -61,3 +61,15 @@ pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Met
         Err(_) => false,
     }
 }
+
+/// Non-Unix stub for `verify_fd_matches_stat`.
+///
+/// On non-Unix platforms (Windows, WASM), inode comparison is unavailable on
+/// stable Rust. The stub always returns `true`, degrading TOCTOU protection.
+/// Phase 3 of windows support will add `GetFileInformationByHandle`-based
+/// verification for Windows. WASM callers provide content directly via
+/// `WasmIndex::new` and never reach the filesystem path.
+#[cfg(not(unix))]
+pub fn verify_fd_matches_stat(_file: &std::fs::File, _pre_open_meta: &std::fs::Metadata) -> bool {
+    true
+}
