@@ -1,10 +1,7 @@
 //! Management subcommand handlers: index, status, update.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
 use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::index::Index;
@@ -12,29 +9,22 @@ use crate::Config;
 
 /// Resolves the absolute path to the `git` binary by walking PATH entries.
 ///
-/// Unix-only: the fallback `/usr/bin/git` is a Unix path. This crate
-/// already requires Unix via `compile_error!` in `index/io_util.rs`.
+/// On Unix: searches PATH, canonicalizes each candidate, falls back to
+/// `/usr/bin/git`. On non-Unix (Windows): searches PATH for `git.exe`,
+/// falls back to common Git for Windows install locations.
 ///
 /// Using `Command::new("git")` would resolve via `$PATH`, allowing a
 /// malicious `git` binary earlier on PATH to intercept the call.
 /// This function walks PATH explicitly, resolves symlinks via `canonicalize`,
-/// and falls back to `/usr/bin/git` rather than a bare name.
+/// and falls back to a known location rather than a bare name.
 ///
 /// Security note: `canonicalize` + `is_file` narrows but does not eliminate
-/// the TOCTOU window between path resolution and `Command::new` exec. The
-/// resolved canonical path refers to the same inode that was checked, so a
-/// symlink swap after canonicalize cannot redirect the exec. However, the
-/// binary itself could still be replaced between canonicalize and exec if the
-/// directory containing it is writable. Index directories should not be
-/// world-writable; `--repo-root` must not be sourced from untrusted input.
+/// the TOCTOU window between path resolution and `Command::new` exec.
 #[cfg(unix)]
 fn resolve_git_binary() -> PathBuf {
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join("git");
-            // `is_file()` follows symlinks; canonicalize resolves them so the
-            // returned path is the real inode location, not an intermediary
-            // symlink that could be replaced after the is_file() check.
             if candidate.is_file() {
                 if let Ok(resolved) = candidate.canonicalize() {
                     return resolved;
@@ -45,13 +35,37 @@ fn resolve_git_binary() -> PathBuf {
     PathBuf::from("/usr/bin/git")
 }
 
+#[cfg(not(unix))]
+fn resolve_git_binary() -> PathBuf {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("git.exe");
+            if candidate.is_file() {
+                if let Ok(resolved) = candidate.canonicalize() {
+                    return resolved;
+                }
+            }
+        }
+    }
+    // Common Git for Windows install locations.
+    for fallback in &[
+        r"C:\Program Files\Git\bin\git.exe",
+        r"C:\Program Files (x86)\Git\bin\git.exe",
+    ] {
+        let p = PathBuf::from(fallback);
+        if p.is_file() {
+            return p;
+        }
+    }
+    PathBuf::from("git.exe")
+}
+
 /// Returns `true` if a path line from git stdout is safe to use as a
 /// repo-relative path.
 ///
 /// Rejects: empty strings, absolute paths, and any path containing a
 /// parent-directory component (`..`). Git always emits repo-relative
 /// paths; anything else is unexpected and potentially hostile.
-#[cfg(unix)]
 fn is_safe_git_path(path: &Path) -> bool {
     if path.as_os_str().is_empty() {
         return false;
@@ -64,6 +78,24 @@ fn is_safe_git_path(path: &Path) -> bool {
         }
     }
     true
+}
+
+/// Convert a NUL-terminated byte slice (from git stdout with `-z`) to a `PathBuf`.
+///
+/// On Unix: preserves non-UTF-8 byte sequences using `OsStringExt::from_vec`.
+/// On non-Unix (Windows): git emits UTF-8 paths in all standard configurations;
+/// non-UTF-8 bytes are replaced with U+FFFD (lossy conversion).
+fn bytes_to_path(s: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(OsString::from_vec(s.to_vec()))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(s).into_owned())
+    }
 }
 
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
@@ -194,7 +226,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let parse_nul_paths = |bytes: &[u8]| -> Vec<PathBuf> {
         bytes
             .split(|&b| b == 0)
-            .map(|s| PathBuf::from(OsStr::from_bytes(s)))
+            .map(bytes_to_path)
             .filter(|path| is_safe_git_path(path))
             .collect()
     };
@@ -304,10 +336,8 @@ mod tests {
     use std::ffi::OsStr;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
-    #[cfg(unix)]
     use std::path::{Path, PathBuf};
 
-    #[cfg(unix)]
     use super::is_safe_git_path;
     use super::resolve_git_binary;
 
@@ -321,7 +351,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn is_safe_git_path_rejects_traversal_and_absolute() {
         assert!(!is_safe_git_path(Path::new("../../etc/passwd")));
