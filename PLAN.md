@@ -334,7 +334,7 @@ These are tracked as v1.1+ work and must not block the release:
 - **Dual dictionary** (case-sensitive + case-insensitive): ~2x dictionary size
 - **Overlapping trigrams**: ~3.5x index size increase for non-aligned substring coverage
 - **PCRE2 support**: behind feature flag, deferred indefinitely
-- **Windows support**: compile_error! in io_util.rs, deliberate
+- **Windows support**: Phase 1 (functional, degraded security) complete. Phase 2 (Windows-native O_NOFOLLOW via FILE_FLAG_OPEN_REPARSE_POINT and ACL enforcement) is future work.
 - **Rate limiting on commit_batch**: accepted risk AR-002
 - **Persistent overlay (Cow/persistent map)**: optimization for large overlays
 - **Two-file dictionary-only mmap**: separate dictionary from postings for large indexes
