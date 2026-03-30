@@ -82,10 +82,20 @@ See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, index build times,
 ## Usage
 
 ```bash
-# Build the index
-st index --stats
+# Build the index (run once per repo, then only after large changes)
+# Index is stored in .syntext/ at the repo root (nearest .git ancestor).
+# Not run automatically -- you must run this before the first search.
+st index
+st index --stats                    # show file count and index size after build
 
-# Search the whole repo
+# Override where the index is stored or which root to index
+st --repo-root /path/to/repo index
+st --index-dir /tmp/my-index index
+
+# After editing files, sync the index incrementally (faster than full rebuild)
+st update
+
+# Search the whole repo (index must exist)
 st "fn parse_query"                 # regex
 st -F "parse_query("                # literal (metacharacters stay literal)
 st -i "parsequery"                  # case-insensitive
@@ -103,9 +113,6 @@ st -g "src/" "TODO"                 # restrict by glob
 st -c "parse_query" src/lib.rs      # count matches in one file
 st -l "parse_query"                 # print matching file paths
 st --json "TODO"                    # NDJSON output for tooling
-
-# Incremental update after edits
-st update
 
 # Status
 st status
