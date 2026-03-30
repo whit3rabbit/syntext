@@ -15,8 +15,9 @@ pub type FileRecord = (PathBuf, PathBuf, u64);
 pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
     let mut files: Vec<FileRecord> = Vec::new();
     let canonical_root = fs::canonicalize(&config.repo_root)?;
-    // Track canonical paths already queued via symlinks so that N symlinks
-    // pointing at the same target don't produce N copies of its contents.
+    // Track canonical paths so that symlinks to already-indexed files are
+    // skipped.  Regular files are processed first (pass 1) so that a real
+    // file always wins over any symlink alias to it, regardless of walk order.
     let mut seen_canonical: HashSet<PathBuf> = HashSet::new();
 
     let walker = WalkBuilder::new(&config.repo_root)
@@ -24,6 +25,9 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
         .git_ignore(true)
         .follow_links(false)
         .build();
+
+    // Pass 1: regular files.  Buffer symlink paths for pass 2.
+    let mut symlink_paths: Vec<PathBuf> = Vec::new();
 
     for result in walker {
         let entry = match result {
@@ -36,19 +40,19 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
         };
 
         if file_type.is_symlink() {
-            collect_symlink_entry(
-                path,
-                &config.repo_root,
-                &canonical_root,
-                config.max_file_size,
-                &mut files,
-                &mut seen_canonical,
-            );
+            symlink_paths.push(path.to_path_buf());
             continue;
         }
 
         if !file_type.is_file() {
             continue;
+        }
+
+        // Register the canonical path so that any symlink pointing here is
+        // deduplicated in pass 2.  If canonicalize fails (e.g. a race with
+        // deletion) we still index the file rather than silently dropping it.
+        if let Ok(canonical) = fs::canonicalize(path) {
+            seen_canonical.insert(canonical);
         }
         push_file_record(
             path.to_path_buf(),
@@ -56,6 +60,20 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
             &config.repo_root,
             config.max_file_size,
             &mut files,
+        );
+    }
+
+    // Pass 2: symlinks.  seen_canonical is now fully populated from all
+    // regular files, so any alias pointing to an already-indexed file is
+    // dropped instead of creating a duplicate index entry.
+    for symlink_path in symlink_paths {
+        collect_symlink_entry(
+            &symlink_path,
+            &config.repo_root,
+            &canonical_root,
+            config.max_file_size,
+            &mut files,
+            &mut seen_canonical,
         );
     }
 
@@ -314,10 +332,48 @@ mod tests {
             .iter()
             .filter(|(_, rel, _)| rel.to_str().unwrap_or("").starts_with("alias"))
             .collect();
+        // The real file is indexed; all symlink aliases must be suppressed.
         assert!(
-            symlinked_files.len() <= 1,
-            "multiple symlinks to the same file target must not create duplicates, got {}",
-            symlinked_files.len()
+            symlinked_files.is_empty(),
+            "symlink aliases to an already-indexed real file must not appear in results, got: {:?}",
+            symlinked_files.iter().map(|(_, r, _)| r).collect::<Vec<_>>()
+        );
+        let real_files: Vec<_> = files
+            .iter()
+            .filter(|(_, rel, _)| rel.to_str().unwrap_or("") == "real.rs")
+            .collect();
+        assert_eq!(real_files.len(), 1, "the real file must appear exactly once");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enumerate_files_real_file_wins_over_symlink_alias() {
+        use std::os::unix::fs::symlink;
+
+        let repo = TempDir::new().unwrap();
+        let real = repo.path().join("real.rs");
+        fs::write(&real, b"fn original() {}\n").unwrap();
+        // Create a symlink that points to the real file.
+        symlink(&real, repo.path().join("alias.rs")).unwrap();
+
+        let config = Config {
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let files = enumerate_files(&config).unwrap();
+
+        // Only one entry should exist (the real file).
+        assert_eq!(
+            files.len(),
+            1,
+            "real file + symlink to it must produce exactly one index entry, got: {:?}",
+            files.iter().map(|(_, r, _)| r).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            files[0].1,
+            std::path::PathBuf::from("real.rs"),
+            "the surviving entry must be the real file, not the symlink"
         );
     }
 }
