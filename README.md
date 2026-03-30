@@ -59,18 +59,7 @@ cargo install syntext
 
 ## Benchmarks
 
-Search latency across five real-world repositories (v1.0, macOS, Apple Silicon). `grep` is not available for the Linux preset.
-
-```mermaid
-%%{init: {'xyChart': {'chartOrientation': 'horizontal', 'width': 800, 'height': 380}}}%%
-xychart-beta
-    title "Search latency (ms, lower is better)"
-    x-axis 0 --> 4000
-    y-axis ["React", "Rust", "TypeScript", "Node", "Linux"]
-    bar "st" [21, 100, 112, 70, 155]
-    bar "rg" [113, 2183, 3094, 1493, 3681]
-    bar "grep" [314, 2413, 3172, 3186, 0]
-```
+Search latency across five real-world repositories (v1.0, macOS, Apple Silicon).
 
 | Repo | `st` avg | `rg` avg | `grep` avg | Speedup vs `rg` |
 |---|---:|---:|---:|---:|
