@@ -34,6 +34,7 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 | serde, serde_json | manifest serialization |
 | uuid | segment IDs (v4) |
 | xxhash-rust | checksums (xxh64) |
+| wasm-bindgen, js-sys | WASM bindings (`wasm` feature only) |
 | tree-sitter | optional symbol extraction (Tier 1 languages) |
 | rusqlite | optional symbol index storage (bundled, behind `symbols` feature) |
 | criterion | benchmarks (dev-only) |
@@ -47,6 +48,26 @@ These are non-negotiable ordering constraints:
 1. **Weight table first** (`src/tokenizer/weights.rs`). Train from real GitHub source (Rust, Python, TypeScript, Go, Java). Every module depends on good grams. Validate by eyeballing grams on real files.
 2. **Ripgrep correctness test before index**. Fixture repo with edge cases (unicode, empty files, whitespace-only, long lines, binary-looking text). Run ripgrep for expected output. SC-004: results identical to ripgrep.
 3. **HIR walker edge case**: `(foo)?bar` correctly produces `Grams("bar")` only, not `And(Grams("foo"), Grams("bar"))`. This is correct (pattern matches `bar` alone). Do not "fix" this. Test it explicitly.
+
+## WASM build
+
+```sh
+# Type-check only (fast)
+cargo check --target wasm32-unknown-unknown --features wasm --no-default-features
+
+# Full build (requires wasm-pack)
+cargo install wasm-pack
+wasm-pack build --target bundler -- --features wasm --no-default-features
+# output: pkg/  (syntext_bg.wasm, syntext.js, syntext.d.ts, package.json)
+
+# Other targets
+wasm-pack build --target nodejs  -- --features wasm --no-default-features
+wasm-pack build --target web     -- --features wasm --no-default-features
+```
+
+The `wasm` feature enables `WasmIndex` in `src/wasm.rs` via `src/index/wasm_index.rs`.
+All documents live in the overlay (no disk writes, no mmap, no locking).
+The `wasm32-unknown-unknown` target is also added in `release.yml` as a `build-wasm` job.
 
 ## Commands
 
@@ -217,7 +238,8 @@ All PRs must pass before merge:
 ```
 src/
   lib.rs                      # public API (Index, Config, SearchOptions)
-  main.rs                     # binary entry point (st)
+  main.rs                     # binary entry point (st); empty stub on wasm32
+  wasm.rs                     # wasm-bindgen WasmIndex public API (wasm feature only)
   base64.rs                   # base64 encoding helpers
   path_util.rs                # path normalization utilities
   tokenizer/
@@ -250,6 +272,7 @@ src/
     pending.rs                # PendingEdits buffer for incremental updates
     stats.rs                  # index statistics computation
     walk.rs                   # directory walking / file discovery
+    wasm_index.rs             # InMemoryIndex for wasm32 (no disk I/O, wasm feature only)
   posting/
     mod.rs                    # posting list types + adaptive intersection/union
     roaring_util.rs           # Roaring bitmap integration for dense terms

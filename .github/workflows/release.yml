@@ -99,9 +99,42 @@ jobs:
           name: ${{ matrix.suffix }}
           path: dist/
 
+  build-wasm:
+    name: WASM (bundler)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM package
+        run: wasm-pack build --target bundler -- --features wasm --no-default-features
+
+      - name: Package artifact
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VER="${VERSION#v}"
+          mkdir -p dist
+          tar -czf "dist/syntext-wasm-${VER}.tar.gz" -C pkg .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-bundler
+          path: dist/
+
   release:
     name: Publish GitHub Release
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, build-wasm]
     runs-on: ubuntu-latest
     permissions:
       contents: write

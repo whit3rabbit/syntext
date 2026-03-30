@@ -201,6 +201,40 @@ index.commit_batch()?;  // atomic visibility
 let fresh_results = index.search("new_function", &SearchOptions::default())?;
 ```
 
+## WASM / Browser / Node.js
+
+The `wasm` Cargo feature compiles syntext to a fully in-memory index with no filesystem access. Files are provided by the caller as a JS object mapping paths to `Uint8Array` content.
+
+### Build from source
+
+```bash
+cargo install wasm-pack
+wasm-pack build --target bundler -- --features wasm --no-default-features
+# output: pkg/  (JS glue + .wasm + TypeScript types)
+```
+
+Alternatively, download `syntext-wasm-<version>.tar.gz` from the [releases page](https://github.com/whit3rabbit/syntext/releases).
+
+### Usage
+
+```js
+import init, { WasmIndex } from "./syntext_bg.js";
+
+await init();
+
+const enc = new TextEncoder();
+const idx = new WasmIndex({
+  "src/lib.rs": enc.encode("pub fn build_index() {}"),
+  "src/main.rs": enc.encode('fn main() { println!("hello"); }'),
+});
+
+const matches = idx.search("build_index");
+// [{path: "src/lib.rs", line_number: 1, line_content: "pub fn build_index() {}",
+//   submatch_start: 7, submatch_end: 18}]
+```
+
+The `WasmIndex` constructor indexes everything up front; `search()` is synchronous and can be called repeatedly. Accepts any pattern that the native `st` CLI accepts (literal, regex, `-F` flag behavior is not exposed at the WASM level).
+
 ## Weight table
 
 `src/tokenizer/weights.rs` is a pre-trained `[u16; 65536]` byte-pair frequency table. Rare pairs get high weights (gram boundaries), common pairs get low weights (gram interiors).
