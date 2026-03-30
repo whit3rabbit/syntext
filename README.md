@@ -184,6 +184,7 @@ wasm-pack build --target bundler -- --features wasm --no-default-features
 5. **Case-insensitive overhead**: ~15-20% more candidates due to lowercase normalization. Correct results guaranteed by verifier.
 6. **`\r`-only line endings**: Treated as a single line (matches ripgrep behavior).
 7. **Symbol search accuracy**: Tier 3 (heuristic) results are approximate. Tree-sitter failures fall back silently.
+8. **One root per index**: Each index covers exactly one `--repo-root`. There is no way to merge multiple directories into a single index. To search across two repos, build and query each index separately with `--repo-root`. `st update` requires a git repo; non-git directories must be re-indexed with `st index`.
 
 ## Design documents
 
