@@ -461,3 +461,40 @@ fn incremental_base_changed_reassigns_doc_ids() {
     );
     assert_eq!(a_new_id, 20, "first doc starts at new base_doc_count");
 }
+
+#[test]
+fn commit_does_not_clone_base_doc_to_file_id() {
+    use syntext::index::Index;
+    use syntext::Config;
+    use tempfile::TempDir;
+
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    for i in 0..10u8 {
+        let name = format!("base_{i}.rs");
+        std::fs::write(repo.path().join(&name), format!("fn f{i}() {{}}\n")).unwrap();
+    }
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    let snap_before = index.snapshot();
+    let ptr_before = Arc::as_ptr(&snap_before.base_doc_to_file_id);
+
+    let new_file = repo.path().join("new.rs");
+    std::fs::write(&new_file, b"fn beta() {}\n").unwrap();
+    index.notify_change(&new_file).unwrap();
+    index.commit_batch().unwrap();
+
+    let snap_after = index.snapshot();
+    let ptr_after = Arc::as_ptr(&snap_after.base_doc_to_file_id);
+    assert_eq!(
+        ptr_before, ptr_after,
+        "base_doc_to_file_id Arc must be shared across commits"
+    );
+}

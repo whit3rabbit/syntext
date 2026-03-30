@@ -52,6 +52,12 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
         .map(|i| indexed_paths[(i * stride).min(total - 1)].as_path())
         .collect();
 
+    // Warm the page cache first so we do not calibrate against first-read
+    // latency right after a clone or reboot.
+    for path in &sample_paths {
+        let _ = std::fs::read(config.repo_root.join(path));
+    }
+
     let mut docs_read = 0usize;
     // Use u128 to match as_nanos() return type; avoids silent truncation on
     // platforms where accumulated sample time would overflow u64 (~584 years

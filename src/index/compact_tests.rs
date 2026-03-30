@@ -58,11 +58,11 @@ fn build_snapshot(
     all_paths.sort_unstable();
     all_paths.dedup();
     let path_index = PathIndex::build(&all_paths);
-    let mut doc_to_file_id = vec![u32::MAX; total_docs as usize];
+    let mut base_doc_to_file_id = vec![u32::MAX; total_docs as usize];
     for (global_doc_id, path) in base_doc_paths.iter().enumerate() {
         if let Some(path) = path {
             if let Some(file_id) = path_index.file_id(path) {
-                doc_to_file_id[global_doc_id] = file_id;
+                base_doc_to_file_id[global_doc_id] = file_id;
             }
         }
     }
@@ -77,7 +77,8 @@ fn build_snapshot(
         overlay,
         delete_set,
         path_index,
-        doc_to_file_id,
+        Arc::new(base_doc_to_file_id),
+        HashMap::new(),
         0.10,
     );
     (dir, snapshot, seg_refs)

@@ -212,21 +212,23 @@ impl Index {
                 "manifest claims {max_global_id_exclusive} total docs, exceeds safety limit of {MAX_TOTAL_DOCS}"
             )));
         }
-        let mut doc_to_file_id = vec![u32::MAX; max_global_id_exclusive as usize];
+        let mut base_doc_to_file_id = vec![u32::MAX; max_global_id_exclusive as usize];
         for (gid, path) in base.base_doc_paths.iter().enumerate() {
             if let Some(path) = path {
                 if let Some(fid) = path_index.file_id(path) {
-                    doc_to_file_id[gid] = fid;
+                    base_doc_to_file_id[gid] = fid;
                 }
             }
         }
+        let base_doc_to_file_id = Arc::new(base_doc_to_file_id);
 
         let snapshot = Arc::new(snapshot::new_snapshot(
             base,
             OverlayView::empty(),
             RoaringBitmap::new(),
             path_index,
-            doc_to_file_id,
+            base_doc_to_file_id,
+            HashMap::new(),
             scan_threshold,
         ));
 

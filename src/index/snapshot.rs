@@ -45,9 +45,11 @@ pub struct IndexSnapshot {
     pub delete_set: RoaringBitmap,
     /// Roaring-bitmap component index for path-scoped queries.
     pub path_index: PathIndex,
-    /// Maps global doc_id -> PathIndex file_id for O(1) path filter lookup.
+    /// Maps base doc_id -> PathIndex file_id for O(1) path filter lookup.
     /// Value is u32::MAX for docs with no PathIndex entry.
-    pub doc_to_file_id: Vec<u32>,
+    pub base_doc_to_file_id: Arc<Vec<u32>>,
+    /// Maps overlay doc_id -> PathIndex file_id. Rebuilt on each commit.
+    pub overlay_doc_to_file_id: HashMap<u32, u32>,
     /// Cached bitmap of all valid doc IDs. Lazy-initialized on first access.
     all_doc_ids_cache: OnceLock<RoaringBitmap>,
     /// Cached merged posting bitmaps for repeated gram lookups in this snapshot.
@@ -125,7 +127,8 @@ impl IndexSnapshot {
             overlay: self.overlay.clone(),
             delete_set: self.delete_set.clone(),
             path_index: self.path_index.clone(),
-            doc_to_file_id: self.doc_to_file_id.clone(),
+            base_doc_to_file_id: Arc::clone(&self.base_doc_to_file_id),
+            overlay_doc_to_file_id: self.overlay_doc_to_file_id.clone(),
             scan_threshold: self.scan_threshold,
             all_doc_ids_cache: OnceLock::new(),
             posting_bitmap_cache: OnceLock::new(),
@@ -166,7 +169,8 @@ pub fn new_snapshot(
     overlay: crate::index::overlay::OverlayView,
     delete_set: roaring::RoaringBitmap,
     path_index: crate::path::PathIndex,
-    doc_to_file_id: Vec<u32>,
+    base_doc_to_file_id: Arc<Vec<u32>>,
+    overlay_doc_to_file_id: HashMap<u32, u32>,
     scan_threshold: f64,
 ) -> IndexSnapshot {
     IndexSnapshot {
@@ -174,7 +178,8 @@ pub fn new_snapshot(
         overlay,
         delete_set,
         path_index,
-        doc_to_file_id,
+        base_doc_to_file_id,
+        overlay_doc_to_file_id,
         scan_threshold,
         all_doc_ids_cache: OnceLock::new(),
         posting_bitmap_cache: OnceLock::new(),

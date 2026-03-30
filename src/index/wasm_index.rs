@@ -51,11 +51,10 @@ impl InMemoryIndex {
         all_paths.dedup();
         let path_index = PathIndex::build(&all_paths);
 
-        let max_id = overlay.docs.iter().map(|d| d.doc_id).max().unwrap_or(0);
-        let mut doc_to_file_id = vec![u32::MAX; (max_id + 1) as usize];
+        let mut overlay_doc_to_file_id = HashMap::new();
         for doc in &overlay.docs {
             if let Some(fid) = path_index.file_id(&doc.path) {
-                doc_to_file_id[doc.doc_id as usize] = fid;
+                overlay_doc_to_file_id.insert(doc.doc_id, fid);
             }
         }
 
@@ -71,7 +70,8 @@ impl InMemoryIndex {
             overlay,
             RoaringBitmap::new(),
             path_index,
-            doc_to_file_id,
+            Arc::new(Vec::new()),
+            overlay_doc_to_file_id,
             0.10,
         ));
 

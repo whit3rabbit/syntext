@@ -964,7 +964,8 @@ fn base_doc_id_limit_overflow_returns_error() {
         crate::index::overlay::OverlayView::empty(),
         roaring::RoaringBitmap::new(),
         crate::path::PathIndex::build(&[]),
-        vec![],
+        Arc::new(vec![]),
+        std::collections::HashMap::new(),
         0.10,
     );
     let result = helpers::base_doc_id_limit(&snap);

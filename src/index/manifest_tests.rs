@@ -24,6 +24,7 @@ fn load_accepts_normal_manifest() {
 
     let loaded = Manifest::load(dir.path()).unwrap();
     assert_eq!(loaded.total_docs(), 0);
+    assert!(loaded.checksum.is_some(), "saved manifests must carry checksum");
 }
 
 #[test]
@@ -154,6 +155,48 @@ fn save_leaves_no_tmp_files() {
         .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
         .count();
     assert_eq!(tmp_count, 0, "save() must not leave tmp files behind");
+}
+
+#[test]
+fn load_rejects_corrupted_manifest() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let manifest = Manifest::new(vec![], 0);
+    manifest.save(dir.path()).unwrap();
+
+    let path = dir.path().join("manifest.json");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let corrupted = content.replace("\"version\": 1", "\"version\": 9");
+    assert_ne!(content, corrupted, "corruption injection must change content");
+    std::fs::write(&path, corrupted).unwrap();
+
+    let result = Manifest::load(dir.path());
+    assert!(result.is_err(), "corrupted manifest must be rejected");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("checksum"),
+        "error should mention checksum mismatch: {err_msg}"
+    );
+}
+
+#[test]
+fn load_accepts_manifest_without_checksum() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let json = r#"{
+        "version": 1,
+        "base_commit": null,
+        "segments": [],
+        "overlay_gen": 0,
+        "overlay_file": null,
+        "overlay_deletes_file": null,
+        "total_files_indexed": 0,
+        "created_at": 0,
+        "opstamp": 0
+    }"#;
+    std::fs::write(dir.path().join("manifest.json"), json).unwrap();
+
+    let loaded = Manifest::load(dir.path()).unwrap();
+    assert_eq!(loaded.checksum, None);
+    assert_eq!(loaded.total_docs(), 0);
 }
 
 #[test]

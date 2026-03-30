@@ -84,6 +84,10 @@ pub struct Manifest {
     /// fall back to the compile-time default of 0.10.
     #[serde(default)]
     pub scan_threshold_fraction: Option<f64>,
+    /// xxh64 checksum of this manifest serialized with this field omitted.
+    /// `None` means the manifest predates checksum support.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub checksum: Option<u64>,
 }
 
 impl Manifest {
@@ -107,6 +111,7 @@ impl Manifest {
             created_at,
             opstamp: 0,
             scan_threshold_fraction: None, // populated by Index::build() after calibration
+            checksum: None,
         }
     }
 
@@ -140,6 +145,23 @@ impl Manifest {
         let manifest: Self = serde_json::from_str(&data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
+        if let Some(stored_checksum) = manifest.checksum {
+            let mut canonical_manifest = manifest.clone();
+            canonical_manifest.checksum = None;
+            let canonical_json =
+                serde_json::to_string(&canonical_manifest).map_err(io::Error::other)?;
+            let computed_checksum = xxhash_rust::xxh64::xxh64(canonical_json.as_bytes(), 0);
+            if computed_checksum != stored_checksum {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "manifest checksum mismatch: stored {stored_checksum:#x}, computed {computed_checksum:#x}"
+                    ),
+                )
+                .into());
+            }
+        }
+
         // Validate that each segment_id is a well-formed UUID. The field is not
         // currently used in filesystem paths, but future code (GC, logging,
         // metrics) could join it to a path. Reject non-UUID values proactively.
@@ -162,7 +184,14 @@ impl Manifest {
         // leading to arbitrary file overwrite.
         let tmp = index_dir.join(format!("manifest-{}.tmp", uuid::Uuid::new_v4()));
         let final_path = index_dir.join(Self::FILENAME);
-        let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
+        let mut canonical_manifest = self.clone();
+        canonical_manifest.checksum = None;
+        let canonical_json = serde_json::to_string(&canonical_manifest).map_err(io::Error::other)?;
+        let checksum = xxhash_rust::xxh64::xxh64(canonical_json.as_bytes(), 0);
+
+        let mut persisted_manifest = self.clone();
+        persisted_manifest.checksum = Some(checksum);
+        let json = serde_json::to_string_pretty(&persisted_manifest).map_err(io::Error::other)?;
         {
             let mut file = std::fs::File::create(&tmp)?;
             file.write_all(json.as_bytes())?;

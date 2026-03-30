@@ -180,26 +180,11 @@ impl Index {
         let path_index =
             PathIndex::build_incremental(&old_snap.path_index, &removed_paths, &visible_changed);
 
-        let total_ids = overlay
-            .docs
-            .iter()
-            .map(|d| d.doc_id + 1)
-            .max()
-            .unwrap_or(base_doc_count) as usize;
-        let mut doc_to_file_id = old_snap.doc_to_file_id.clone();
-        doc_to_file_id.resize(total_ids, u32::MAX);
-        for gid in delete_set.iter() {
-            let idx = gid as usize;
-            if idx < doc_to_file_id.len() {
-                doc_to_file_id[idx] = u32::MAX;
-            }
-        }
+        let base_doc_to_file_id = Arc::clone(&old_snap.base_doc_to_file_id);
+        let mut overlay_doc_to_file_id = std::collections::HashMap::new();
         for doc in &overlay.docs {
-            let idx = doc.doc_id as usize;
-            if idx < doc_to_file_id.len() {
-                if let Some(fid) = path_index.file_id(&doc.path) {
-                    doc_to_file_id[idx] = fid;
-                }
+            if let Some(fid) = path_index.file_id(&doc.path) {
+                overlay_doc_to_file_id.insert(doc.doc_id, fid);
             }
         }
 
@@ -208,7 +193,8 @@ impl Index {
             overlay,
             delete_set,
             path_index,
-            doc_to_file_id,
+            base_doc_to_file_id,
+            overlay_doc_to_file_id,
             old_snap.scan_threshold,
         ));
 

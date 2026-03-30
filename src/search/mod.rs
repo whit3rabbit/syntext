@@ -145,11 +145,14 @@ pub fn search(
             )?;
 
             if let Some(ref pf) = path_filter_bitmap {
-                let file_id_opt = snap
-                    .doc_to_file_id
-                    .get(global_id as usize)
-                    .copied()
-                    .filter(|&fid| fid != u32::MAX);
+                let file_id_opt = if (global_id as usize) < snap.base_doc_to_file_id.len() {
+                    snap.base_doc_to_file_id
+                        .get(global_id as usize)
+                        .copied()
+                        .filter(|&fid| fid != u32::MAX)
+                } else {
+                    snap.overlay_doc_to_file_id.get(&global_id).copied()
+                };
                 if let Some(file_id) = file_id_opt {
                     if !pf.file_ids.contains(file_id) {
                         return None;
