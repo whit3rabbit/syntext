@@ -256,11 +256,13 @@ fn route_full_scan_for_dot_star() {
 
 #[test]
 fn route_case_insensitive_literal_not_literal_route() {
-    // Case-insensitive search can't use memmem; must use regex route.
+    // Case-insensitive search can't use memmem, but long literals should still
+    // extract covering grams from the lowercased index.
     let route = route_query("parse_query", true).unwrap();
     assert!(
-        !matches!(route, QueryRoute::Literal),
-        "case-insensitive must not use Literal route"
+        matches!(route, QueryRoute::IndexedRegex(_)),
+        "case-insensitive long literal should use IndexedRegex, got {:?}",
+        route
     );
 }
 
@@ -273,4 +275,14 @@ fn literal_grams_returns_none_for_short_pattern() {
 #[test]
 fn literal_grams_returns_some_for_long_pattern() {
     assert!(literal_grams("parse_query").is_some());
+}
+
+#[test]
+fn route_case_insensitive_short_literal_falls_back_to_full_scan() {
+    let route = route_query("ab", true).unwrap();
+    assert!(
+        matches!(route, QueryRoute::FullScan),
+        "short case-insensitive literal should fall back to FullScan, got {:?}",
+        route
+    );
 }

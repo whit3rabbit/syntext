@@ -115,6 +115,13 @@ pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, 
         });
     }
 
+    if case_insensitive && is_literal(pattern) {
+        return Ok(match build_covering(pattern.as_bytes()) {
+            Some(grams) => QueryRoute::IndexedRegex(GramQuery::Grams(grams)),
+            None => QueryRoute::FullScan,
+        });
+    }
+
     if !case_insensitive && is_literal(pattern) {
         return Ok(QueryRoute::Literal);
     }

@@ -4,6 +4,7 @@
 //! Reads on startup load segment metadata; GC removes orphan files.
 
 use std::io;
+use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -162,8 +163,13 @@ impl Manifest {
         let tmp = index_dir.join(format!("manifest-{}.tmp", uuid::Uuid::new_v4()));
         let final_path = index_dir.join(Self::FILENAME);
         let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(tmp, final_path)?;
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, &final_path)?;
+        std::fs::File::open(index_dir)?.sync_all()?;
         Ok(())
     }
 
@@ -202,6 +208,9 @@ impl Manifest {
                 if let Err(e) = std::fs::remove_file(entry.path()) {
                     eprintln!("syntext: gc: could not remove {}: {e}", name_str);
                 }
+            }
+            if name_str.ends_with(".tmp") {
+                let _ = std::fs::remove_file(entry.path());
             }
         }
         Ok(())

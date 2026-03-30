@@ -129,6 +129,34 @@ fn gc_removes_orphan_dict_and_post_files() {
 }
 
 #[test]
+fn gc_removes_stale_manifest_tmp_files() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("manifest-stale.tmp"), b"stale").unwrap();
+
+    let manifest = Manifest::new(vec![], 0);
+    manifest.gc_orphan_segments(dir.path()).unwrap();
+
+    assert!(
+        !dir.path().join("manifest-stale.tmp").exists(),
+        "stale manifest tmp files must be removed"
+    );
+}
+
+#[test]
+fn save_leaves_no_tmp_files() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let manifest = Manifest::new(vec![], 0);
+    manifest.save(dir.path()).unwrap();
+
+    let tmp_count = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+    assert_eq!(tmp_count, 0, "save() must not leave tmp files behind");
+}
+
+#[test]
 fn v2_manifest_without_split_filenames_deserializes_cleanly() {
     let dir = tempfile::TempDir::new().unwrap();
     let id = uuid::Uuid::new_v4().to_string();
