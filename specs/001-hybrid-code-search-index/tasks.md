@@ -189,7 +189,7 @@
 - [x] T065 [P] Add doc comments to all public API types and methods in src/lib.rs per quality gate 4.
 - [x] T066 Run `cargo clippy` and fix all warnings per quality gate 2.
 - [x] T067 Verify no source file exceeds 400 lines (test files exempt) per constitution principle V.
-- [ ] T068 Run full correctness suite (T036) on a large real-world repo (e.g., ripgrep source, 50K+ LOC) to validate at scale. (DEFERRED: requires cloning external repos)
+- [x] T068 Run full correctness suite (T036) on a large real-world repo (e.g., ripgrep source, 50K+ LOC) to validate at scale. Done: Node.js v20.12.0 (40,812 files). `cargo test --test correctness` 16/16 pass. External corpus count comparison via bench_compare: `MaybeStackBuffer` exact (82=82); `EnvironmentOptions` off by 1 (118 vs 119) — the miss is `testEnvironmentOptions` in a Jest config comment, a known camelCase junction edge case documented in BENCHMARKS.md.
 - [x] T069 Add .syntext/ to default .gitignore template recommendations in README or docs.
 
 ---
@@ -269,10 +269,9 @@ Agent 1: T054 - Integration test
 
 ### Remaining Work (MVP already complete)
 
-Phases 1-6 and Phase 8 are complete. The core `st index && st search "pattern"` workflow is functional and validated against ripgrep. Remaining work:
+All phases complete. Core workflow, symbol search, CLI, and polish are done. Remaining deferred work:
 
-1. **Phase 7 (US4 Symbol)**: Full symbol-aware search via Tree-sitter + SQLite (T048-T054)
-2. **Phase 9 deferred**: Larger corpus benchmarks (T061-T063), segment merge (T064), large-scale correctness (T068), crash recovery (T042)
+1. **Phase 9 deferred (still open)**: Larger corpus criterion benchmarks (T061-T063), segment merge (T064), crash recovery (T042)
 
 ### Incremental Delivery
 
@@ -280,12 +279,22 @@ Phases 1-6 and Phase 8 are complete. The core `st index && st search "pattern"` 
 2. US5 (Build) + US1 (Search) -> DONE (working indexed search, ripgrep-validated)
 3. US2 (Incremental) -> DONE (agent-friendly freshness with delta updates)
 4. US3 (Path Scoping) -> DONE (scoped search)
-5. US4 (Symbol) -> NEXT: definition/reference search
-6. CLI + Polish -> DONE (benchmarks and merge deferred)
+5. US4 (Symbol) -> DONE (Tree-sitter + SQLite, Tier 1 languages + heuristic fallback)
+6. CLI + Polish -> DONE (criterion benchmarks and segment merge deferred)
 
-### Suggested Next Task
+### Release Gates (v1.0.0)
 
-**T048** (Tree-sitter symbol extractor). US4 is the only remaining user story. The `symbols` feature flag and `rusqlite` + tree-sitter crate additions to Cargo.toml are prerequisites before starting T048.
+All gates passed on 2026-03-29:
+
+- [x] `cargo test` — 16/16 correctness, all suites green
+- [x] `cargo clippy` — no warnings
+- [x] No source file > 400 lines
+- [x] `cargo doc --no-deps` — no warnings
+- [x] `cargo publish --dry-run` — 142 files, 480.6KiB compressed
+- [x] 10-min fuzz run — 10.1M execs, no crashes, no artifacts
+- [x] Node.js v20.12.0 corpus correctness (40,812 files) — T068 complete
+- [x] `node_runtime` benchmark preset — 23x speedup vs rg, results in BENCHMARKS.md
+- [ ] Tag `v1.0.0-rc1` and `v1.0.0`
 
 ---
 

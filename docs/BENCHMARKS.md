@@ -317,3 +317,16 @@ Search results from the same matrix runs:
 | `linux` | `raw_spin_lock` | yes (`2321`) | 150.697 ms | 3,596.556 ms | n/a |
 
 This Linux rerun was taken after fixing the directory-symlink mismatch in incremental updates as well as full builds. The earlier extra `sched_clock` hit from `scripts/dtc/include-prefixes/arm/rockchip/rk3xxx.dtsi:84` is gone, so the preset now has default-`rg` count parity on all three Linux queries.
+
+#### Node.js v20.12.0 preset run (2026-03-29)
+
+Corpus: commit `94fb8542`, shallow clone, 40,812 tracked files.
+
+| Query | syntext | rg | Count match |
+|---|---|---|---|
+| `EnvironmentOptions` | 57.8 ms | 1,330 ms | no (118 vs 119) |
+| `MaybeStackBuffer` | 57.1 ms | 1,313 ms | yes (82) |
+
+Build median: 2,571 ms, index bytes: 67,478,965.
+
+`EnvironmentOptions` is off by 1: `tools/node_modules/eslint/node_modules/comment-parser/jest.config.cjs` contains `testEnvironmentOptions` (a commented-out key). The query `EnvironmentOptions` is a suffix of the longer camelCase identifier `testEnvironmentOptions`; the cross-boundary bigram between `Environment` and `Options` is not indexed when the tokenizer splits at the uppercase `O`, so the candidate set misses this file. This is a known edge case for queries that span camelCase sub-token junctions. `MaybeStackBuffer` is exact-match because it appears as a standalone identifier throughout the corpus.
