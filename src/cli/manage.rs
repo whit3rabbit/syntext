@@ -83,7 +83,6 @@ fn is_safe_git_path(path: &Path) -> bool {
     true
 }
 
-
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
     // Index::build always rebuilds; --force is accepted for rg/ug compat.
     // --quiet suppresses library progress output; default CLI behavior is verbose.

@@ -24,7 +24,7 @@ Installs `st` to `/usr/local/bin`. On macOS, uses Homebrew cask if `brew` is ava
 Override defaults with environment variables:
 
 ```bash
-INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=1.0.0 \
+INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=1.0.1 \
   curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
 ```
 
@@ -42,7 +42,7 @@ brew install --cask whit3rabbit/tap/syntext
 <summary>Linux (manual)</summary>
 
 ```bash
-VERSION=1.0.0
+VERSION=1.0.1
 
 # Debian/Ubuntu (x86_64)
 curl -L "https://github.com/whit3rabbit/syntext/releases/download/v${VERSION}/syntext_${VERSION}_amd64.deb" \

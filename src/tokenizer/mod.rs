@@ -257,7 +257,6 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
     })
 }
 
-
 fn append_grams_for_boundaries(hashes: &mut Vec<u64>, lower: &[u8], boundaries: &[usize]) {
     for w in boundaries.windows(2) {
         let (start, end) = (w[0], w[1]);

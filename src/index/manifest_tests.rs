@@ -24,7 +24,10 @@ fn load_accepts_normal_manifest() {
 
     let loaded = Manifest::load(dir.path()).unwrap();
     assert_eq!(loaded.total_docs(), 0);
-    assert!(loaded.checksum.is_some(), "saved manifests must carry checksum");
+    assert!(
+        loaded.checksum.is_some(),
+        "saved manifests must carry checksum"
+    );
 }
 
 #[test]
@@ -166,7 +169,10 @@ fn load_rejects_corrupted_manifest() {
     let path = dir.path().join("manifest.json");
     let content = std::fs::read_to_string(&path).unwrap();
     let corrupted = content.replace("\"version\": 1", "\"version\": 9");
-    assert_ne!(content, corrupted, "corruption injection must change content");
+    assert_ne!(
+        content, corrupted,
+        "corruption injection must change content"
+    );
     std::fs::write(&path, corrupted).unwrap();
 
     let result = Manifest::load(dir.path());

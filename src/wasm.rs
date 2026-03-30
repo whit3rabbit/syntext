@@ -60,8 +60,7 @@ impl WasmIndex {
             map.insert(key, bytes);
         }
 
-        let inner = InMemoryIndex::build(map)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let inner = InMemoryIndex::build(map).map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(WasmIndex { inner })
     }
 
@@ -88,7 +87,6 @@ impl WasmIndex {
             })
             .collect();
 
-        serde_wasm_bindgen::to_value(&wasm_matches)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&wasm_matches).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }

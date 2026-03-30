@@ -186,7 +186,8 @@ impl Manifest {
         let final_path = index_dir.join(Self::FILENAME);
         let mut canonical_manifest = self.clone();
         canonical_manifest.checksum = None;
-        let canonical_json = serde_json::to_string(&canonical_manifest).map_err(io::Error::other)?;
+        let canonical_json =
+            serde_json::to_string(&canonical_manifest).map_err(io::Error::other)?;
         let checksum = xxhash_rust::xxh64::xxh64(canonical_json.as_bytes(), 0);
 
         let mut persisted_manifest = self.clone();

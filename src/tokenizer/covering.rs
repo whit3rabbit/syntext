@@ -5,8 +5,8 @@
 //! from the parent module to keep `mod.rs` under the 400-line limit.
 
 use super::{
-    boundary_positions, gram_hash, is_forced_boundary, with_boundary_positions_lower,
-    MAX_GRAM_LEN, MIN_GRAM_LEN,
+    boundary_positions, gram_hash, is_forced_boundary, with_boundary_positions_lower, MAX_GRAM_LEN,
+    MIN_GRAM_LEN,
 };
 
 // ---------------------------------------------------------------------------

@@ -130,63 +130,65 @@ pub fn search(
     // final truncate enforces the hard limit.
     let match_count = AtomicUsize::new(0);
     let do_match = |&global_id: &u32| -> Option<Vec<SearchMatch>> {
-            // Early-exit: skip expensive I/O once we already have enough matches.
-            if let Some(limit) = opts.max_results {
-                if match_count.load(Ordering::Relaxed) >= limit {
+        // Early-exit: skip expensive I/O once we already have enough matches.
+        if let Some(limit) = opts.max_results {
+            if match_count.load(Ordering::Relaxed) >= limit {
+                return None;
+            }
+        }
+        let (rel_path, content) = resolve_doc(
+            &snap,
+            global_id,
+            canonical_root,
+            config.max_file_size,
+            config.verbose,
+        )?;
+
+        if let Some(ref pf) = path_filter_bitmap {
+            let file_id_opt = if (global_id as usize) < snap.base_doc_to_file_id.len() {
+                snap.base_doc_to_file_id
+                    .get(global_id as usize)
+                    .copied()
+                    .filter(|&fid| fid != u32::MAX)
+            } else {
+                snap.overlay_doc_to_file_id.get(&global_id).copied()
+            };
+            if let Some(file_id) = file_id_opt {
+                if !pf.file_ids.contains(file_id) {
+                    return None;
+                }
+            } else {
+                if !matches_path_filter(
+                    &rel_path,
+                    opts.file_type.as_deref(),
+                    opts.exclude_type.as_deref(),
+                    opts.path_filter.as_deref(),
+                ) {
                     return None;
                 }
             }
-            let (rel_path, content) = resolve_doc(
-                &snap,
-                global_id,
-                canonical_root,
-                config.max_file_size,
-                config.verbose,
-            )?;
+        }
 
-            if let Some(ref pf) = path_filter_bitmap {
-                let file_id_opt = if (global_id as usize) < snap.base_doc_to_file_id.len() {
-                    snap.base_doc_to_file_id
-                        .get(global_id as usize)
-                        .copied()
-                        .filter(|&fid| fid != u32::MAX)
-                } else {
-                    snap.overlay_doc_to_file_id.get(&global_id).copied()
-                };
-                if let Some(file_id) = file_id_opt {
-                    if !pf.file_ids.contains(file_id) {
-                        return None;
-                    }
-                } else {
-                    if !matches_path_filter(
-                        &rel_path,
-                        opts.file_type.as_deref(),
-                        opts.exclude_type.as_deref(),
-                        opts.path_filter.as_deref(),
-                    ) {
-                        return None;
-                    }
-                }
+        let file_path = rel_path.as_path();
+        let file_matches = match &route {
+            QueryRoute::Literal => verify_literal(pattern, file_path, &content),
+            _ => verify_regex(compiled_re.as_ref().unwrap(), file_path, &content),
+        };
+        if let Some(_limit) = opts.max_results {
+            if !file_matches.is_empty() {
+                match_count.fetch_add(file_matches.len(), Ordering::Relaxed);
             }
-
-            let file_path = rel_path.as_path();
-            let file_matches = match &route {
-                QueryRoute::Literal => verify_literal(pattern, file_path, &content),
-                _ => verify_regex(compiled_re.as_ref().unwrap(), file_path, &content),
-            };
-            if let Some(_limit) = opts.max_results {
-                if !file_matches.is_empty() {
-                    match_count.fetch_add(file_matches.len(), Ordering::Relaxed);
-                }
-            }
-            Some(file_matches)
+        }
+        Some(file_matches)
     };
     #[cfg(feature = "rayon")]
-    let all_matches: Vec<SearchMatch> =
-        candidates.par_iter().filter_map(do_match).flatten().collect();
+    let all_matches: Vec<SearchMatch> = candidates
+        .par_iter()
+        .filter_map(do_match)
+        .flatten()
+        .collect();
     #[cfg(not(feature = "rayon"))]
-    let all_matches: Vec<SearchMatch> =
-        candidates.iter().filter_map(do_match).flatten().collect();
+    let all_matches: Vec<SearchMatch> = candidates.iter().filter_map(do_match).flatten().collect();
 
     let mut matches = sort_matches(all_matches);
     if let Some(max) = opts.max_results {
