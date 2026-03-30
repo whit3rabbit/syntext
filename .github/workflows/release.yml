@@ -180,10 +180,20 @@ jobs:
           fi
 
       - name: cargo publish
-        if: steps.crate.outputs.published != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
+        run: |
+          set +e
+          cargo publish 2>&1 | tee /tmp/cargo-publish.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "${status}" -eq 0 ]; then
+            exit 0
+          fi
+          if grep -F "already exists on crates.io index" /tmp/cargo-publish.log >/dev/null; then
+            exit 0
+          fi
+          exit "${status}"
 
   update-homebrew-cask:
     name: Update Homebrew Cask
