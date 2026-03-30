@@ -28,7 +28,6 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 | memmap2 | mmap segment files |
 | roaring | bitmap posting lists (dense terms), path index component sets |
 | rayon | parallel index build |
-| zerocopy | zero-copy segment reads paired with memmap2 |
 | arc-swap | lock-free snapshot swapping for concurrent reads |
 | ignore | .gitignore respect, file-type filtering |
 | clap | CLI (with derive) |
@@ -194,8 +193,6 @@ If all weights are 65535, the script ran with no corpus. Check HF auth and datas
 
 ## Quality Gates
 
-**Known violations (to fix):** `index/mod.rs` (1314), `search/mod.rs` (671), `cli/mod.rs` (593), `index/compact.rs` (531), `tokenizer/mod.rs` (510). Do not add lines to these files; split further to bring them under 400.
-
 All PRs must pass before merge:
 
 1. `cargo test` -- no failures
@@ -227,23 +224,29 @@ src/
     mod.rs                    # sparse n-gram extraction (build_all, forced boundaries)
     covering.rs               # build_covering and build_covering_inner (query gram extraction)
     weights.rs                # pre-trained [u16; 65536] byte-pair frequency table
+    tests.rs                  # unit tests for tokenizer
   index/
     mod.rs                    # Index struct, top-level re-exports
+    tests.rs                  # unit tests for Index (path resolution, compaction, overlay)
     open.rs                   # open / open_inner entry points
     commit.rs                 # commit_batch logic
     helpers.rs                # free functions shared across index modules
     build.rs                  # build pipeline (calibrate_threshold, build_index)
     compact.rs                # compaction execution
+    compact_tests.rs          # unit tests for compaction
     compact_plan.rs           # compaction planning types, plan / forced_plan
     encoding.rs               # varint / posting encoding helpers
     io_util.rs                # secure file-open helpers (O_NOFOLLOW, inode check)
     snapshot.rs               # BaseSegments, IndexSnapshot, new_snapshot
     segment/
-      mod.rs                  # SNTX segment format constants, DocEntry
+      mod.rs                  # SNTX segment format constants, DocEntry, MmapSegment
+      tests.rs                # unit tests for segment round-trips and security checks
       reader.rs               # MmapSegment::open and open_split (mmap read path)
       segment_writer.rs       # SegmentWriter (serialize to SNTX)
     overlay.rs                # OverlayView + ArcSwap<IndexSnapshot>
+    overlay_tests.rs          # unit tests for overlay incremental builds
     manifest.rs               # manifest.json + atomic write-then-rename
+    manifest_tests.rs         # unit tests for manifest serialization and GC
     pending.rs                # PendingEdits buffer for incremental updates
     stats.rs                  # index statistics computation
     walk.rs                   # directory walking / file discovery
@@ -255,6 +258,7 @@ src/
     regex_decompose.rs        # HIR walker -> GramQuery tree
   search/
     mod.rs                    # search executor
+    tests.rs                  # unit tests for search routing and selectivity
     lines.rs                  # line extraction for context rendering
     resolver.rs               # doc_id -> path + content resolver
     verifier.rs               # tiered: memchr for literals, regex for patterns
@@ -266,19 +270,11 @@ src/
     extractor.rs              # symbol extraction from parse trees
   cli/
     mod.rs                    # clap CLI entry point
+    tests.rs                  # unit tests for CLI parsing and command dispatch
     bench.rs                  # hidden bench-search subcommand (in-process latency)
     manage.rs                 # index/status/update subcommand handlers
     render.rs                 # output rendering (flat, context, JSON formats)
     search.rs                 # search arg parsing, query execution, result dispatch
-
-specs/001-hybrid-code-search-index/
-  spec.md                     # feature specification
-  plan.md                     # implementation plan
-  research.md                 # architecture research (19 sections)
-  data-model.md               # entity definitions
-  contracts/                  # library API, CLI, segment format contracts
-  quickstart.md               # usage guide
-  tasks.md                    # implementation task breakdown
 ```
 
 ## Spec Location
