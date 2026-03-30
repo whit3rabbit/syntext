@@ -838,6 +838,49 @@ fn only_matching_with_context_keeps_context_lines() {
 }
 
 #[test]
+fn only_matching_with_heading_groups_results_by_file() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "needle needle\n");
+    write_text(&repo.path().join("src/two.txt"), "needle\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--heading", "-n", "-o", "needle", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&output),
+        "src/one.txt\n1:needle\n1:needle\n\nsrc/two.txt\n1:needle\n"
+    );
+}
+
+#[test]
+fn only_matching_with_heading_and_context_groups_results_by_file() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/one.txt"),
+        "before\nneedle needle\nafter\n",
+    );
+    write_text(&repo.path().join("src/two.txt"), "x\nneedle\ny\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--heading", "-n", "-o", "-C", "1", "needle", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&output),
+        "src/one.txt\n1-before\n2:needle\n2:needle\n3-after\n\nsrc/two.txt\n1-x\n2:needle\n3-y\n"
+    );
+}
+
+#[test]
 fn count_with_only_matching_acts_like_count_matches() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();

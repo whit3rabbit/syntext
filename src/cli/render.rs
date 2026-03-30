@@ -216,15 +216,32 @@ pub(super) fn render_only_matching(
     }
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    let unique_paths: std::collections::BTreeSet<_> =
+        matches.iter().map(|m| m.path.clone()).collect();
+    let grouped_heading = args.heading && (unique_paths.len() > 1 || !args.no_filename);
+    let suppress_path_prefix = args.heading;
+    let mut current_path: Option<&Path> = None;
 
     for m in matches {
+        let path_changed = current_path != Some(m.path.as_path());
+        if path_changed && grouped_heading {
+            if current_path.is_some() {
+                writeln!(out)?;
+            }
+            if !args.no_filename {
+                out.write_all(path_bytes(&m.path).as_ref())?;
+                out.write_all(b"\n")?;
+            }
+        }
+        current_path = Some(m.path.as_path());
+
         for matched in re.find_iter(&m.line_content) {
             if matched.start() == matched.end() {
                 continue;
             }
             write_formatted_line(
                 &mut out,
-                args.no_filename,
+                suppress_path_prefix || args.no_filename,
                 args.no_line_number,
                 &m.path,
                 m.line_number as usize,
@@ -258,6 +275,8 @@ fn render_only_matching_with_context(
     let before = args.before_context;
     let after = args.after_context;
     let mut first_file = true;
+    let grouped_heading = args.heading && (by_file.len() > 1 || !args.no_filename);
+    let suppress_path_prefix = args.heading;
 
     for (rel_path, match_lines) in &by_file {
         let abs_path = config.repo_root.join(rel_path);
@@ -298,8 +317,16 @@ fn render_only_matching_with_context(
             }
         }
 
-        if !first_file {
-            writeln!(out, "--")?;
+        if !first_file && !to_print.is_empty() {
+            if grouped_heading {
+                writeln!(out)?;
+            } else {
+                writeln!(out, "--")?;
+            }
+        }
+        if grouped_heading && !to_print.is_empty() && !args.no_filename {
+            out.write_all(path_bytes(rel_path).as_ref())?;
+            out.write_all(b"\n")?;
         }
         first_file = false;
 
@@ -320,7 +347,7 @@ fn render_only_matching_with_context(
                     }
                     write_formatted_line(
                         &mut out,
-                        args.no_filename,
+                        suppress_path_prefix || args.no_filename,
                         args.no_line_number,
                         rel_path,
                         line_num,
@@ -331,7 +358,7 @@ fn render_only_matching_with_context(
             } else {
                 write_formatted_line(
                     &mut out,
-                    args.no_filename,
+                    suppress_path_prefix || args.no_filename,
                     args.no_line_number,
                     rel_path,
                     line_num,
