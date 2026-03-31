@@ -99,6 +99,13 @@ pub enum QueryRoute {
 /// - IndexedRegex otherwise
 pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, String> {
     // Symbol prefix detection: sym:, def:, ref:
+    //
+    // ref: is intentionally an alias for sym: (kind_filter: None). A true
+    // reference-finder would need full-file parse trees to distinguish
+    // definitions from usages, which is not implemented. Keeping the prefix
+    // accepted (rather than rejecting it) avoids breaking callers that
+    // already use ref: and lets us add real reference-finding in v2 without
+    // a prefix change.
     if let Some(rest) = pattern
         .strip_prefix("sym:")
         .or_else(|| pattern.strip_prefix("ref:"))
