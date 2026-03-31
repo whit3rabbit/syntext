@@ -28,6 +28,19 @@ use crate::Config;
 use super::search::{build_effective_pattern, SearchArgs};
 use crate::search::REGEX_SIZE_LIMIT;
 
+pub(in crate::cli) fn group_matches_by_path(
+    matches: &[crate::SearchMatch],
+) -> std::collections::BTreeMap<PathBuf, Vec<u32>> {
+    let mut by_file = std::collections::BTreeMap::new();
+    for m in matches {
+        by_file
+            .entry(m.path.clone())
+            .or_insert_with(Vec::new)
+            .push(m.line_number);
+    }
+    by_file
+}
+
 pub(in crate::cli) fn write_formatted_line(
     out: &mut dyn Write,
     no_path: bool,

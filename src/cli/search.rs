@@ -190,15 +190,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         return if found_any { 0 } else { 1 };
     }
 
-    if output_args.count_matches {
-        return handle_output_code(super::render::render_count_matches(
-            &config,
-            &results,
-            &output_args,
-        ));
-    }
-
-    if output_args.count && output_args.only_matching {
+    if output_args.count_matches || (output_args.count && output_args.only_matching) {
         return handle_output_code(super::render::render_count_matches(
             &config,
             &results,

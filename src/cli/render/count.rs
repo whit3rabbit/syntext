@@ -1,6 +1,6 @@
 //! Count-matches renderer: prints exact per-file match counts.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -24,15 +24,15 @@ pub(in crate::cli) fn render_count_matches(
         }
     };
 
-    let mut per_file: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    let mut per_file: BTreeSet<PathBuf> = BTreeSet::new();
     for m in matches {
-        per_file.entry(m.path.clone()).or_insert(0);
+        per_file.insert(m.path.clone());
     }
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut found_any = false;
-    for path in per_file.keys() {
+    for path in &per_file {
         let raw_bytes = match read_repo_file_bytes(config, path) {
             Ok(b) => b,
             Err(_) => continue,

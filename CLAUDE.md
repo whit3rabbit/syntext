@@ -223,7 +223,7 @@ The script prints diagnostics after generation. A correct table shows:
 - `'  '` (double space), `'re'`, `'er'`: weight < 12000 (common, gram interior)
 - `'qz'`, `'xj'`: weight > 28000 (rare, good gram boundaries)
 - Unseen pairs: weight 65535
-- Non-zero pairs: ~32,000+ (current table: 32,542 from ~498 GB run)
+- Non-zero pairs: ~16,000+ (see CLAUDE.local.md for last-run count)
 
 If all weights are 65535, the script ran with no corpus. Check HF auth and dataset access.
 
@@ -309,12 +309,21 @@ src/
   cli/
     mod.rs                    # clap CLI entry point
     tests.rs                  # unit tests for CLI parsing and command dispatch
+    args.rs                   # Cli struct and ManageCommand enum (flag definitions)
+    commands.rs               # management subcommand definitions
+    scope.rs                  # path-scope filtering: glob matching, --files mode, deduplication
     bench.rs                  # hidden bench-search subcommand (in-process latency)
     manage.rs                 # index/status/update subcommand handlers
-    render.rs                 # output rendering (flat, context, JSON formats)
+    render/
+      mod.rs                  # shared utilities, re-exports, JSON helpers, flat/heading/vimgrep
+      context.rs              # context-window rendering (before/after lines)
+      count.rs                # per-file match count rendering
+      invert.rs               # corpus-wide invert match (st -v), walks all scoped paths
+      json.rs                 # NDJSON output (rg-compatible begin/match/context/end/summary)
+      only_matching.rs        # only-matching substring rendering
     search.rs                 # search arg parsing, query execution, result dispatch
 ```
 
 ## Spec Location
 
-All design documents are in `specs/001-hybrid-code-search-index/`. When in doubt about a design decision, check `research.md` first -- it has 19 sections covering every major subsystem with Decision / Rationale / Alternatives Considered.
+All design documents are in `docs/`. When in doubt about a design decision, check `docs/ARCHITECTURE.md` first -- it covers every major subsystem with Decision / Rationale / Alternatives Considered.

@@ -1,8 +1,6 @@
 //! JSON (NDJSON) output renderer: rg-compatible begin/match/context/end/summary.
 
-use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::index::Index;
@@ -12,8 +10,8 @@ use crate::Config;
 
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 use super::{
-    compile_output_regex, json_data, json_elapsed, json_line_message, json_stats, json_submatches,
-    read_repo_file_bytes, write_json_line,
+    compile_output_regex, group_matches_by_path, json_data, json_elapsed, json_line_message,
+    json_stats, json_submatches, read_repo_file_bytes, write_json_line,
 };
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
@@ -25,13 +23,7 @@ pub(in crate::cli) fn render_json(
 ) -> io::Result<()> {
     let total_start = Instant::now();
     let re = compile_output_regex(args)?;
-    let mut by_file: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
-    for m in matches {
-        by_file
-            .entry(m.path.clone())
-            .or_default()
-            .push(m.line_number);
-    }
+    let by_file = group_matches_by_path(matches);
     let before = args.before_context;
     let after = args.after_context;
 

@@ -1,15 +1,14 @@
 //! Context-aware output renderer: matches with surrounding lines.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Read};
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::io;
 
 use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
 use crate::cli::search::SearchArgs;
-use super::write_formatted_line;
+use super::{group_matches_by_path, read_repo_file_bytes, write_formatted_line};
 
 /// Print matches with surrounding context lines to stdout.
 ///
@@ -35,14 +34,7 @@ pub(in crate::cli) fn render_with_context_to(
     args: &SearchArgs,
     out: &mut dyn std::io::Write,
 ) -> io::Result<()> {
-    // Group match line numbers by relative path string.
-    let mut by_file: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
-    for m in matches {
-        by_file
-            .entry(m.path.clone())
-            .or_default()
-            .push(m.line_number);
-    }
+    let by_file = group_matches_by_path(matches);
 
     let before = args.before_context;
     let after = args.after_context;
@@ -51,25 +43,10 @@ pub(in crate::cli) fn render_with_context_to(
 
     let mut first_file = true;
     for (rel_path, match_lines) in &by_file {
-        let abs_path = config.repo_root.join(rel_path);
-
-        #[cfg(unix)]
-        let pre_open_meta = match std::fs::metadata(&abs_path) {
-            Ok(meta) => meta,
+        let raw_content = match read_repo_file_bytes(config, rel_path) {
+            Ok(b) => b,
             Err(_) => continue,
         };
-        let mut file = match crate::index::open_readonly_nofollow(&abs_path) {
-            Ok(file) => file,
-            Err(_) => continue,
-        };
-        #[cfg(unix)]
-        if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
-            continue;
-        }
-        let mut raw_content = Vec::new();
-        if file.read_to_end(&mut raw_content).is_err() {
-            continue;
-        }
         let file_content = crate::index::normalize_encoding(&raw_content, config.verbose);
         let mut file_lines: Vec<Vec<u8>> = Vec::new();
         for_each_line(file_content.as_ref(), |_, _, line| {

@@ -209,13 +209,12 @@ wasm-pack build --target bundler -- --features wasm --no-default-features
 ## Known limitations
 
 1. **Crash recovery**: Overlay state is lost on unclean shutdown. Run `st update` or `st index` after a crash.
-2. **Invert match scope**: `st -v` inverts within candidate files only, not the full corpus.
-3. **Non-aligned substring coverage**: ~16% false-negative rate for queries that don't align with token boundaries. Token-aligned queries (identifiers, keywords) have 0% false negatives.
-4. **Network filesystems**: Index directory must be on local filesystem. NFS/SMB behavior is undefined.
-5. **Case-insensitive overhead**: ~15-20% more candidates due to lowercase normalization. Correct results guaranteed by verifier.
-6. **`\r`-only line endings**: Treated as a single line (matches ripgrep behavior).
-7. **Symbol search accuracy**: Tier 3 (heuristic) results are approximate. Tree-sitter failures fall back silently.
-8. **One root per index**: Each index covers exactly one `--repo-root`. There is no way to merge multiple directories into a single index. To search across two repos, build and query each index separately with `--repo-root`. `st update` requires a git repo; non-git directories must be re-indexed with `st index`.
+2. **Non-aligned substring coverage**: ~16% false-negative rate for queries that don't align with token boundaries. Token-aligned queries (identifiers, keywords) have 0% false negatives.
+3. **Network filesystems**: Index directory must be on local filesystem. NFS/SMB behavior is undefined.
+4. **Case-insensitive overhead**: ~15-20% more candidates due to lowercase normalization. Correct results guaranteed by verifier.
+5. **`\r`-only line endings**: Treated as a single line (matches ripgrep behavior).
+6. **Symbol search accuracy**: Tier 3 (heuristic) results are approximate. Tree-sitter failures fall back silently.
+7. **One root per index**: Each index covers exactly one `--repo-root`. There is no way to merge multiple directories into a single index. To search across two repos, build and query each index separately with `--repo-root`. `st update` requires a git repo; non-git directories must be re-indexed with `st index`.
 
 ## Design documents
 

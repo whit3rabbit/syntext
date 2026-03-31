@@ -68,7 +68,7 @@ Every bug from both review passes, categorized by release-blocking severity.
 | B12 | `cmd_update` per-file `exists()` check races with `commit_batch` read. One unreadable file aborts entire batch. | `src/cli/manage.rs` | User edits 50 files, deletes 1 before commit — all 50 changes lost. |
 | B13 | `compact_index` reads `base_ids` from snapshot but validates against manifest-derived bases. Concurrent `commit_batch` could cause divergence. | `src/index/compact.rs` | Compaction assigns wrong global doc_ids. Silent corruption of rewritten segments. |
 | B14 | `collect_symlink_entry` spawns unbounded nested `WalkBuilder` instances for distinct symlink targets. | `src/index/walk.rs` | Pathological repo with many symlinks can exhaust file descriptors or memory. |
-| B15 | `render_invert_match` only inverts within candidate files, not the full corpus. Semantic mismatch with `rg -v` / `grep -v`. | `src/cli/render.rs` | `st -v TODO` returns wrong results. Users expect corpus-wide inversion. |
+| B15 | ~~`render_invert_match` only inverts within candidate files, not the full corpus.~~ **Fixed.** Corpus-wide inversion implemented via `collect_scoped_paths` walk. | `src/cli/render/invert.rs` | Fixed in render refactor. |
 | B16 | Search with `-m N` (max results) verifies all candidates in parallel, then truncates. No early exit. | `src/search/mod.rs` | `-m 1` on a common term verifies thousands of files unnecessarily. |
 | B17 | `build_incremental_delta` clones entire `gram_index` HashMap even for single-file edits. Cost grows with overlay size. | `src/index/overlay.rs` | Commit latency regresses as overlay grows. Documented but not mitigated. |
 | B18 | Thread-local buffer in tokenizer returns `buf.clone()` every call. Allocation saved but copy not. | `src/tokenizer/mod.rs` | Hot path during rayon parallel build allocates and copies per file. |
@@ -137,14 +137,9 @@ The second approach is preferred.
 
 Add a configurable limit (default: 1) on the depth of nested `WalkBuilder` instances spawned by `collect_symlink_entry`. This prevents pathological repos from exhausting file descriptors.
 
-### 4c. Invert match correctness
+### 4c. Invert match correctness — **Done**
 
-`st -v` must either:
-- Walk all indexed files (correct but slow), or
-- Be documented as "invert within matching files only" and renamed/flagged differently, or
-- Be removed from the CLI until implemented correctly
-
-Recommendation: implement corpus-wide inversion using the PathIndex to enumerate all files. The path index already has every file; the cost is O(indexed_files) which is the same as a full scan.
+Corpus-wide inversion implemented in `src/cli/render/invert.rs`. `render_invert_match` walks all scoped paths via `collect_scoped_paths`, reads raw bytes, and applies the pattern to every line. Semantic parity with `rg -v` / `grep -v`.
 
 ### 4d. Early exit for `--max-count`
 
@@ -338,4 +333,3 @@ These are tracked as v1.1+ work and must not block the release:
 - **Rate limiting on commit_batch**: accepted risk AR-002
 - **Persistent overlay (Cow/persistent map)**: optimization for large overlays
 - **Two-file dictionary-only mmap**: separate dictionary from postings for large indexes
-- **v/--invert-match is still limited to indexed candidate files, not true corpus-wide ripgrep parity.**
