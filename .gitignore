@@ -51,3 +51,4 @@ repomix.xml
 # Local benchmark corpora (shallow clones of external repos)
 _syntext-bench/
 _ripline-bench/
+.worktrees/
