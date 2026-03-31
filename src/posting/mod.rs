@@ -142,6 +142,7 @@ impl PostingList {
     /// **Warning:** O(n) for `Small` variant (fully decodes the varint stream).
     /// For cardinality checks during search, use `MmapSegment::gram_cardinality()`
     /// which reads the stored entry_count from the dictionary in O(1).
+    #[must_use = "O(n) for Small variant; use is_empty() or MmapSegment::gram_cardinality() for hot-path checks"]
     pub fn len(&self) -> usize {
         match self {
             PostingList::Small(bytes) => {
