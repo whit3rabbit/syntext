@@ -16,15 +16,20 @@ use crate::IndexError;
 pub(super) fn resolve_git_binary() -> std::path::PathBuf {
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join("git");
-            if candidate.is_file() {
-                if let Ok(resolved) = candidate.canonicalize() {
-                    return resolved;
+            for name in ["git", "git.exe"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    if let Ok(resolved) = candidate.canonicalize() {
+                        return resolved;
+                    }
                 }
             }
         }
     }
-    std::path::PathBuf::from("/usr/bin/git")
+    #[cfg(windows)]
+    return std::path::PathBuf::from("git.exe");
+    #[cfg(not(windows))]
+    return std::path::PathBuf::from("/usr/bin/git");
 }
 
 #[cfg(not(target_arch = "wasm32"))]

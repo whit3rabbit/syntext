@@ -135,6 +135,7 @@ fn build_produces_calibrated_threshold_in_valid_range() {
         snap.scan_threshold, threshold,
         "snapshot.scan_threshold must match manifest value"
     );
+    drop(index);
 }
 
 #[test]
@@ -162,6 +163,7 @@ fn open_accepts_manifest_with_gapped_base_doc_ids() {
             .len(),
         1
     );
+    drop(index);
 }
 
 #[test]
@@ -185,6 +187,7 @@ fn commit_batch_overlay_ids_start_after_max_base_doc_id() {
         .map(|doc| doc.doc_id)
         .collect();
     assert_eq!(overlay_ids, vec![6]);
+    drop(index);
 }
 
 #[test]
@@ -212,6 +215,7 @@ fn commit_batch_bounded_read_rejects_file_that_exceeds_limit() {
         matches!(result, Err(IndexError::FileTooLarge { .. })),
         "commit_batch must reject files that exceed max_file_size at read time: {result:?}"
     );
+    drop(index);
 }
 
 #[cfg(unix)]
@@ -252,6 +256,7 @@ fn commit_batch_rejects_symlink_escape() {
         matches!(result, Err(IndexError::PathOutsideRepo(_))),
         "commit_batch must reject symlinks that escape the repo root, got: {result:?}"
     );
+    drop(index);
 }
 
 #[cfg(unix)]
@@ -296,6 +301,7 @@ fn commit_batch_accepts_symlink_target_inside_repo() {
             .any(|m| m.path.to_string_lossy() == "alias.rs"),
         "symlink inside repo should remain indexable through commit_batch"
     );
+    drop(index);
 }
 
 #[cfg(unix)]
@@ -348,6 +354,7 @@ fn commit_batch_normalizes_paths_under_symlinked_directory() {
             .all(|m| m.path.to_string_lossy() != "alias/nested.rs"),
         "incremental update through a symlinked directory must not reintroduce alias paths"
     );
+    drop(index);
 }
 
 #[cfg(unix)]
@@ -385,6 +392,7 @@ fn commit_batch_normalizes_delete_under_symlinked_directory() {
         matches.is_empty(),
         "delete through a symlinked directory must remove the real path entry"
     );
+    drop(index);
 }
 
 // Regression test: directory-component symlink swap between canonicalize and open.
@@ -433,6 +441,7 @@ fn commit_batch_rejects_intermediate_symlink_swap() {
         matches!(result, Err(IndexError::PathOutsideRepo(_))),
         "expected PathOutsideRepo after intermediate symlink swap, got: {result:?}"
     );
+    drop(index);
 }
 
 #[test]
@@ -467,6 +476,7 @@ fn commit_batch_returns_overlay_full_when_overlay_ratio_exceeded() {
         matches!(result, Err(IndexError::OverlayFull { .. })),
         "commit_batch must return OverlayFull when overlay exceeds 50% of base, got: {result:?}"
     );
+    drop(index);
 }
 
 #[test]
@@ -506,6 +516,7 @@ fn commit_batch_binary_changes_do_not_count_toward_overlay_limit() {
         0,
         "binary-only changes must not create overlay docs"
     );
+    drop(index);
 }
 
 #[test]
@@ -521,6 +532,7 @@ fn build_succeeds_and_opens_cleanly() {
     };
     let result = Index::build(config);
     assert!(result.is_ok(), "build() must succeed: {:?}", result.err());
+    drop(result.unwrap());
 }
 
 #[cfg(unix)]
@@ -581,6 +593,7 @@ fn build_index_returns_valid_index_without_lock_gap() {
             .sum::<u32>()
             > 0
     );
+    drop(index);
 }
 
 #[test]
@@ -603,6 +616,7 @@ fn maintenance_apis_are_noops_when_no_work_is_needed() {
     assert!(!index.maybe_compact().unwrap());
     index.compact().unwrap();
     assert!(index.rebuild_if_stale().unwrap().is_none());
+    drop(index);
 }
 
 #[cfg(unix)]
@@ -636,6 +650,7 @@ fn open_allows_permissive_mode_when_strict_permissions_disabled() {
         "open() must succeed when strict_permissions is false, got: {}",
         result.err().map(|e| e.to_string()).unwrap_or_default()
     );
+    drop(result.unwrap());
 }
 
 #[test]
@@ -722,6 +737,7 @@ fn compact_preserves_untouched_prefix_segments_in_manifest() {
     assert_eq!(after.segments[0].segment_id, before.segments[0].segment_id);
     assert_eq!(after.segments[1].segment_id, before.segments[1].segment_id);
     assert_ne!(after.segments[2].segment_id, before.segments[2].segment_id);
+    drop(index);
 }
 
 #[test]
@@ -744,6 +760,7 @@ fn compact_preserves_actual_total_files_for_gapped_prefix_manifest() {
             manifest.total_files_indexed,
             "manifest doc_count sum and reported total files should stay aligned after gapped compaction"
         );
+    drop(index);
 }
 
 #[test]
@@ -805,6 +822,7 @@ fn maybe_compact_rebuilds_when_overlay_ratio_exceeds_threshold() {
             .any(|m| m.path == std::path::Path::new("base_1.rs")),
         "compaction must preserve the updated working tree content"
     );
+    drop(index);
 }
 
 #[test]
@@ -839,6 +857,7 @@ fn compact_preserves_base_snapshot_when_working_tree_drifts() {
         base_doc_hash(&index, relative) != Some(beta_hash),
         "compact() must not absorb uncommitted working tree edits into base metadata"
     );
+    drop(index);
 }
 
 #[test]
@@ -883,6 +902,7 @@ fn compact_folds_overlay_snapshot_without_rereading_disk() {
         "compact() must not reread newer uncommitted disk content while folding overlay docs"
     );
     assert_eq!(index.snapshot().overlay.docs.len(), 0);
+    drop(index);
 }
 
 #[test]
@@ -931,6 +951,7 @@ fn rebuild_if_stale_refreshes_snapshot_after_head_change() {
         "rebuilt snapshot must stop returning content from the old HEAD"
     );
     assert_eq!(index.stats().pending_edits, 0);
+    drop(index);
 }
 
 #[test]

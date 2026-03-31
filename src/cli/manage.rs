@@ -155,6 +155,7 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
             }
         }
     }
+    drop(index);
     0
 }
 
@@ -302,6 +303,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     if notify_errors > 0 {
         1
     } else {
+        drop(index);
         0
     }
 }

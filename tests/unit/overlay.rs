@@ -497,4 +497,5 @@ fn commit_does_not_clone_base_doc_to_file_id() {
         ptr_before, ptr_after,
         "base_doc_to_file_id Arc must be shared across commits"
     );
+    drop(index);
 }

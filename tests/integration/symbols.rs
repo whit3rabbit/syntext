@@ -70,6 +70,7 @@ pub struct QueryBuilder {
         results.is_empty(),
         "expected no results for nonexistent symbol"
     );
+    drop(idx);
 }
 
 #[test]
@@ -90,4 +91,5 @@ fn def_prefix_finds_function_definition() {
     let results = idx.search("def:run_server", &opts).expect("search failed");
     assert!(!results.is_empty(), "def: should find function definition");
     assert_eq!(results[0].line_number, 1);
+    drop(idx);
 }

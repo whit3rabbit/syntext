@@ -99,6 +99,7 @@ fn modify_file_new_content_found() {
         !results.is_empty(),
         "transform_data should be visible after commit"
     );
+    drop(index);
 }
 
 /// After modifying a file, old content from that file is no longer found.
@@ -125,6 +126,7 @@ fn modify_file_old_content_gone() {
         "parse_query should not be in modified file, got {:?}",
         main_results
     );
+    drop(index);
 }
 
 /// Deleting a file removes it from search results.
@@ -150,6 +152,7 @@ fn delete_file_removes_from_results() {
         lib_results.is_empty(),
         "deleted file should not appear in results"
     );
+    drop(index);
 }
 
 /// notify_change_immediate is equivalent to notify_change + commit_batch.
@@ -167,6 +170,7 @@ fn notify_change_immediate_works() {
         !results.is_empty(),
         "immediate update should be visible right away"
     );
+    drop(index);
 }
 
 /// Pending edits for new files are invisible before commit_batch.
@@ -198,6 +202,7 @@ fn pending_new_file_invisible_before_commit() {
         !results.is_empty(),
         "new file should be visible after commit"
     );
+    drop(index);
 }
 
 #[test]
@@ -209,6 +214,7 @@ fn empty_commit_batch_is_noop() {
 
     assert!(!search(&index, "parse_query").is_empty());
     assert!(!search(&index, "process_batch").is_empty());
+    drop(index);
 }
 
 #[test]
@@ -238,6 +244,7 @@ fn path_index_tracks_incremental_visible_paths() {
         .paths
         .iter()
         .any(|p| p == std::path::Path::new("src/lib.rs")));
+    drop(index);
 }
 
 /// Adding a new file makes it searchable after commit.
@@ -253,6 +260,7 @@ fn add_new_file() {
 
     let results = search(&index, "brand_new_function");
     assert!(!results.is_empty(), "newly added file should be searchable");
+    drop(index);
 }
 
 /// Interleaved edits and searches maintain consistency.
@@ -281,6 +289,7 @@ fn interleaved_edit_search() {
         "first_edit should be gone from main.rs"
     );
     assert!(!search(&index, "second_edit").is_empty());
+    drop(index);
 }
 
 /// Unmodified files remain searchable after overlay commit.
@@ -303,6 +312,7 @@ fn unmodified_files_still_searchable() {
         !search(&index, "helper").is_empty(),
         "unmodified util.rs should still be searchable"
     );
+    drop(index);
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +332,7 @@ fn path_outside_repo_rejected() {
         err_msg.contains("outside repo"),
         "error should mention 'outside repo', got: {err_msg}"
     );
+    drop(index);
 }
 
 /// notify_delete rejects paths outside the repo root.
@@ -332,6 +343,7 @@ fn delete_path_outside_repo_rejected() {
     let outside = std::path::Path::new("/tmp/evil_file.rs");
     let result = index.notify_delete(outside);
     assert!(result.is_err(), "delete outside repo should be rejected");
+    drop(index);
 }
 
 /// notify_change rejects lexical traversal outside the repo root.
@@ -342,6 +354,7 @@ fn path_with_parent_component_outside_repo_rejected() {
     let traversal = repo.path().join("../evil_file.rs");
     let result = index.notify_change(&traversal);
     assert!(result.is_err(), "path traversal should be rejected");
+    drop(index);
 }
 
 /// notify_delete rejects lexical traversal outside the repo root.
@@ -352,6 +365,7 @@ fn delete_path_with_parent_component_outside_repo_rejected() {
     let traversal = repo.path().join("../evil_file.rs");
     let result = index.notify_delete(&traversal);
     assert!(result.is_err(), "delete path traversal should be rejected");
+    drop(index);
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +401,7 @@ fn large_file_rejected_during_commit() {
         err_msg.contains("too large"),
         "error should mention 'too large', got: {err_msg}"
     );
+    drop(index);
 }
 
 /// Incremental updates should skip binary files just like full builds.
@@ -411,6 +426,7 @@ fn binary_file_added_during_commit_is_not_indexed() {
             .any(|p| p == std::path::Path::new("src/data.bin")),
         "binary file should not appear in the path index after incremental commit"
     );
+    drop(index);
 }
 
 /// A text file changed to binary should disappear from the visible index.
@@ -442,6 +458,7 @@ fn text_file_changed_to_binary_is_removed_from_visible_index() {
         main_results.is_empty(),
         "binary replacement should remove stale search hits from the old text file"
     );
+    drop(index);
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +505,7 @@ fn concurrent_commit_batch_returns_lock_conflict() {
     // Release lock and verify commit succeeds.
     lock_file.unlock().unwrap();
     commit_batch_with_retry(&index);
+    drop(index);
 }
 
 /// A full build must reject an in-flight incremental writer.
@@ -508,7 +526,7 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
         repo_root: repo.path().to_path_buf(),
         ..Config::default()
     };
-    let result = Index::build(config);
+    let result = Index::build(config.clone());
     let err = match result {
         Ok(_) => panic!("build should fail when writer lock is held"),
         Err(err) => err,
@@ -520,4 +538,7 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
     );
 
     lock_file.unlock().unwrap();
+    // After unlocking, build should succeed.
+    let index = Index::build(config).unwrap();
+    drop(index);
 }

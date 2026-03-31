@@ -18,6 +18,11 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 ## General Rules
 
 - **Never put full file paths in documents.** Always use relative paths when referencing internal files. When referencing external repositories, use links to the original Git repository and lock it to a specific version or tag when possible.
+- **Windows Compatibility & Testing**:
+    - **Explicitly `drop(index)`**: Always call `drop(index)` at the end of tests that use `Index::open` or `Index::build`. Windows prevents deleting temporary directories or renaming files if file handles (locks) or memory maps are still active.
+    - **Avoid `io::Error::other`**: Use `io::Error::new(io::ErrorKind::Other, ...)` for compatibility with Rust versions < 1.74.
+    - **Directory `sync_all`**: Do not call `sync_all()` on directory handles on Windows; it is not supported and returns `Access is denied`. Use `#[cfg(not(windows))]`.
+    - **Git Binary**: Use platform-aware resolution (searching for `git.exe` on Windows) in `helpers.rs`.
 
 ## Dependencies
 

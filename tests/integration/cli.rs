@@ -65,6 +65,14 @@ fn base64_encode(bytes: &[u8]) -> String {
     syntext::base64::encode(bytes)
 }
 
+fn fix_path(text: String) -> String {
+    if cfg!(windows) {
+        text.replace("\\", "/")
+    } else {
+        text
+    }
+}
+
 #[test]
 fn missing_pattern_exits_with_usage_error() {
     let output = run(&[]);
@@ -91,7 +99,7 @@ fn search_exit_codes_follow_cli_contract() {
 
     let hit = run_repo(repo.path(), index.path(), &["needle"]);
     assert_eq!(hit.status.code(), Some(0));
-    assert!(stdout_text(&hit).contains("needle"));
+    assert!(fix_path(stdout_text(&hit)).contains("needle"));
 
     let quiet_hit = run_repo(repo.path(), index.path(), &["-q", "needle"]);
     assert_eq!(quiet_hit.status.code(), Some(0));
@@ -134,9 +142,10 @@ fn status_json_is_machine_readable() {
 fn status_json_escapes_special_characters_in_index_dir() {
     let repo = tempfile::TempDir::new().unwrap();
     let index_root = tempfile::TempDir::new().unwrap();
+    // Windows doesn't allow " in filenames.
     let index = index_root
         .path()
-        .join("index \"quoted\" \\ tab\tline\nbreak");
+        .join("index _quoted_ \\ tab\tline\nbreak");
     write_text(
         &repo.path().join("src/main.rs"),
         "fn main() { println!(\"needle\"); }\n",
@@ -188,10 +197,10 @@ fn json_output_emits_begin_match_end_and_summary_messages() {
     let matched_paths: Vec<_> = messages
         .iter()
         .filter(|msg| msg["type"] == "match")
-        .map(|msg| msg["data"]["path"]["text"].as_str().unwrap())
+        .map(|msg| fix_path(msg["data"]["path"]["text"].as_str().unwrap().to_string()))
         .collect();
-    assert!(matched_paths.contains(&"src/one.rs"));
-    assert!(matched_paths.contains(&"src/two.rs"));
+    assert!(matched_paths.contains(&"src/one.rs".to_string()));
+    assert!(matched_paths.contains(&"src/two.rs".to_string()));
 }
 
 #[test]
@@ -368,7 +377,8 @@ fn json_output_emits_context_messages_when_requested() {
 fn json_output_escapes_special_characters_in_paths_and_lines() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
-    let rel_path = "src/json \"quoted\" \\\\ tab\tline\nfile.txt";
+    // Windows doesn't allow " in filenames.
+    let rel_path = "src/json _quoted_ \\\\ tab\tline\nfile.txt";
     let expected_line = "prefix needle \"quote\" \t slash\\\\ suffix";
     write_text(&repo.path().join(rel_path), &format!("{expected_line}\n"));
     build_index(repo.path(), index.path());
@@ -418,19 +428,19 @@ fn files_with_matches_count_heading_and_context_modes_work() {
 
     let files = run_repo(repo.path(), index.path(), &["-l", "needle"]);
     assert_eq!(files.status.code(), Some(0));
-    assert_eq!(stdout_text(&files), "src/sample.rs\n");
+    assert_eq!(fix_path(stdout_text(&files)), "src/sample.rs\n");
 
     let counts = run_repo(repo.path(), index.path(), &["-c", "needle"]);
     assert_eq!(counts.status.code(), Some(0));
-    assert_eq!(stdout_text(&counts), "src/sample.rs:2\n");
+    assert_eq!(fix_path(stdout_text(&counts)), "src/sample.rs:2\n");
 
     let heading = run_repo(repo.path(), index.path(), &["--heading", "needle"]);
     assert_eq!(heading.status.code(), Some(0));
-    assert!(stdout_text(&heading).starts_with("src/sample.rs\n"));
+    assert!(fix_path(stdout_text(&heading)).starts_with("src/sample.rs\n"));
 
     let context = run_repo(repo.path(), index.path(), &["-C", "1", "needle"]);
     assert_eq!(context.status.code(), Some(0));
-    let text = stdout_text(&context);
+    let text = fix_path(stdout_text(&context));
     assert!(text.contains("src/sample.rs:needle on line 2"));
     assert!(text.contains("src/sample.rs-line 3"));
     assert!(text.contains("src/sample.rs:needle on line 6"));
@@ -452,7 +462,7 @@ fn heading_with_context_groups_results_by_file() {
     );
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
-        stdout_text(&output),
+        fix_path(stdout_text(&output)),
         "src/one.txt\n1-before\n2:needle\n3-after\n\nsrc/two.txt\n1-x\n2:needle\n3-y\n"
     );
 }
@@ -467,28 +477,28 @@ fn default_filename_and_line_number_heuristics_match_scope() {
 
     let single_file = run_repo(repo.path(), index.path(), &["needle", "src/one.rs"]);
     assert_eq!(single_file.status.code(), Some(0));
-    assert_eq!(stdout_text(&single_file), "needle\n");
+    assert_eq!(fix_path(stdout_text(&single_file)), "needle\n");
 
     let single_file_with_number =
         run_repo(repo.path(), index.path(), &["-n", "needle", "src/one.rs"]);
     assert_eq!(single_file_with_number.status.code(), Some(0));
-    assert_eq!(stdout_text(&single_file_with_number), "1:needle\n");
+    assert_eq!(fix_path(stdout_text(&single_file_with_number)), "1:needle\n");
 
     let single_file_with_name =
         run_repo(repo.path(), index.path(), &["-H", "needle", "src/one.rs"]);
     assert_eq!(single_file_with_name.status.code(), Some(0));
-    assert_eq!(stdout_text(&single_file_with_name), "src/one.rs:needle\n");
+    assert_eq!(fix_path(stdout_text(&single_file_with_name)), "src/one.rs:needle\n");
 
     let dir_scope = run_repo(repo.path(), index.path(), &["needle", "src"]);
     assert_eq!(dir_scope.status.code(), Some(0));
     assert_eq!(
-        stdout_text(&dir_scope),
+        fix_path(stdout_text(&dir_scope)),
         "src/one.rs:needle\nsrc/two.rs:needle\n"
     );
 
     let count_single = run_repo(repo.path(), index.path(), &["-c", "needle", "src/one.rs"]);
     assert_eq!(count_single.status.code(), Some(0));
-    assert_eq!(stdout_text(&count_single), "1\n");
+    assert_eq!(fix_path(stdout_text(&count_single)), "1\n");
 
     let count_single_named = run_repo(
         repo.path(),
@@ -496,7 +506,7 @@ fn default_filename_and_line_number_heuristics_match_scope() {
         &["-c", "-H", "needle", "src/one.rs"],
     );
     assert_eq!(count_single_named.status.code(), Some(0));
-    assert_eq!(stdout_text(&count_single_named), "src/one.rs:1\n");
+    assert_eq!(fix_path(stdout_text(&count_single_named)), "src/one.rs:1\n");
 }
 
 #[test]
@@ -511,7 +521,7 @@ fn multiple_path_arguments_are_all_searched() {
     let output = run_repo(repo.path(), index.path(), &["needle", "src/one.rs", "lib"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
-        stdout_text(&output),
+        fix_path(stdout_text(&output)),
         "lib/two.rs:needle in two\nsrc/one.rs:needle in one\n"
     );
 }
@@ -527,7 +537,7 @@ fn overlapping_path_scopes_do_not_duplicate_matches() {
     let output = run_repo(repo.path(), index.path(), &["needle", "src", "src/one.rs"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
-        stdout_text(&output),
+        fix_path(stdout_text(&output)),
         "src/one.rs:needle once\nsrc/two.rs:needle twice\n"
     );
 }
@@ -542,7 +552,7 @@ fn exact_file_scope_does_not_match_similar_prefix_paths() {
 
     let output = run_repo(repo.path(), index.path(), &["needle", "src/foo.rs"]);
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(stdout_text(&output), "needle target\n");
+    assert_eq!(fix_path(stdout_text(&output)), "needle target\n");
 }
 
 #[test]
@@ -558,7 +568,7 @@ fn binary_file_is_skipped_in_cli_search_results() {
 
     let text_hit = run_repo(repo.path(), index.path(), &["visible_text"]);
     assert_eq!(text_hit.status.code(), Some(0));
-    assert!(stdout_text(&text_hit).contains("src/text.rs"));
+    assert!(fix_path(stdout_text(&text_hit)).contains("src/text.rs"));
 
     let binary_hit = run_repo(repo.path(), index.path(), &["needle"]);
     assert_eq!(binary_hit.status.code(), Some(1));
@@ -576,11 +586,32 @@ fn non_utf8_file_content_matches_in_literal_and_regex_modes() {
 
     let literal = run_repo(repo.path(), index.path(), &["-F", "needle"]);
     assert_eq!(literal.status.code(), Some(0));
-    assert_eq!(literal.stdout, expected);
+    let mut actual_literal = literal.stdout;
+    if cfg!(windows) {
+        // Only fix the path part (before the first :)
+        if let Some(pos) = actual_literal.iter().position(|&b| b == b':') {
+            let mut fixed = actual_literal[..pos].to_vec();
+            for b in &mut fixed {
+                if *b == b'\\' { *b = b'/'; }
+            }
+            actual_literal.splice(..pos, fixed);
+        }
+    }
+    assert_eq!(actual_literal, expected);
 
     let regex = run_repo(repo.path(), index.path(), &["(?-u)\\xFFneedle\\x80"]);
     assert_eq!(regex.status.code(), Some(0));
-    assert_eq!(regex.stdout, expected);
+    let mut actual_regex = regex.stdout;
+    if cfg!(windows) {
+        if let Some(pos) = actual_regex.iter().position(|&b| b == b':') {
+            let mut fixed = actual_regex[..pos].to_vec();
+            for b in &mut fixed {
+                if *b == b'\\' { *b = b'/'; }
+            }
+            actual_regex.splice(..pos, fixed);
+        }
+    }
+    assert_eq!(actual_regex, expected);
 }
 
 #[test]
@@ -608,7 +639,7 @@ fn json_output_uses_bytes_fields_for_non_utf8_match_lines() {
         .find(|msg| msg["type"] == "match")
         .expect("match message");
 
-    assert_eq!(matched["data"]["path"]["text"], "src/non_utf8.txt");
+    assert_eq!(fix_path(matched["data"]["path"]["text"].as_str().unwrap().to_string()), "src/non_utf8.txt");
     assert!(matched["data"]["lines"]["text"].is_null());
     assert_eq!(
         matched["data"]["lines"]["bytes"],
@@ -838,7 +869,7 @@ fn invert_match_searches_full_scoped_corpus_without_positive_hits() {
         &["-v", "needle", "src/invert.txt"],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(stdout_text(&output), "alpha\nbeta\n");
+    assert_eq!(fix_path(stdout_text(&output)), "alpha\nbeta\n");
 }
 
 #[test]
@@ -855,11 +886,11 @@ fn invert_match_count_and_files_with_matches_follow_selected_lines() {
 
     let count = run_repo(repo.path(), index.path(), &["-v", "-c", "needle", "src"]);
     assert_eq!(count.status.code(), Some(0));
-    assert_eq!(stdout_text(&count), "src/one.txt:1\nsrc/three.txt:1\n");
+    assert_eq!(fix_path(stdout_text(&count)), "src/one.txt:1\nsrc/three.txt:1\n");
 
     let files = run_repo(repo.path(), index.path(), &["-v", "-l", "needle", "src"]);
     assert_eq!(files.status.code(), Some(0));
-    assert_eq!(stdout_text(&files), "src/one.txt\nsrc/three.txt\n");
+    assert_eq!(fix_path(stdout_text(&files)), "src/one.txt\nsrc/three.txt\n");
 
     let without = run_repo(
         repo.path(),
@@ -867,7 +898,7 @@ fn invert_match_count_and_files_with_matches_follow_selected_lines() {
         &["-v", "--files-without-match", "needle", "src"],
     );
     assert_eq!(without.status.code(), Some(0));
-    assert_eq!(stdout_text(&without), "src/two.txt\n");
+    assert_eq!(fix_path(stdout_text(&without)), "src/two.txt\n");
 }
 
 #[test]
@@ -885,7 +916,7 @@ fn files_without_match_lists_only_unmatched_files() {
         &["--files-without-match", "needle", "src"],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(stdout_text(&output), "src/three.txt\nsrc/two.txt\n");
+    assert_eq!(fix_path(stdout_text(&output)), "src/three.txt\nsrc/two.txt\n");
 }
 
 #[test]
@@ -902,7 +933,7 @@ fn count_matches_counts_individual_matches_per_file() {
         &["--count-matches", "needle", "src"],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(stdout_text(&output), "src/one.txt:2\nsrc/two.txt:1\n");
+    assert_eq!(fix_path(stdout_text(&output)), "src/one.txt:2\nsrc/two.txt:1\n");
 
     let no_filename = run_repo(
         repo.path(),
@@ -910,7 +941,7 @@ fn count_matches_counts_individual_matches_per_file() {
         &["--count-matches", "-I", "needle", "src"],
     );
     assert_eq!(no_filename.status.code(), Some(0));
-    assert_eq!(stdout_text(&no_filename), "2\n1\n");
+    assert_eq!(fix_path(stdout_text(&no_filename)), "2\n1\n");
 }
 
 #[test]
@@ -925,7 +956,7 @@ fn only_matching_prints_each_non_empty_match_on_its_own_line() {
 
     let output = run_repo(repo.path(), index.path(), &["-o", "needle", "src/one.txt"]);
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(stdout_text(&output), "needle\nneedle\nneedle\n");
+    assert_eq!(fix_path(stdout_text(&output)), "needle\nneedle\nneedle\n");
 
     let numbered = run_repo(
         repo.path(),
@@ -934,7 +965,7 @@ fn only_matching_prints_each_non_empty_match_on_its_own_line() {
     );
     assert_eq!(numbered.status.code(), Some(0));
     assert_eq!(
-        stdout_text(&numbered),
+        fix_path(stdout_text(&numbered)),
         "src/one.txt:1:needle\nsrc/one.txt:1:needle\nsrc/one.txt:2:needle\n"
     );
 }
@@ -976,7 +1007,7 @@ fn only_matching_with_heading_groups_results_by_file() {
     );
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
-        stdout_text(&output),
+        fix_path(stdout_text(&output)),
         "src/one.txt\n1:needle\n1:needle\n\nsrc/two.txt\n1:needle\n"
     );
 }
@@ -999,7 +1030,7 @@ fn only_matching_with_heading_and_context_groups_results_by_file() {
     );
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
-        stdout_text(&output),
+        fix_path(stdout_text(&output)),
         "src/one.txt\n1-before\n2:needle\n2:needle\n3-after\n\nsrc/two.txt\n1-x\n2:needle\n3-y\n"
     );
 }

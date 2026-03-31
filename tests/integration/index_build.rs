@@ -31,7 +31,7 @@ fn make_config(index_dir: &TempDir) -> Config {
 fn build_creates_segment_with_valid_rplx_header() {
     let index_dir = TempDir::new().unwrap();
     let config = make_config(&index_dir);
-    Index::build(config).expect("build should succeed");
+    drop(Index::build(config).expect("build should succeed"));
 
     // At least one .dict file must exist for the v3 split segment format.
     let dict_files: Vec<_> = std::fs::read_dir(index_dir.path())
@@ -63,6 +63,7 @@ fn build_produces_nonzero_doc_count() {
         "expected at least 30 docs, got {}",
         stats.total_documents
     );
+    drop(idx);
 }
 
 #[test]
@@ -82,6 +83,7 @@ fn gitignored_file_not_indexed() {
         !found,
         "gitignored file appeared in index: build/output.txt"
     );
+    drop(idx);
 }
 
 #[test]
@@ -126,6 +128,7 @@ fn binary_file_skipped() {
         .iter()
         .any(|p| p == std::path::Path::new("src/hello.rs"));
     assert!(has_text, "text file not indexed");
+    drop(idx);
 }
 
 #[test]
@@ -147,13 +150,15 @@ fn open_round_trips_segment_metadata() {
         stats_built.total_segments, stats_opened.total_segments,
         "segment count differs after re-open"
     );
+    drop(idx_built);
+    drop(idx_opened);
 }
 
 #[test]
 fn segment_footer_magic_matches() {
     let index_dir = TempDir::new().unwrap();
     let config = make_config(&index_dir);
-    Index::build(config).unwrap();
+    drop(Index::build(config).unwrap());
 
     for entry in std::fs::read_dir(index_dir.path()).unwrap() {
         let entry = entry.unwrap();
@@ -200,6 +205,7 @@ fn search_file_type_py_only() {
         !results.is_empty(),
         "fixture invariant: parse_query should appear in at least one .py file"
     );
+    drop(idx);
 }
 
 /// Search with file_type="rs" returns only .rs files.
@@ -222,6 +228,7 @@ fn search_file_type_rs_only() {
             p
         );
     }
+    drop(idx);
 }
 
 /// Search with path_filter="python" returns only files under python/.
@@ -244,6 +251,7 @@ fn search_path_filter_subdirectory() {
             p
         );
     }
+    drop(idx);
 }
 
 /// Combined: file_type="rs" + path_filter="rust/" narrows to only .rs files under rust/.
@@ -264,6 +272,7 @@ fn search_combined_type_and_path() {
         assert!(p.ends_with(".rs"), "non-.rs: {}", p);
         assert!(p.contains("rust/"), "not under rust/: {}", p);
     }
+    drop(idx);
 }
 
 #[test]
@@ -283,6 +292,7 @@ fn search_exclude_type_omits_matching_extension() {
             .all(|m| !m.path.to_string_lossy().ends_with(".py")),
         "exclude_type=py should remove Python files from results"
     );
+    drop(idx);
 }
 
 #[cfg(unix)]
@@ -313,6 +323,7 @@ fn build_skips_files_under_symlinked_directory_path() {
             .all(|m| m.path.to_string_lossy() != "alias/nested.rs"),
         "directory symlink contents must not be indexed through the alias path"
     );
+    drop(idx);
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +367,7 @@ fn utf8_bom_file_is_indexed_without_bom_bytes() {
         !line.starts_with(&[0xEF, 0xBB, 0xBF]),
         "BOM bytes must not appear in matched line content, got: {line:?}"
     );
+    drop(idx);
 }
 
 #[test]
@@ -392,6 +404,7 @@ fn utf16_le_file_is_indexed_and_searchable() {
         !matches.is_empty(),
         "must find 'utf16_function' in a UTF-16 LE file"
     );
+    drop(idx);
 }
 
 #[test]
@@ -428,6 +441,7 @@ fn utf16_be_file_is_indexed_and_searchable() {
         !matches.is_empty(),
         "must find 'utf16be_fn' in a UTF-16 BE file"
     );
+    drop(idx);
 }
 
 #[test]
@@ -467,6 +481,7 @@ fn utf16_le_via_incremental_commit_is_searchable() {
         !matches.is_empty(),
         "UTF-16 LE file added via commit_batch must be searchable"
     );
+    drop(idx);
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +514,7 @@ fn v3_format_produces_dict_and_post_files() {
     };
 
     // Build index
-    Index::build(config.clone()).expect("v3 build should succeed");
+    drop(Index::build(config.clone()).expect("v3 build should succeed"));
 
     // Verify file layout: .dict and .post must exist; .seg must not
     let entries: Vec<_> = std::fs::read_dir(index_dir.path())
@@ -557,4 +572,5 @@ fn v3_format_produces_dict_and_post_files() {
         !results2.is_empty(),
         "incremental update must find 'new_function_xyz' after commit_batch"
     );
+    drop(index);
 }

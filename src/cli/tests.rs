@@ -140,6 +140,7 @@ fn cmd_index_rebuilds_existing_index_without_force() {
         1,
         "new content should be indexed after rebuild"
     );
+    drop(index);
 }
 
 #[test]
@@ -339,4 +340,5 @@ fn max_count_applies_per_file() {
             .count(),
         1
     );
+    drop(index);
 }

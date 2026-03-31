@@ -47,6 +47,7 @@ fn literal_queries_short_circuit_when_grams_are_missing() {
 
     let candidates = execute_query(&GramQuery::Grams(grams), &snap).unwrap();
     assert!(candidates.is_empty());
+    drop(index);
 }
 
 #[test]
@@ -69,6 +70,7 @@ fn posting_bitmaps_are_cached_per_snapshot() {
     let second = posting_bitmap(gram, &snap).unwrap();
     assert_eq!(snap.posting_bitmap_cache_len(), 1);
     assert!(Arc::ptr_eq(&first, &second));
+    drop(index);
 }
 
 #[test]
@@ -102,6 +104,7 @@ fn posting_bitmap_cache_clears_when_cap_is_exceeded() {
         .cached_posting_bitmap(overflow_gram)
         .expect("overflow insert should remain cached");
     assert!(Arc::ptr_eq(&cached, &overflow_bitmap));
+    drop(index);
 }
 
 #[test]
@@ -132,6 +135,7 @@ fn should_use_index_very_selective_term() {
         should_use_index(&grams, &snap).unwrap(),
         "1% cardinality must use index (threshold clamped to max 0.50)"
     );
+    drop(index);
 }
 
 #[test]
@@ -161,6 +165,7 @@ fn should_use_index_ubiquitous_term() {
         !should_use_index(&grams, &snap).unwrap(),
         "100% cardinality must fall back to scan (threshold clamped to max 0.50)"
     );
+    drop(index);
 }
 
 #[test]
@@ -196,6 +201,7 @@ fn should_use_index_respects_snapshot_threshold() {
         !should_use_index(&grams, &snap_low).unwrap(),
         "30% cardinality should NOT use index when threshold is 0.20"
     );
+    drop(index);
 }
 
 #[test]
@@ -216,6 +222,7 @@ fn should_use_index_empty_hashes() {
         !should_use_index(&[], &snap).unwrap(),
         "empty gram list should not use index"
     );
+    drop(index);
 }
 
 #[test]
@@ -260,6 +267,7 @@ fn should_use_index_for_compound_identifier_with_selective_intersection() {
         should_use_index(&grams, &snap).unwrap(),
         "compound identifier should use index when gram intersection is selective"
     );
+    drop(index);
 }
 
 #[test]
@@ -282,4 +290,5 @@ fn type_not_excludes_file_extension() {
     let results = index.search("target_fn", &opts).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].path.to_string_lossy().ends_with(".rs"));
+    drop(index);
 }

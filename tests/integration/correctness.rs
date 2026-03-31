@@ -301,6 +301,7 @@ fn literal_parse_query() {
     // Compatibility with rg: exact literal matches should agree on path, line,
     // and visible line content, not just candidate inclusion.
     assert_exact_match(&corpus, &rg_result, &syntext_result, "parse_query");
+    drop(index);
 }
 
 /// Exact literal: `process_batch` appears in 2+ files.
@@ -324,6 +325,7 @@ fn literal_process_batch() {
     // Compatibility with rg: exact literal matches should agree on path, line,
     // and visible line content, not just candidate inclusion.
     assert_exact_match(&corpus, &rg_result, &syntext_result, "process_batch");
+    drop(index);
 }
 
 /// Literal with punctuation: `parse_query(` -- the `(` is part of the literal.
@@ -349,6 +351,7 @@ fn literal_with_punctuation() {
     // Compatibility with rg: escaped punctuation should still produce the same
     // final match set and visible line content as rg's fixed-string mode here.
     assert_exact_match(&corpus, &rg_result, &syntext_result, "parse_query(");
+    drop(index);
 }
 
 /// Regex alternation: `parse_query|process_batch`.
@@ -376,6 +379,7 @@ fn regex_alternation() {
         &syntext_result,
         "parse_query|process_batch",
     );
+    drop(index);
 }
 
 /// Regex character class: `parse_quer[yi]` (matches parse_query and parse_queri).
@@ -397,6 +401,7 @@ fn regex_character_class() {
     let syntext_result = syntext_matches(&index, &corpus, "parse_quer[yi]", false, None);
     // Compatibility with rg: simple indexed character-class regexes should be exact.
     assert_exact_match(&corpus, &rg_result, &syntext_result, "parse_quer[yi]");
+    drop(index);
 }
 
 /// Indexed regex repetition: `(fn_parse_filter_query)+`.
@@ -424,6 +429,7 @@ fn indexed_regex_repetition() {
         &syntext_result,
         "(fn_parse_filter_query)+",
     );
+    drop(index);
 }
 
 /// Case-insensitive literal: `-i ParseQuery` matches parseQuery, PARSE_QUERY, etc.
@@ -456,6 +462,7 @@ fn case_insensitive_literal() {
         &syntext_result,
         "ParseQuery (case-insensitive)",
     );
+    drop(index);
 }
 
 /// No-match pattern: must return empty result set.
@@ -481,6 +488,7 @@ fn no_match_pattern() {
         "syntext must return empty for no-match sentinel, got {:?}",
         syntext_result
     );
+    drop(index);
 }
 
 /// Unicode content: `café` (non-ASCII in a Python identifier).
@@ -502,6 +510,7 @@ fn unicode_identifier() {
     let syntext_result = syntext_matches(&index, &corpus, "café", false, None);
     // Compatibility with rg: UTF-8 literal search should be exact on supported text files.
     assert_exact_match(&corpus, &rg_result, &syntext_result, "café");
+    drop(index);
 }
 
 /// Optional prefix pattern: `(foo)?bar`
@@ -541,6 +550,7 @@ fn optional_prefix_pattern() {
     // Compatibility with rg: optional prefixes are the key correctness trap
     // here, so this should match rg exactly after verification.
     assert_exact_match(&corpus, &rg_result, &syntext_result, "(foo)?bar");
+    drop(index);
 }
 
 /// `parse.*batch`: the `.*` contributes All which simplifies away, leaving
@@ -566,6 +576,7 @@ fn dot_star_fallback_to_scan() {
     // Compatibility with rg: even when routing falls back to a broader scan,
     // the final verified results should still be exact.
     assert_exact_match(&corpus, &rg_result, &syntext_result, "parse.*batch");
+    drop(index);
 }
 
 /// Path filter: `parse_query` restricted to `*.py` files.
@@ -612,6 +623,7 @@ fn path_filter_py_only() {
         &syntext_result,
         "parse_query (*.py filter)",
     );
+    drop(index);
 }
 
 /// Gitignore: `build/output.txt` must not appear in results.
@@ -644,6 +656,7 @@ fn gitignore_excludes_build_dir() {
             m.path
         );
     }
+    drop(index);
 }
 
 /// Size guard: a file that grew beyond max_file_size after indexing must be
@@ -679,6 +692,7 @@ fn oversized_file_after_growth_returns_no_results() {
         1,
         "baseline: must find match in original file"
     );
+    drop(index);
 
     // Bloat the file past max_file_size; the sentinel is still near the start
     // but the file is now oversized so the resolver must skip it entirely.
@@ -694,6 +708,7 @@ fn oversized_file_after_growth_returns_no_results() {
         0,
         "oversized file must be skipped entirely, not verified against truncated content"
     );
+    drop(index2);
 }
 
 /// Symlink escape: a symlink replacing an indexed file must not leak content

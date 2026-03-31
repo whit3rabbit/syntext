@@ -199,6 +199,7 @@ impl Manifest {
             file.sync_all()?;
         }
         std::fs::rename(&tmp, &final_path)?;
+        #[cfg(not(windows))]
         std::fs::File::open(index_dir)?.sync_all()?;
         Ok(())
     }
