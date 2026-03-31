@@ -216,6 +216,13 @@ where
 // T012: build_all -- index-time gram extraction
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    // Reusable buffer for the lowercase copy of `input` in build_all.
+    // Eliminates one Vec<u8> allocation per file on the index-build hot path.
+    static LOWER_BUF: std::cell::RefCell<Vec<u8>> =
+        std::cell::RefCell::new(Vec::with_capacity(4096));
+}
+
 /// Extract all sparse n-grams from `input` for index construction.
 ///
 /// Finds all boundary positions from the original bytes, lowercases the spans,
@@ -238,22 +245,36 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
         return Vec::new();
     }
 
-    let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
-    with_boundary_positions_lower(&lower, |lower_boundaries| {
-        let mut hashes = Vec::new();
-        append_grams_for_boundaries(&mut hashes, &lower, lower_boundaries);
+    LOWER_BUF.with(|buf| {
+        // Fill the thread-local buffer with lowercased input.
+        {
+            let mut lower = buf.borrow_mut();
+            lower.clear();
+            lower.extend(input.iter().map(|b| b.to_ascii_lowercase()));
+        } // mutable borrow released here
 
-        // Preserve the token-aligned lowercase spans, then add only the extra
-        // spans unlocked by lowercase->uppercase transitions in CamelCase tokens.
-        let camel_boundaries = camel_case_boundaries(input);
-        if camel_boundaries.is_empty() {
-            return hashes;
-        }
+        let lower = buf.borrow();
+        with_boundary_positions_lower(&lower, |lower_boundaries| {
+            let mut hashes = Vec::new();
+            append_grams_for_boundaries(&mut hashes, &lower, lower_boundaries);
 
-        let merged_boundaries = merge_boundaries(lower_boundaries, &camel_boundaries);
-        append_new_grams_for_boundaries(&mut hashes, &lower, lower_boundaries, &merged_boundaries);
+            // Preserve the token-aligned lowercase spans, then add only the extra
+            // spans unlocked by lowercase->uppercase transitions in CamelCase tokens.
+            let camel_boundaries = camel_case_boundaries(input);
+            if camel_boundaries.is_empty() {
+                return hashes;
+            }
 
-        hashes
+            let merged_boundaries = merge_boundaries(lower_boundaries, &camel_boundaries);
+            append_new_grams_for_boundaries(
+                &mut hashes,
+                &lower,
+                lower_boundaries,
+                &merged_boundaries,
+            );
+
+            hashes
+        })
     })
 }
 
