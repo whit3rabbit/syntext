@@ -297,6 +297,23 @@ largest synthetic regression remains initial full build time, which rose from
 `28.139 ms` to `41.080 ms`. Single-edit incremental commit stayed effectively
 flat (`158.04 µs` to `156.29 µs`).
 
+#### 2026-03-31: thread-local lowercase buffer in build_all
+
+Added `LOWER_BUF` thread-local `Vec<u8>` to `build_all` to eliminate one heap
+allocation per file on the index-build hot path (previously `let lower: Vec<u8>
+= input.iter().map(...).collect()` on every call). Before/after on the synthetic
+corpus bench:
+
+`cargo bench --bench index_build -- --sample-size 10`
+
+| Benchmark | Before (main) | After (branch) | Delta |
+|---|---|---|---|
+| `full_build_300_files` | 39.961 ms [39.675–40.198] | 39.227 ms [39.053–39.522] | -1.8% |
+
+No regression. The improvement is within noise range for this corpus size; the
+benefit is expected to compound on larger repos where the allocation cost per file
+becomes more significant.
+
 #### External repo spot checks
 
 These runs used the local `_syntext-bench` corpus from the setup section and the
