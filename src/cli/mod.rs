@@ -3,232 +3,31 @@
 //! Uses clap derive for argument parsing. Output format is grep-compatible
 //! by default, with `--json` for machine-readable output.
 
+pub mod args;
 mod bench;
+mod commands;
 mod manage;
 mod render;
+mod scope;
 mod search;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 use crate::Config;
 
+pub use args::{Cli, ManageCommand};
 use bench::cmd_bench_search;
-use manage::{cmd_index, cmd_status, cmd_update};
+use manage::{cmd_index, cmd_status, cmd_type_list, cmd_update};
+use scope::cmd_files;
 use search::{cmd_search, SearchArgs};
-
-/// Fast code search with index acceleration. ripgrep-style interface.
-///
-/// Use `st index` to build the index first, then `st <pattern>` to search.
-#[derive(Parser)]
-#[command(name = "st", version, about, disable_help_subcommand = true)]
-pub struct Cli {
-    /// Pattern to search (regex by default). Use -F for literal, -e to avoid
-    /// subcommand name conflicts (e.g. `st -e index`).
-    pub pattern: Option<String>,
-
-    /// Paths (files or directories) to restrict the search.
-    #[arg(value_name = "PATH")]
-    pub paths: Vec<PathBuf>,
-
-    // --- Match options ---
-    /// Treat PATTERN as a literal string (not a regex). Equivalent to rg -F.
-    #[arg(short = 'F', long = "fixed-strings")]
-    pub fixed_strings: bool,
-
-    /// Execute the search case sensitively (the default).
-    #[arg(short = 's', long = "case-sensitive", overrides_with = "ignore_case")]
-    pub case_sensitive: bool,
-
-    /// Case-insensitive search.
-    #[arg(short = 'i', long = "ignore-case", overrides_with = "case_sensitive")]
-    pub ignore_case: bool,
-
-    /// Only match whole words (wraps pattern in \b...\b).
-    #[arg(short = 'w', long = "word-regexp", overrides_with = "line_regexp")]
-    pub word_regexp: bool,
-
-    /// Only match lines where the entire line participates in a match.
-    #[arg(short = 'x', long = "line-regexp", overrides_with = "word_regexp")]
-    pub line_regexp: bool,
-
-    /// Invert matching: print lines that do NOT match the pattern within candidate files.
-    /// Unlike grep -v and rg -v, this only examines files identified by the index as containing
-    /// the pattern; non-candidate files are not searched (v1 limitation).
-    #[arg(short = 'v', long = "invert-match")]
-    pub invert_match: bool,
-
-    /// Specify pattern explicitly (avoids subcommand name conflicts).
-    #[arg(
-        short = 'e',
-        long = "regexp",
-        value_name = "PATTERN",
-        conflicts_with = "pattern"
-    )]
-    pub regexp: Option<String>,
-
-    // --- Output format ---
-    /// Print only paths of files with at least one match.
-    #[arg(
-        short = 'l',
-        long = "files-with-matches",
-        overrides_with_all = ["count", "json", "files_without_match"]
-    )]
-    pub files_with_matches: bool,
-
-    /// Print only paths of files with zero matches.
-    #[arg(
-        long = "files-without-match",
-        overrides_with_all = ["files_with_matches", "count", "count_matches", "json"]
-    )]
-    pub files_without_match: bool,
-
-    /// Print count of matching lines per file.
-    #[arg(
-        short = 'c',
-        long = "count",
-        overrides_with_all = ["files_with_matches", "files_without_match", "count_matches", "json"]
-    )]
-    pub count: bool,
-
-    /// Print count of individual matches per file.
-    #[arg(
-        long = "count-matches",
-        overrides_with_all = ["files_with_matches", "files_without_match", "count", "json"]
-    )]
-    pub count_matches: bool,
-
-    /// Limit the number of matching lines printed per file.
-    #[arg(short = 'm', long = "max-count", value_name = "NUM")]
-    pub max_count: Option<usize>,
-
-    /// Suppress output; exit 0 if any match found.
-    #[arg(short = 'q', long = "quiet")]
-    pub quiet: bool,
-
-    /// Print only the matched (non-empty) parts of matching lines.
-    #[arg(short = 'o', long = "only-matching")]
-    pub only_matching: bool,
-
-    /// Output as NDJSON (ripgrep-style format).
-    #[arg(long = "json", overrides_with_all = ["files_with_matches", "files_without_match", "count", "count_matches"])]
-    pub json: bool,
-
-    /// Group matches under their file name (like rg default on a tty).
-    #[arg(long = "heading", overrides_with = "no_heading")]
-    pub heading: bool,
-
-    /// Print path:line:content on each line (default; overrides --heading).
-    #[arg(long = "no-heading", overrides_with = "heading")]
-    pub no_heading: bool,
-
-    /// Show line numbers.
-    #[arg(short = 'n', long = "line-number", overrides_with = "no_line_number")]
-    pub line_number: bool,
-
-    /// Suppress line numbers in output.
-    #[arg(short = 'N', long = "no-line-number", overrides_with = "line_number")]
-    pub no_line_number: bool,
-
-    /// Show file names with matches.
-    #[arg(short = 'H', long = "with-filename", overrides_with = "no_filename")]
-    pub with_filename: bool,
-
-    /// Suppress file names in output.
-    #[arg(short = 'I', long = "no-filename", overrides_with = "with_filename")]
-    pub no_filename: bool,
-
-    // --- Context lines ---
-    /// Show NUM lines after each match.
-    #[arg(short = 'A', long = "after-context", value_name = "NUM")]
-    pub after_context: Option<usize>,
-
-    /// Show NUM lines before each match.
-    #[arg(short = 'B', long = "before-context", value_name = "NUM")]
-    pub before_context: Option<usize>,
-
-    /// Show NUM lines before and after each match (sets -A and -B).
-    #[arg(short = 'C', long = "context", value_name = "NUM")]
-    pub context: Option<usize>,
-
-    // --- Filtering ---
-    /// Restrict to file type extension (e.g. rs, py, js).
-    #[arg(short = 't', long = "type", value_name = "TYPE")]
-    pub file_type: Option<String>,
-
-    /// Exclude file type extension.
-    #[arg(short = 'T', long = "type-not", value_name = "TYPE")]
-    pub type_not: Option<String>,
-
-    /// Restrict to paths matching GLOB (e.g. "*.rs" or "src/**").
-    #[arg(short = 'g', long = "glob", value_name = "GLOB")]
-    pub glob: Option<String>,
-
-    // --- Index configuration ---
-    /// Override index directory (default: .syntext/ at repo root).
-    #[arg(long, global = true, env = "SYNTEXT_INDEX_DIR")]
-    pub index_dir: Option<PathBuf>,
-
-    /// Override repository root (default: nearest .git ancestor).
-    #[arg(long, global = true)]
-    pub repo_root: Option<PathBuf>,
-
-    /// Emit progress and diagnostic messages.
-    #[arg(long, global = true)]
-    pub verbose: bool,
-
-    /// Management subcommands (index, update, status).
-    #[command(subcommand)]
-    pub command: Option<ManageCommand>,
-}
-
-/// Management subcommands dispatched from the top-level CLI.
-#[derive(Subcommand)]
-pub enum ManageCommand {
-    /// Build or rebuild the search index.
-    Index {
-        /// Rebuild from scratch even if an index exists.
-        #[arg(long)]
-        force: bool,
-        /// Print statistics after build.
-        #[arg(long)]
-        stats: bool,
-        /// Suppress progress output.
-        #[arg(short, long)]
-        quiet: bool,
-    },
-    /// Show index statistics.
-    Status {
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Incrementally update the index for changed files.
-    Update {
-        /// Force flush overlay to segment.
-        #[arg(long)]
-        flush: bool,
-        /// Suppress output.
-        #[arg(short, long)]
-        quiet: bool,
-    },
-    #[command(hide = true)]
-    BenchSearch {
-        #[arg(long = "query", required = true)]
-        queries: Vec<String>,
-        #[arg(long, default_value_t = 1)]
-        iterations: usize,
-        #[arg(long, default_value_t = 0)]
-        warmups: usize,
-    },
-}
 
 /// Run the CLI. Returns the process exit code.
 pub fn run() -> i32 {
     let cli = Cli::parse();
     let mut config = resolve_config(&cli);
-    config.verbose = cli.verbose;
+    config.verbose = cli.verbose || cli.debug;
 
     match cli.command {
         Some(ManageCommand::Index {
@@ -244,6 +43,14 @@ pub fn run() -> i32 {
             warmups,
         }) => cmd_bench_search(config, &queries, iterations, warmups),
         None => {
+            // --type-list and --files do not require a pattern.
+            if cli.type_list {
+                return cmd_type_list();
+            }
+            if cli.files {
+                return cmd_files(config, &cli);
+            }
+
             let pattern = match cli.pattern.or(cli.regexp) {
                 Some(p) => p,
                 None => {
@@ -251,16 +58,32 @@ pub fn run() -> i32 {
                     return 2;
                 }
             };
+
+            // --pcre2 is not supported; warn and continue with default engine.
+            if cli.pcre2 {
+                eprintln!("st: --pcre2 is not supported; using default regex engine");
+            }
+
+            // --smart-case: case-insensitive if pattern has no uppercase chars.
+            let ignore_case = if cli.smart_case && !cli.case_sensitive && !cli.ignore_case {
+                !pattern.chars().any(|c| c.is_uppercase())
+            } else {
+                cli.ignore_case
+            };
+
+            // --pretty is an alias for --heading --line-number (color is no-op).
+            let heading = cli.heading || cli.pretty;
+            let line_number = cli.line_number || cli.pretty;
+
             let ctx = cli.context.unwrap_or(0);
-            // no_heading is the default behavior; this flag exists for rg compatibility.
             let search_args = SearchArgs {
                 pattern,
                 paths: cli.paths,
                 fixed_strings: cli.fixed_strings,
-                ignore_case: cli.ignore_case,
+                ignore_case,
                 word_regexp: cli.word_regexp,
                 line_regexp: cli.line_regexp,
-                line_number: cli.line_number,
+                line_number,
                 with_filename: cli.with_filename,
                 invert_match: cli.invert_match,
                 files_with_matches: cli.files_with_matches,
@@ -271,7 +94,7 @@ pub fn run() -> i32 {
                 quiet: cli.quiet,
                 only_matching: cli.only_matching,
                 json: cli.json,
-                heading: cli.heading,
+                heading,
                 no_line_number: cli.no_line_number,
                 no_filename: cli.no_filename,
                 after_context: cli.after_context.unwrap_or(ctx),
@@ -279,6 +102,16 @@ pub fn run() -> i32 {
                 file_type: cli.file_type,
                 type_not: cli.type_not,
                 glob: cli.glob,
+                column: cli.column || cli.vimgrep,
+                vimgrep: cli.vimgrep,
+                replace: cli.replace,
+                null: cli.null,
+                context_separator: cli.context_separator,
+                byte_offset: cli.byte_offset,
+                trim: cli.trim,
+                max_columns: cli.max_columns,
+                search_stats: cli.search_stats,
+                max_depth: cli.max_depth,
             };
             cmd_search(config, &search_args)
         }

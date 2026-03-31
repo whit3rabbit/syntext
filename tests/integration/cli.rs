@@ -1188,3 +1188,103 @@ fn broken_pipe_exits_cleanly_instead_of_panicking() {
         "stderr:\n{stderr}"
     );
 }
+
+// --- New flag integration tests ---
+
+#[test]
+fn smart_case_lowercase_pattern_matches_mixed_case() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    fs::write(repo.path().join("a.txt"), "Hello World\n").unwrap();
+    build_index(repo.path(), idx.path());
+
+    // -S with all-lowercase pattern: should match "Hello World" case-insensitively
+    let out = run_repo(repo.path(), idx.path(), &["-S", "hello"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout_text(&out).contains("Hello World"));
+
+    // Without -S, "hello" should NOT match "Hello World" (case-sensitive default)
+    let out = run_repo(repo.path(), idx.path(), &["hello"]);
+    assert_eq!(out.status.code(), Some(1), "case-sensitive should not match");
+
+    // -S with mixed-case pattern: should still match exact case
+    let out = run_repo(repo.path(), idx.path(), &["-S", "Hello"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout_text(&out).contains("Hello World"));
+}
+
+#[test]
+fn null_separator_in_files_with_matches() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    fs::write(repo.path().join("a.rs"), "needle\n").unwrap();
+    fs::write(repo.path().join("b.rs"), "needle\n").unwrap();
+    build_index(repo.path(), idx.path());
+
+    let out = run_repo(repo.path(), idx.path(), &["-l", "--null", "needle"]);
+    assert_eq!(out.status.code(), Some(0));
+    // NUL-terminated: output should contain NUL bytes, no newlines
+    assert!(out.stdout.contains(&b'\0'), "expected NUL bytes in output");
+    assert!(!out.stdout.contains(&b'\n'), "expected no newlines when --null is set");
+    // Two files → two NUL terminators
+    assert_eq!(out.stdout.iter().filter(|&&b| b == b'\0').count(), 2);
+}
+
+#[test]
+fn stats_flag_writes_to_stderr() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    fs::write(repo.path().join("a.rs"), "needle\n").unwrap();
+    build_index(repo.path(), idx.path());
+
+    let out = run_repo(repo.path(), idx.path(), &["--stats", "needle"]);
+    assert_eq!(out.status.code(), Some(0));
+    let err = stderr_text(&out);
+    assert!(err.contains("Elapsed:"), "expected Elapsed in stats: {err:?}");
+    assert!(err.contains("Matches: 1"), "expected match count in stats: {err:?}");
+    assert!(err.contains("Files with matches: 1"), "expected file count in stats: {err:?}");
+}
+
+#[test]
+fn files_flag_lists_indexed_paths() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/lib.rs"), "// lib\n").unwrap();
+    fs::write(repo.path().join("src/main.rs"), "// main\n").unwrap();
+    fs::write(repo.path().join("README.md"), "# readme\n").unwrap();
+    build_index(repo.path(), idx.path());
+
+    let out = run_repo(repo.path(), idx.path(), &["--files"]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = fix_path(stdout_text(&out));
+    assert!(stdout.contains("src/lib.rs"), "expected src/lib.rs in --files output");
+    assert!(stdout.contains("src/main.rs"), "expected src/main.rs in --files output");
+    assert!(stdout.contains("README.md"), "expected README.md in --files output");
+}
+
+#[test]
+fn type_list_prints_known_types() {
+    let out = run(&["--type-list"]);
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = stdout_text(&out);
+    assert!(stdout.contains("rust:"), "expected 'rust:' in --type-list output");
+    assert!(stdout.contains("python:"), "expected 'python:' in --type-list output");
+}
+
+#[test]
+fn pcre2_warns_but_searches_normally() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    fs::write(repo.path().join("a.rs"), "foo bar\n").unwrap();
+    build_index(repo.path(), idx.path());
+
+    let out = run_repo(repo.path(), idx.path(), &["-P", "foo"]);
+    assert_eq!(out.status.code(), Some(0));
+    let err = stderr_text(&out);
+    assert!(
+        err.contains("--pcre2 is not supported"),
+        "expected pcre2 warning in stderr: {err:?}"
+    );
+    assert!(stdout_text(&out).contains("foo bar"), "expected match output despite pcre2 flag");
+}

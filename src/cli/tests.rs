@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -8,6 +9,29 @@ use crate::index::Index;
 use crate::{Config, SearchOptions};
 
 use super::{manage::cmd_index, manage::cmd_update, Cli, ManageCommand};
+
+/// Build a temporary index from a list of (relative_path, content) pairs.
+/// Returns (repo_dir, index_dir, config) — caller must keep all three alive.
+fn build_index_for_files(
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, tempfile::TempDir, Config) {
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    for (name, content) in files {
+        let p = repo.path().join(name);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&p, content).unwrap();
+    }
+    let config = Config {
+        index_dir: idx.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    assert_eq!(cmd_index(config.clone(), false, false, true), 0);
+    (repo, idx, config)
+}
 
 #[test]
 fn search_works_without_subcommand() {
@@ -341,4 +365,446 @@ fn max_count_applies_per_file() {
         1
     );
     drop(index);
+}
+
+// --- No-op rg-compatibility flag parse tests ---
+
+#[test]
+fn smart_case_short_flag_is_capital_s() {
+    let cli = Cli::try_parse_from(["st", "-S", "pat"]).unwrap();
+    assert!(cli.smart_case);
+}
+
+#[test]
+fn noops_color_and_colors_are_accepted() {
+    let cli = Cli::try_parse_from(["st", "--color", "never", "pat"]).unwrap();
+    assert_eq!(cli.color.as_deref(), Some("never"));
+
+    let cli = Cli::try_parse_from(["st", "--colors", "match:fg:red", "pat"]).unwrap();
+    assert_eq!(cli.colors, ["match:fg:red"]);
+}
+
+#[test]
+fn noops_ignore_and_discovery_flags_are_accepted() {
+    let cli = Cli::try_parse_from([
+        "st", "--no-ignore", "--no-ignore-vcs", "--hidden", "--follow", "pat",
+    ])
+    .unwrap();
+    assert!(cli.no_ignore && cli.no_ignore_vcs && cli.hidden && cli.follow);
+}
+
+#[test]
+fn noops_unrestricted_counts_repetitions() {
+    let cli = Cli::try_parse_from(["st", "-uuu", "pat"]).unwrap();
+    assert_eq!(cli.unrestricted, 3);
+}
+
+#[test]
+fn noops_sort_and_sortr_are_accepted() {
+    let cli = Cli::try_parse_from(["st", "--sort", "path", "pat"]).unwrap();
+    assert_eq!(cli.sort.as_deref(), Some("path"));
+
+    let cli = Cli::try_parse_from(["st", "--sortr", "modified", "pat"]).unwrap();
+    assert_eq!(cli.sortr.as_deref(), Some("modified"));
+}
+
+#[test]
+fn noops_binary_text_encoding_flags_are_accepted() {
+    let cli =
+        Cli::try_parse_from(["st", "-a", "--binary", "-E", "utf-8", "--crlf", "--null-data", "pat"])
+            .unwrap();
+    assert!(cli.text && cli.binary && cli.crlf && cli.null_data);
+    assert_eq!(cli.encoding.as_deref(), Some("utf-8"));
+}
+
+#[test]
+fn noops_multiline_engine_size_limits_are_accepted() {
+    let cli = Cli::try_parse_from([
+        "st",
+        "-U",
+        "--multiline-dotall",
+        "--engine",
+        "auto",
+        "--dfa-size-limit",
+        "128M",
+        "--regex-size-limit",
+        "64M",
+        "pat",
+    ])
+    .unwrap();
+    assert!(cli.multiline && cli.multiline_dotall);
+    assert_eq!(cli.engine.as_deref(), Some("auto"));
+    assert_eq!(cli.dfa_size_limit.as_deref(), Some("128M"));
+    assert_eq!(cli.regex_size_limit.as_deref(), Some("64M"));
+}
+
+#[test]
+fn noops_pattern_file_type_management_are_accepted() {
+    let cli = Cli::try_parse_from([
+        "st",
+        "-f",
+        "/tmp/p.txt",
+        "--type-add",
+        "mine:*.x",
+        "--type-clear",
+        "go",
+        "--iglob",
+        "*.txt",
+        "pat",
+    ])
+    .unwrap();
+    assert_eq!(cli.pattern_file, Some(PathBuf::from("/tmp/p.txt")));
+    assert_eq!(cli.type_add, ["mine:*.x"]);
+    assert_eq!(cli.type_clear, ["go"]);
+    assert_eq!(cli.iglob.as_deref(), Some("*.txt"));
+}
+
+#[test]
+fn noops_threads_mmap_performance_flags_are_accepted() {
+    let cli = Cli::try_parse_from(["st", "-j", "4", "--mmap", "pat"]).unwrap();
+    assert_eq!(cli.threads, Some(4));
+    assert!(cli.mmap);
+
+    let cli = Cli::try_parse_from(["st", "--no-mmap", "pat"]).unwrap();
+    assert!(cli.no_mmap);
+}
+
+#[test]
+fn noops_preprocessing_and_zip_are_accepted() {
+    let cli =
+        Cli::try_parse_from(["st", "--pre", "decomp", "--pre-glob", "*.gz", "-z", "pat"]).unwrap();
+    assert_eq!(cli.pre.as_deref(), Some("decomp"));
+    assert_eq!(cli.pre_glob.as_deref(), Some("*.gz"));
+    assert!(cli.search_zip);
+}
+
+#[test]
+fn noops_diagnostics_config_flags_are_accepted() {
+    let cli = Cli::try_parse_from([
+        "st",
+        "--trace",
+        "--no-messages",
+        "--no-config",
+        "--one-file-system",
+        "pat",
+    ])
+    .unwrap();
+    assert!(cli.trace && cli.no_messages && cli.no_config && cli.one_file_system);
+}
+
+#[test]
+fn noops_max_filesize_is_accepted() {
+    let cli = Cli::try_parse_from(["st", "--max-filesize", "1M", "pat"]).unwrap();
+    assert_eq!(cli.max_filesize.as_deref(), Some("1M"));
+}
+
+#[test]
+fn null_short_flag_is_zero() {
+    let cli = Cli::try_parse_from(["st", "-0", "pat"]).unwrap();
+    assert!(cli.null);
+
+    let cli = Cli::try_parse_from(["st", "--null", "pat"]).unwrap();
+    assert!(cli.null);
+}
+
+#[test]
+fn debug_flag_sets_debug_field() {
+    let cli = Cli::try_parse_from(["st", "--debug", "pat"]).unwrap();
+    assert!(cli.debug);
+}
+
+#[test]
+fn pretty_short_flag_is_lowercase_p() {
+    let cli = Cli::try_parse_from(["st", "-p", "pat"]).unwrap();
+    assert!(cli.pretty);
+}
+
+// --- Functional flag tests ---
+
+#[test]
+fn max_depth_filters_results_by_directory_depth() {
+    let (_repo, _idx, config) = build_index_for_files(&[
+        ("top.rs", "needle\n"),
+        ("sub/mid.rs", "needle\n"),
+        ("a/b/deep.rs", "needle\n"),
+    ]);
+    let index = Index::open(config.clone()).unwrap();
+
+    let args0 = super::search::SearchArgs {
+        pattern: "needle".to_string(),
+        max_depth: Some(0),
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args0).unwrap();
+    let paths: Vec<_> = results.iter().map(|m| m.path.as_path()).collect();
+    assert!(paths.contains(&std::path::Path::new("top.rs")));
+    assert!(!paths.iter().any(|p| p.components().count() > 1));
+
+    let args1 = super::search::SearchArgs {
+        pattern: "needle".to_string(),
+        max_depth: Some(1),
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args1).unwrap();
+    let paths: Vec<_> = results.iter().map(|m| m.path.as_path()).collect();
+    assert!(paths.contains(&std::path::Path::new("top.rs")));
+    assert!(paths.contains(&std::path::Path::new("sub/mid.rs")));
+    assert!(!paths.contains(&std::path::Path::new("a/b/deep.rs")));
+
+    let args_all = super::search::SearchArgs {
+        pattern: "needle".to_string(),
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args_all).unwrap();
+    assert_eq!(results.len(), 3);
+
+    drop(index);
+}
+
+#[test]
+fn column_flag_prepends_column_in_flat_output() {
+    let (_repo, _idx, config) = build_index_for_files(&[("src/lib.rs", "fn hello() {}\n")]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: "hello".to_string(),
+        column: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_flat_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    // "fn hello() {}" — "hello" starts at byte 3, col = 3+1 = 4
+    assert!(
+        output.contains("src/lib.rs:1:4:"),
+        "expected path:line:col: prefix, got: {output:?}"
+    );
+    drop(index);
+}
+
+#[test]
+fn column_flag_in_heading_mode() {
+    let (_repo, _idx, config) = build_index_for_files(&[("src/lib.rs", "fn hello() {}\n")]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: "hello".to_string(),
+        column: true,
+        heading: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_heading_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    // Under heading mode: filename on its own line, then line:col:content
+    assert!(
+        output.contains("1:4:"),
+        "expected line:col: in heading output, got: {output:?}"
+    );
+    drop(index);
+}
+
+#[test]
+fn vimgrep_output_format() {
+    let (_repo, _idx, config) =
+        build_index_for_files(&[("a.rs", "fn foo() {}\nfn bar() {}\n")]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: "foo".to_string(),
+        vimgrep: true,
+        column: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_vimgrep_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    // "fn foo() {}" — "foo" starts at byte 3, col = 4
+    assert!(
+        output.contains("a.rs:1:4:"),
+        "expected path:line:col: in vimgrep output, got: {output:?}"
+    );
+    assert!(!output.contains("bar"), "bar should not appear in results for 'foo'");
+    drop(index);
+}
+
+#[test]
+fn replace_substitutes_match_in_output() {
+    let (_repo, _idx, config) = build_index_for_files(&[("a.rs", "fn old_name() {}\n")]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: "old_name".to_string(),
+        replace: Some("new_name".to_string()),
+        no_line_number: true,
+        no_filename: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_flat_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert_eq!(output, "fn new_name() {}\n");
+    drop(index);
+}
+
+#[test]
+fn replace_uses_capture_groups() {
+    let (_repo, _idx, config) = build_index_for_files(&[("v.rs", "v = \"1.2.3\"\n")]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: r"(\d+)\.(\d+)\.(\d+)".to_string(),
+        replace: Some("$3.$2.$1".to_string()),
+        no_line_number: true,
+        no_filename: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_flat_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert!(
+        output.contains("3.2.1"),
+        "expected reversed version, got: {output:?}"
+    );
+    drop(index);
+}
+
+#[test]
+fn byte_offset_prepends_offset_before_line() {
+    // "aaa\nfoo\n": 'f' is at absolute byte offset 4
+    let (_repo, _idx, config) = build_index_for_files(&[("a.rs", "aaa\nfoo\n")]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: "foo".to_string(),
+        byte_offset: true,
+        no_line_number: true,
+        no_filename: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_flat_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert!(
+        output.starts_with("4:"),
+        "expected byte offset 4, got: {output:?}"
+    );
+    drop(index);
+}
+
+#[test]
+fn trim_strips_leading_whitespace() {
+    let (_repo, _idx, config) = build_index_for_files(&[("a.rs", "   fn foo() {}\n")]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: "foo".to_string(),
+        trim: true,
+        no_line_number: true,
+        no_filename: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_flat_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert_eq!(output, "fn foo() {}\n");
+    drop(index);
+}
+
+#[test]
+fn max_columns_skips_long_lines() {
+    let (_repo, _idx, config) = build_index_for_files(&[
+        ("a.rs", "short_match\n"),
+        (
+            "b.rs",
+            "this_is_a_very_long_line_with_match_here_that_exceeds_the_limit\n",
+        ),
+    ]);
+    let index = Index::open(config.clone()).unwrap();
+    let args = super::search::SearchArgs {
+        pattern: "match".to_string(),
+        max_columns: Some(20),
+        no_line_number: true,
+        no_filename: true,
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    assert!(!results.is_empty());
+    let mut buf = Vec::<u8>::new();
+    super::render::render_flat_to(&results, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert!(output.contains("short_match"), "short line should appear");
+    assert!(
+        !output.contains("this_is_a_very_long"),
+        "long line should be skipped"
+    );
+    drop(index);
+}
+
+#[test]
+fn context_separator_custom_string() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let content: String = (1..=20)
+        .map(|i| {
+            if i == 3 || i == 18 {
+                format!("target_token line {i}\n")
+            } else {
+                format!("other line {i}\n")
+            }
+        })
+        .collect();
+    fs::write(dir.path().join("sample.rs"), &content).unwrap();
+
+    let matches = vec![
+        crate::SearchMatch {
+            path: std::path::PathBuf::from("sample.rs"),
+            line_number: 3,
+            line_content: b"target_token line 3".to_vec(),
+            byte_offset: 0,
+            submatch_start: 0,
+            submatch_end: "target_token".len(),
+        },
+        crate::SearchMatch {
+            path: std::path::PathBuf::from("sample.rs"),
+            line_number: 18,
+            line_content: b"target_token line 18".to_vec(),
+            byte_offset: 0,
+            submatch_start: 0,
+            submatch_end: "target_token".len(),
+        },
+    ];
+
+    let config = Config {
+        repo_root: dir.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    let args = super::search::SearchArgs {
+        pattern: "target_token".to_string(),
+        context_separator: "===".to_string(),
+        after_context: 2,
+        before_context: 2,
+        ..super::search::SearchArgs::default()
+    };
+
+    let mut buf = Vec::<u8>::new();
+    super::render::render_with_context_to(&config, &matches, &args, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+
+    assert!(
+        output.contains("===\n"),
+        "expected custom separator '===', got:\n{output}"
+    );
+    assert!(
+        !output.contains("--\n"),
+        "default separator should not appear when custom one is set"
+    );
 }

@@ -1,14 +1,21 @@
 //! Search argument parsing, query execution, and result rendering.
 
 use std::io::{self, IsTerminal, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::index::Index;
-use crate::path::filter::matches_path_filter;
 use crate::path_util::path_bytes;
-use crate::{Config, SearchOptions};
+use crate::Config;
 
-#[derive(Clone, Default)]
+// Re-export for render submodules that import via `crate::cli::search::collect_scoped_paths`.
+pub(super) use super::scope::collect_scoped_paths;
+use super::scope::{
+    explicit_path_specs, matches_any_explicit_path, matches_optional_glob, path_depth,
+    search_options, shows_filename_by_default, sort_and_dedup_matches, truncate_matches_per_file,
+};
+
+#[derive(Clone)]
 pub(super) struct SearchArgs {
     pub pattern: String,
     pub paths: Vec<PathBuf>,
@@ -35,6 +42,58 @@ pub(super) struct SearchArgs {
     pub file_type: Option<String>,
     pub type_not: Option<String>,
     pub glob: Option<String>,
+    pub column: bool,
+    pub vimgrep: bool,
+    pub replace: Option<String>,
+    pub null: bool,
+    pub context_separator: String,
+    pub byte_offset: bool,
+    pub trim: bool,
+    pub max_columns: Option<usize>,
+    pub search_stats: bool,
+    pub max_depth: Option<usize>,
+}
+
+impl Default for SearchArgs {
+    fn default() -> Self {
+        Self {
+            pattern: String::new(),
+            paths: Vec::new(),
+            fixed_strings: false,
+            ignore_case: false,
+            word_regexp: false,
+            line_regexp: false,
+            line_number: false,
+            with_filename: false,
+            invert_match: false,
+            files_with_matches: false,
+            files_without_match: false,
+            count: false,
+            count_matches: false,
+            max_count: None,
+            quiet: false,
+            only_matching: false,
+            json: false,
+            heading: false,
+            no_line_number: false,
+            no_filename: false,
+            after_context: 0,
+            before_context: 0,
+            file_type: None,
+            type_not: None,
+            glob: None,
+            column: false,
+            vimgrep: false,
+            replace: None,
+            null: false,
+            context_separator: "--".to_string(),
+            byte_offset: false,
+            trim: false,
+            max_columns: None,
+            search_stats: false,
+            max_depth: None,
+        }
+    }
 }
 
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
@@ -46,6 +105,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         }
     };
     let output_args = args.with_effective_output_defaults(&config);
+    let search_start = Instant::now();
 
     if output_args.invert_match {
         return handle_output_code(super::render::render_invert_match(
@@ -62,6 +122,17 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             return 2;
         }
     };
+    let elapsed = search_start.elapsed();
+    if output_args.search_stats {
+        let matched_files: std::collections::BTreeSet<_> =
+            results.iter().map(|m| &m.path).collect();
+        eprintln!(
+            "Elapsed: {:.6}s, Matches: {}, Files with matches: {}",
+            elapsed.as_secs_f64(),
+            results.len(),
+            matched_files.len()
+        );
+    }
 
     if results.is_empty() && output_args.json {
         if let Err(err) = super::render::render_json(&index, &config, &results, &output_args) {
@@ -81,6 +152,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     if output_args.files_with_matches {
         let stdout = io::stdout();
         let mut out = stdout.lock();
+        let sep = if output_args.null { b'\0' } else { b'\n' };
         let mut seen = std::collections::BTreeSet::new();
         for m in &results {
             seen.insert(m.path.clone());
@@ -88,7 +160,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         for path in &seen {
             let result = out
                 .write_all(path_bytes(path).as_ref())
-                .and_then(|_| out.write_all(b"\n"));
+                .and_then(|_| out.write_all(&[sep]));
             if let Err(err) = result {
                 return handle_output(err);
             }
@@ -99,6 +171,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     if output_args.files_without_match {
         let stdout = io::stdout();
         let mut out = stdout.lock();
+        let sep = if output_args.null { b'\0' } else { b'\n' };
         let matched: std::collections::BTreeSet<_> =
             results.iter().map(|m| m.path.clone()).collect();
         let mut found_any = false;
@@ -109,7 +182,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             found_any = true;
             let result = out
                 .write_all(path_bytes(&path).as_ref())
-                .and_then(|_| out.write_all(b"\n"));
+                .and_then(|_| out.write_all(&[sep]));
             if let Err(err) = result {
                 return handle_output(err);
             }
@@ -159,6 +232,8 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
 
     let render = if output_args.json {
         super::render::render_json(&index, &config, &results, &output_args)
+    } else if output_args.vimgrep {
+        super::render::render_vimgrep(&config, &results, &output_args)
     } else if output_args.only_matching {
         super::render::render_only_matching(&config, &results, &output_args)
     } else if has_context {
@@ -237,32 +312,13 @@ pub(super) fn run_search(
                 )
         });
     }
+    if let Some(depth) = args.max_depth {
+        results.retain(|m| path_depth(&m.path) <= depth);
+    }
     if let Some(limit) = args.max_count {
         results = truncate_matches_per_file(results, limit);
     }
     Ok(results)
-}
-
-fn truncate_matches_per_file(
-    matches: Vec<crate::SearchMatch>,
-    limit: usize,
-) -> Vec<crate::SearchMatch> {
-    let mut kept = Vec::with_capacity(matches.len().min(limit));
-    let mut current_path: Option<PathBuf> = None;
-    let mut kept_in_file = 0usize;
-
-    for m in matches {
-        if current_path.as_ref() != Some(&m.path) {
-            current_path = Some(m.path.clone());
-            kept_in_file = 0;
-        }
-        if kept_in_file < limit {
-            kept.push(m);
-            kept_in_file += 1;
-        }
-    }
-
-    kept
 }
 
 impl SearchArgs {
@@ -282,154 +338,4 @@ impl SearchArgs {
 
         effective
     }
-}
-
-#[derive(Clone)]
-struct ExplicitPathSpec {
-    rel_path: PathBuf,
-    is_dir: bool,
-}
-
-impl ExplicitPathSpec {
-    fn path_filter(&self) -> String {
-        let rel = self.rel_path.to_string_lossy();
-        if self.is_dir {
-            format!("{rel}/")
-        } else {
-            rel.into_owned()
-        }
-    }
-}
-
-fn explicit_path_specs(repo_root: &Path, paths: &[PathBuf]) -> Vec<ExplicitPathSpec> {
-    paths
-        .iter()
-        .map(|path| ExplicitPathSpec {
-            rel_path: relativize_cli_path(repo_root, path),
-            is_dir: path_is_directory(repo_root, path),
-        })
-        .collect()
-}
-
-fn matches_any_explicit_path(path: &Path, specs: &[ExplicitPathSpec]) -> bool {
-    specs.is_empty() || specs.iter().any(|spec| explicit_path_matches(path, spec))
-}
-
-fn explicit_path_matches(path: &Path, spec: &ExplicitPathSpec) -> bool {
-    if spec.rel_path.as_os_str().is_empty() {
-        return true;
-    }
-    if spec.is_dir {
-        path.starts_with(&spec.rel_path)
-    } else {
-        path == spec.rel_path
-    }
-}
-
-fn shows_filename_by_default(config: &Config, paths: &[PathBuf]) -> bool {
-    match explicit_path_specs(config.repo_root.as_path(), paths).as_slice() {
-        [] => true,
-        [spec] => spec.is_dir,
-        _ => true,
-    }
-}
-
-fn path_is_directory(repo_root: &Path, path: &Path) -> bool {
-    cli_path_on_disk(repo_root, path)
-        .metadata()
-        .map(|meta| meta.is_dir())
-        .unwrap_or(false)
-}
-
-fn relativize_cli_path(repo_root: &Path, path: &Path) -> PathBuf {
-    let rel = if path.is_absolute() {
-        path.strip_prefix(repo_root).unwrap_or(path)
-    } else {
-        path
-    };
-    crate::path_util::normalize_to_forward_slashes(normalize_relative_path(rel))
-}
-
-fn cli_path_on_disk(repo_root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        repo_root.join(path)
-    }
-}
-
-fn normalize_relative_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => normalized.push(part),
-            Component::ParentDir => normalized.push(component.as_os_str()),
-            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
-}
-
-fn search_options(args: &SearchArgs, path_filter: Option<String>) -> SearchOptions {
-    SearchOptions {
-        case_insensitive: args.ignore_case,
-        file_type: args.file_type.clone(),
-        exclude_type: args.type_not.clone(),
-        max_results: None,
-        path_filter,
-    }
-}
-
-fn matches_optional_glob(
-    path: &Path,
-    file_type: Option<&str>,
-    exclude_type: Option<&str>,
-    path_glob: Option<&str>,
-) -> bool {
-    matches_path_filter(path, file_type, exclude_type, path_glob)
-}
-
-pub(super) fn collect_scoped_paths(
-    index: &Index,
-    config: &Config,
-    args: &SearchArgs,
-) -> Vec<PathBuf> {
-    let snapshot = index.snapshot();
-    let explicit_specs = explicit_path_specs(config.repo_root.as_path(), &args.paths);
-    let mut paths: Vec<PathBuf> = snapshot
-        .path_index
-        .visible_paths()
-        .filter(|(_, path)| {
-            matches_any_explicit_path(path, &explicit_specs)
-                && matches_optional_glob(
-                    path,
-                    args.file_type.as_deref(),
-                    args.type_not.as_deref(),
-                    args.glob.as_deref(),
-                )
-        })
-        .map(|(_, path)| path.to_path_buf())
-        .collect();
-    paths.sort_unstable();
-    paths
-}
-
-fn sort_and_dedup_matches(mut matches: Vec<crate::SearchMatch>) -> Vec<crate::SearchMatch> {
-    matches.sort_unstable_by(|a, b| {
-        a.path
-            .cmp(&b.path)
-            .then_with(|| a.line_number.cmp(&b.line_number))
-            .then_with(|| a.byte_offset.cmp(&b.byte_offset))
-            .then_with(|| a.submatch_start.cmp(&b.submatch_start))
-            .then_with(|| a.submatch_end.cmp(&b.submatch_end))
-    });
-    matches.dedup_by(|a, b| {
-        a.path == b.path
-            && a.line_number == b.line_number
-            && a.byte_offset == b.byte_offset
-            && a.submatch_start == b.submatch_start
-            && a.submatch_end == b.submatch_end
-    });
-    matches
 }
