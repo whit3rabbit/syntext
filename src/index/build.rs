@@ -375,4 +375,32 @@ mod tests {
             "empty path list must return default threshold 0.10, got {threshold}"
         );
     }
+
+    /// calibrate_threshold always returns a value in [0.01, 0.50] when given
+    /// real files to sample. This documents the clamp invariant regardless of
+    /// disk speed or timing resolution.
+    #[test]
+    fn calibrate_threshold_returns_clamped_value() {
+        let repo = TempDir::new().unwrap();
+        let mut paths = Vec::new();
+        for i in 0..5 {
+            let rel = PathBuf::from(format!("f{i}.rs"));
+            std::fs::write(
+                repo.path().join(&rel),
+                format!("fn test_{i}() {{}}\n"),
+            )
+            .unwrap();
+            paths.push(rel);
+        }
+        let config = Config {
+            repo_root: repo.path().to_path_buf(),
+            index_dir: repo.path().join(".syntext"),
+            ..Config::default()
+        };
+        let threshold = calibrate_threshold(&paths, &config);
+        assert!(
+            (0.01..=0.50).contains(&threshold),
+            "threshold {threshold} outside [0.01, 0.50]"
+        );
+    }
 }
