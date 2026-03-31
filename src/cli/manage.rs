@@ -176,8 +176,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // is documented as trusted input.
     let git = resolve_git_binary();
 
-    // Verify the resolved binary is actually executable before spawning subprocesses.
-    // resolve_git_binary() falls back to /usr/bin/git on Unix even if it doesn't exist.
+    // The fallback path (/usr/bin/git on Unix) may not exist; verify before spawning.
     if !git.is_file() {
         eprintln!(
             "st update: git not found (looked for {}); install git to detect changed files",

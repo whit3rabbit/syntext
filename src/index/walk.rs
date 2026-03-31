@@ -135,6 +135,13 @@ fn push_file_record(
 /// Tests: `enumerate_files_skips_symlink_outside_repo`,
 /// `collect_symlink_entry_rejects_canonical_symlink`.
 #[cfg(feature = "ignore")]
+fn log_symlink_skip(verbose: bool, symlink_path: &Path, reason: std::fmt::Arguments<'_>) {
+    if verbose {
+        eprintln!("st: skipping symlink {}: {reason}", symlink_path.display());
+    }
+}
+
+#[cfg(feature = "ignore")]
 fn collect_symlink_entry(
     symlink_path: &Path,
     repo_root: &Path,
@@ -147,9 +154,7 @@ fn collect_symlink_entry(
     let target = match fs::read_link(symlink_path) {
         Ok(target) => target,
         Err(e) => {
-            if verbose {
-                eprintln!("st: skipping symlink {}: failed to read link: {e}", symlink_path.display());
-            }
+            log_symlink_skip(verbose, symlink_path, format_args!("failed to read link: {e}"));
             return;
         }
     };
@@ -161,9 +166,7 @@ fn collect_symlink_entry(
     let target_meta = match fs::symlink_metadata(&target_path) {
         Ok(meta) => meta,
         Err(e) => {
-            if verbose {
-                eprintln!("st: skipping symlink {}: failed to stat target: {e}", symlink_path.display());
-            }
+            log_symlink_skip(verbose, symlink_path, format_args!("failed to stat target: {e}"));
             return;
         }
     };
@@ -174,20 +177,16 @@ fn collect_symlink_entry(
     let canonical_target = match fs::canonicalize(&target_path) {
         Ok(path) => path,
         Err(e) => {
-            if verbose {
-                eprintln!("st: skipping symlink {}: failed to canonicalize target: {e}", symlink_path.display());
-            }
+            log_symlink_skip(verbose, symlink_path, format_args!("failed to canonicalize target: {e}"));
             return;
         }
     };
     if !canonical_target.starts_with(canonical_root) {
-        if verbose {
-            eprintln!(
-                "st: skipping symlink {}: target {} is outside repo root",
-                symlink_path.display(),
-                canonical_target.display()
-            );
-        }
+        log_symlink_skip(
+            verbose,
+            symlink_path,
+            format_args!("target {} is outside repo root", canonical_target.display()),
+        );
         return;
     }
 
@@ -198,9 +197,7 @@ fn collect_symlink_entry(
     let canonical_meta = match fs::symlink_metadata(&canonical_target) {
         Ok(meta) => meta,
         Err(e) => {
-            if verbose {
-                eprintln!("st: skipping symlink {}: failed to stat canonical target: {e}", symlink_path.display());
-            }
+            log_symlink_skip(verbose, symlink_path, format_args!("failed to stat canonical target: {e}"));
             return;
         }
     };

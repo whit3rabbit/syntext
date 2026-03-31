@@ -250,6 +250,12 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
         {
             let mut lower = buf.borrow_mut();
             lower.clear();
+            // Shrink when capacity far exceeds current input, matching the
+            // BUF shrink policy in with_boundary_positions_lower.
+            const MIN_CAPACITY: usize = 4096;
+            if lower.capacity() > MIN_CAPACITY.max(input.len() * 4) {
+                lower.shrink_to(MIN_CAPACITY.max(input.len()));
+            }
             lower.extend(input.iter().map(|b| b.to_ascii_lowercase()));
         } // mutable borrow released here
 
