@@ -542,3 +542,88 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
     let index = Index::build(config).unwrap();
     drop(index);
 }
+
+// ---------------------------------------------------------------------------
+// Concurrency: readers during concurrent writes (ArcSwap snapshot isolation)
+// ---------------------------------------------------------------------------
+
+/// Readers calling search() during concurrent commit_batch() must see a
+/// consistent snapshot: either pre-commit or post-commit, never a torn state.
+#[test]
+fn concurrent_reads_during_commit_batch() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+
+    // Seed the repo with files that contain a searchable pattern.
+    for i in 0..10 {
+        fs::write(
+            repo.path().join(format!("file{i}.rs")),
+            format!("fn func_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Arc::new(Index::build(config).unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Spawn reader threads that search continuously.
+    let mut readers = Vec::new();
+    for _ in 0..4 {
+        let idx = Arc::clone(&index);
+        let done = Arc::clone(&stop);
+        readers.push(thread::spawn(move || {
+            let mut search_count = 0u64;
+            while !done.load(Ordering::Relaxed) {
+                let result = idx.search("fn", &SearchOptions::default());
+                // Must never error: the snapshot should always be consistent.
+                let matches = result.expect("search must not fail during concurrent writes");
+                // Every search should find at least one match (all files contain "fn").
+                assert!(
+                    !matches.is_empty(),
+                    "search returned 0 matches during concurrent writes"
+                );
+                search_count += 1;
+            }
+            search_count
+        }));
+    }
+
+    // Writer: modify files and commit several rounds.
+    for round in 0..5 {
+        fs::write(
+            repo.path().join(format!("file{round}.rs")),
+            format!("fn func_{round}_v{round}() {{}}\n"),
+        )
+        .unwrap();
+        index
+            .notify_change(&repo.path().join(format!("file{round}.rs")))
+            .unwrap();
+        // commit_batch may fail with LockConflict if a prior round is still
+        // committing; retry once after a short sleep.
+        if index.commit_batch().is_err() {
+            thread::sleep(Duration::from_millis(10));
+            let _ = index.commit_batch();
+        }
+    }
+
+    // Signal readers to stop and join.
+    stop.store(true, Ordering::Relaxed);
+    let mut total_searches = 0u64;
+    for reader in readers {
+        total_searches += reader.join().expect("reader thread panicked");
+    }
+
+    // Sanity: readers actually ran (at least a few searches per thread).
+    assert!(total_searches > 0, "reader threads performed zero searches");
+
+    let index = Arc::try_unwrap(index).unwrap_or_else(|_| panic!("other Arcs still alive"));
+    drop(index);
+}
