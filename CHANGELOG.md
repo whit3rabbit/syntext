@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1] - 2026-03-31
+
+### Fixed
+
+- Windows: normalize paths to forward slashes at ingestion boundaries to fix
+  path matching on Windows builds.
+- Windows: gate `sync_all` on directory handles behind `#[cfg(not(windows))]`
+  to avoid `Access is denied` errors.
+- Windows: use `io::Error::new(io::ErrorKind::Other, ...)` instead of
+  `io::Error::other` for Rust < 1.74 compatibility.
+- CI: address Windows CI failures (OS error 5, concurrent file handle locks).
+
 ## [1.0.0] - 2026-03-29
 
 ### Added

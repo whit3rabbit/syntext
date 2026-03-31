@@ -10,7 +10,7 @@
 
 set -eu
 
-SYNTEXT_VERSION="${SYNTEXT_VERSION:-1.0.0}"
+SYNTEXT_VERSION="${SYNTEXT_VERSION:-1.0.1}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BASE_URL="https://github.com/whit3rabbit/syntext/releases/download/v${SYNTEXT_VERSION}"
 
