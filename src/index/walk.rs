@@ -81,6 +81,7 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
             config.max_file_size,
             &mut files,
             &mut seen_canonical,
+            config.verbose,
         );
     }
 
@@ -141,10 +142,16 @@ fn collect_symlink_entry(
     max_file_size: u64,
     files: &mut Vec<FileRecord>,
     seen_canonical: &mut HashSet<PathBuf>,
+    verbose: bool,
 ) {
     let target = match fs::read_link(symlink_path) {
         Ok(target) => target,
-        Err(_) => return,
+        Err(e) => {
+            if verbose {
+                eprintln!("st: skipping symlink {}: failed to read link: {e}", symlink_path.display());
+            }
+            return;
+        }
     };
     let target_path = if target.is_absolute() {
         target
@@ -153,7 +160,12 @@ fn collect_symlink_entry(
     };
     let target_meta = match fs::symlink_metadata(&target_path) {
         Ok(meta) => meta,
-        Err(_) => return,
+        Err(e) => {
+            if verbose {
+                eprintln!("st: skipping symlink {}: failed to stat target: {e}", symlink_path.display());
+            }
+            return;
+        }
     };
     if target_meta.file_type().is_symlink() {
         return;
@@ -161,9 +173,21 @@ fn collect_symlink_entry(
 
     let canonical_target = match fs::canonicalize(&target_path) {
         Ok(path) => path,
-        Err(_) => return,
+        Err(e) => {
+            if verbose {
+                eprintln!("st: skipping symlink {}: failed to canonicalize target: {e}", symlink_path.display());
+            }
+            return;
+        }
     };
     if !canonical_target.starts_with(canonical_root) {
+        if verbose {
+            eprintln!(
+                "st: skipping symlink {}: target {} is outside repo root",
+                symlink_path.display(),
+                canonical_target.display()
+            );
+        }
         return;
     }
 
@@ -173,7 +197,12 @@ fn collect_symlink_entry(
     // If the canonical path is itself a symlink, reject it.
     let canonical_meta = match fs::symlink_metadata(&canonical_target) {
         Ok(meta) => meta,
-        Err(_) => return,
+        Err(e) => {
+            if verbose {
+                eprintln!("st: skipping symlink {}: failed to stat canonical target: {e}", symlink_path.display());
+            }
+            return;
+        }
     };
     if canonical_meta.file_type().is_symlink() {
         return;
