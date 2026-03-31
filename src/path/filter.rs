@@ -10,7 +10,7 @@ use roaring::RoaringBitmap;
 
 use crate::path_util::path_bytes;
 
-use super::PathIndex;
+use super::{ByteSplitExt, PathIndex};
 
 /// A resolved path filter: a Roaring bitmap of matching file_ids.
 pub struct PathFilter {
@@ -185,22 +185,6 @@ fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
             .all(|(l, r)| l.eq_ignore_ascii_case(r))
 }
 
-trait ByteSplitExt {
-    fn rsplit_once<P>(&self, pred: P) -> Option<(&[u8], &[u8])>
-    where
-        P: FnMut(&u8) -> bool;
-}
-
-impl ByteSplitExt for [u8] {
-    fn rsplit_once<P>(&self, pred: P) -> Option<(&[u8], &[u8])>
-    where
-        P: FnMut(&u8) -> bool,
-    {
-        let idx = self.iter().rposition(pred)?;
-        Some((&self[..idx], &self[idx + 1..]))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +337,19 @@ mod tests {
         assert!(matches_path_filter(&path, Some("rs"), None, Some("src/")));
         assert!(path_matches_glob(&path, "*.rs"));
         assert!(path_matches_glob(&path, "src/"));
+    }
+
+    #[test]
+    fn byte_split_ext_no_sep() {
+        let s: &[u8] = b"nodot";
+        assert_eq!(ByteSplitExt::rsplit_once(s, |&b| b == b'.'), None);
+    }
+
+    #[test]
+    fn byte_split_ext_last_sep() {
+        let s: &[u8] = b"foo.bar.baz";
+        let (head, tail) = ByteSplitExt::rsplit_once(s, |&b| b == b'.').unwrap();
+        assert_eq!(head, b"foo.bar");
+        assert_eq!(tail, b"baz");
     }
 }

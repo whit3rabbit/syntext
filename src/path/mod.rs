@@ -241,7 +241,7 @@ fn ascii_lower(bytes: &[u8]) -> Vec<u8> {
     bytes.iter().map(u8::to_ascii_lowercase).collect()
 }
 
-trait ByteSplitExt {
+pub(super) trait ByteSplitExt {
     fn rsplit_once<P>(&self, pred: P) -> Option<(&[u8], &[u8])>
     where
         P: FnMut(&u8) -> bool;
