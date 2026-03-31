@@ -347,7 +347,7 @@ fn relativize_cli_path(repo_root: &Path, path: &Path) -> PathBuf {
     } else {
         path
     };
-    normalize_relative_path(rel)
+    crate::path_util::normalize_to_forward_slashes(normalize_relative_path(rel))
 }
 
 fn cli_path_on_disk(repo_root: &Path, path: &Path) -> PathBuf {

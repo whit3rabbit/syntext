@@ -14,6 +14,25 @@ pub(crate) fn path_bytes(path: &Path) -> Cow<'_, [u8]> {
     }
 }
 
+/// Normalize a relative path to use forward-slash separators on all platforms.
+/// On Unix this is a no-op. On Windows it replaces backslashes so that
+/// byte-level matching in `path/filter.rs` (which splits on `b'/'`) works.
+pub(crate) fn normalize_to_forward_slashes(path: PathBuf) -> PathBuf {
+    #[cfg(not(windows))]
+    {
+        path
+    }
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if s.contains('\\') {
+            PathBuf::from(s.replace('\\', "/"))
+        } else {
+            path
+        }
+    }
+}
+
 pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     #[cfg(unix)]
     {

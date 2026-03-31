@@ -23,6 +23,8 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
     - **Avoid `io::Error::other`**: Use `io::Error::new(io::ErrorKind::Other, ...)` for compatibility with Rust versions < 1.74.
     - **Directory `sync_all`**: Do not call `sync_all()` on directory handles on Windows; it is not supported and returns `Access is denied`. Use `#[cfg(not(windows))]`.
     - **Git Binary**: Use platform-aware resolution (searching for `git.exe` on Windows) in `helpers.rs`.
+    - **Forward-slash path normalization**: All paths stored in segments must use forward slashes (`/`). Use `path_util::normalize_to_forward_slashes()` at ingestion boundaries. Byte-level matching in `path/filter.rs` and `path/mod.rs` splits on `b'/'` only.
+    - **Illegal filename characters in tests**: Windows forbids `\`, `<`, `>`, `"`, `|`, `?`, `*`, and control characters (including `\t`, `\n`) in file/directory names. Gate such tests with `#[cfg(unix)]`.
 
 ## Dependencies
 

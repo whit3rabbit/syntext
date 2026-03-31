@@ -323,7 +323,9 @@ mod tests {
     use std::ffi::OsStr;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     use super::is_safe_git_path;
     use super::resolve_git_binary;

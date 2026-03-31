@@ -104,7 +104,7 @@ fn push_file_record(
         return;
     }
     let rel = match display_path.strip_prefix(repo_root) {
-        Ok(r) => r.to_path_buf(),
+        Ok(r) => crate::path_util::normalize_to_forward_slashes(r.to_path_buf()),
         Err(_) => return,
     };
     files.push((read_path, rel, size));
@@ -231,7 +231,9 @@ pub fn is_binary(content: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
+    #[cfg(unix)]
     use tempfile::TempDir;
 
     #[cfg(unix)]

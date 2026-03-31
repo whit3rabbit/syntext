@@ -138,6 +138,7 @@ fn status_json_is_machine_readable() {
     assert_eq!(value["index_dir"], index.path().display().to_string());
 }
 
+#[cfg(unix)]
 #[test]
 fn status_json_escapes_special_characters_in_index_dir() {
     let repo = tempfile::TempDir::new().unwrap();
@@ -373,6 +374,7 @@ fn json_output_emits_context_messages_when_requested() {
     assert_eq!(matched["data"]["absolute_offset"], 7);
 }
 
+#[cfg(unix)]
 #[test]
 fn json_output_escapes_special_characters_in_paths_and_lines() {
     let repo = tempfile::TempDir::new().unwrap();
