@@ -175,6 +175,18 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // string literals. The only injection surface would be `--repo-root`, which
     // is documented as trusted input.
     let git = resolve_git_binary();
+
+    // Verify the resolved binary is actually executable before spawning subprocesses.
+    // resolve_git_binary() falls back to /usr/bin/git on Unix even if it doesn't exist.
+    if !git.is_file() {
+        eprintln!(
+            "st update: git not found (looked for {}); install git to detect changed files",
+            git.display()
+        );
+        drop(index);
+        return 2;
+    }
+
     let mut changed: HashSet<PathBuf> = HashSet::new();
 
     // Security: canonicalize repo_root before passing it to `git -C`.
@@ -388,5 +400,17 @@ mod tests {
     fn is_safe_git_path_accepts_non_utf8_relative_paths() {
         let path = PathBuf::from(OsStr::from_bytes(b"src/\xff.rs"));
         assert!(is_safe_git_path(&path));
+    }
+
+    #[test]
+    fn resolve_git_binary_returns_a_path() {
+        let git = resolve_git_binary();
+        assert!(!git.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn nonexistent_git_path_is_not_a_file() {
+        let fake = std::path::PathBuf::from("/absolutely/does/not/exist/git");
+        assert!(!fake.is_file());
     }
 }
