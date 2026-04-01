@@ -63,37 +63,18 @@ pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Met
     }
 }
 
-/// Windows implementation of `verify_fd_matches_stat`.
+/// Windows stub for `verify_fd_matches_stat`.
 ///
-/// Uses `GetFileInformationByHandle` (exposed via `std::os::windows::fs::MetadataExt`)
-/// to compare volume serial number + file index between the pre-open stat and the
-/// opened handle. This is the Windows equivalent of Unix dev+ino comparison.
+/// The ideal implementation would compare volume serial number + file index
+/// via `GetFileInformationByHandle`, but `MetadataExt::file_index()` and
+/// `volume_serial_number()` are behind the unstable `windows_by_handle`
+/// feature (rust-lang/rust#63010). Until that stabilizes, degrade to `true`.
 ///
-/// Degrades to `true` (no protection) if either metadata object lacks handle
-/// information, which can happen when `pre_open_meta` was obtained via
-/// `symlink_metadata` on older Rust versions where that call uses
-/// `GetFileAttributesExW` instead of opening a handle.
+/// Windows has mandatory file locking, so the TOCTOU risk is lower than on
+/// Unix where advisory locks are the norm.
 #[cfg(windows)]
-pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    match file.metadata() {
-        Ok(fd_meta) => {
-            match (
-                fd_meta.file_index(),
-                pre_open_meta.file_index(),
-                fd_meta.volume_serial_number(),
-                pre_open_meta.volume_serial_number(),
-            ) {
-                (Some(fd_idx), Some(pre_idx), Some(fd_vol), Some(pre_vol)) => {
-                    fd_idx == pre_idx && fd_vol == pre_vol
-                }
-                // Cannot verify: metadata lacks handle info. Allow the open
-                // rather than blocking all file reads on affected code paths.
-                _ => true,
-            }
-        }
-        Err(_) => false,
-    }
+pub fn verify_fd_matches_stat(_file: &std::fs::File, _pre_open_meta: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// WASM stub: filesystem is not used (WasmIndex receives content directly),

@@ -10,7 +10,9 @@ All notable changes to this project will be documented in this file.
   in manifest.rs for Rust < 1.74 compatibility (3 call sites).
 - Add verbose-gated stderr logging for file read failures in build pipeline.
   Previously, permission errors and read failures were silently swallowed.
-- Expand `verify_fd_matches_stat` TOCTOU check to Windows (was unix-only).
+- Windows: stub `verify_fd_matches_stat` to avoid unstable `windows_by_handle`
+  feature (`file_index()`, `volume_serial_number()`). Degrades to no-op until
+  rust-lang/rust#63010 stabilizes.
 
 ### Changed
 
