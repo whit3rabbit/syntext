@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2026-03-31
+
+### Fixed
+
+- Replace `io::Error::other` with `io::Error::new(io::ErrorKind::Other, ...)`
+  in manifest.rs for Rust < 1.74 compatibility (3 call sites).
+- Add verbose-gated stderr logging for file read failures in build pipeline.
+  Previously, permission errors and read failures were silently swallowed.
+- Expand `verify_fd_matches_stat` TOCTOU check to Windows (was unix-only).
+
+### Changed
+
+- Document `calibrate_threshold` sequential-read bias and why it is acceptable.
+
 ## [1.0.1] - 2026-03-31
 
 ### Fixed

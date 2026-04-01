@@ -36,6 +36,8 @@ pub mod base64;
 pub mod cli;
 pub mod index;
 pub mod path;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod git_util;
 pub(crate) mod path_util;
 pub mod posting;
 pub mod query;
@@ -133,6 +135,7 @@ pub struct IndexStats {
 
 /// Errors returned by index operations.
 #[derive(Debug)]
+#[must_use]
 pub enum IndexError {
     /// I/O error (file not found, permission denied, etc.)
     Io(std::io::Error),

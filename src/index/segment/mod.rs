@@ -74,6 +74,7 @@ pub struct SegmentMeta {
 mod segment_writer;
 pub use segment_writer::SegmentWriter;
 
+mod open;
 mod reader;
 
 // ---------------------------------------------------------------------------

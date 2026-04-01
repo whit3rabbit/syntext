@@ -222,7 +222,9 @@ fn compact_rejects_snapshot_manifest_base_id_divergence() {
         target_segments: 1,
     };
 
-    let result = compact_index(config, Arc::new(snapshot), plan);
+    let write_lock = crate::index::helpers::acquire_writer_lock(&config.index_dir)
+        .expect("acquire write lock for test");
+    let result = compact_index(config, Arc::new(snapshot), plan, write_lock);
     let err = match result {
         Err(IndexError::CorruptIndex(msg)) => msg,
         Ok(_) => panic!("expected CorruptIndex for base-id divergence, got Ok(_)"),

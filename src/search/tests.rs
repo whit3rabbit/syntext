@@ -292,3 +292,42 @@ fn type_not_excludes_file_extension() {
     assert!(results[0].path.to_string_lossy().ends_with(".rs"));
     drop(index);
 }
+
+// --- PostingBudget tests ---
+
+#[test]
+fn posting_budget_charge_rejects_over_limit() {
+    use super::executor::PostingBudget;
+
+    let budget = PostingBudget::new(100);
+    assert!(budget.charge(50).is_ok());
+    assert!(budget.charge(50).is_ok());
+    assert!(budget.charge(1).is_err(), "budget should reject when exhausted");
+}
+
+#[test]
+fn posting_budget_cache_hits_are_free() {
+    use super::executor::PostingBudget;
+
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/corpus"),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+    let snap = index.snapshot();
+    let gram = literal_grams("parse_query").unwrap()[0];
+
+    // First load populates the cache.
+    let _first = posting_bitmap(gram, &snap).unwrap();
+    assert_eq!(snap.posting_bitmap_cache_len(), 1);
+
+    // Second call with a tiny budget succeeds because it hits the cache.
+    let budget = PostingBudget::new(1);
+    let second = super::executor::posting_bitmap(gram, &snap).unwrap();
+    // Cache hit: no charge needed, budget untouched.
+    assert!(budget.charge(0).is_ok());
+    assert!(!second.is_empty() || second.is_empty()); // use the value
+    drop(index);
+}

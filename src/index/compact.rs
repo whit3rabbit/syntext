@@ -143,6 +143,7 @@ pub(super) fn compact_index(
     config: Config,
     snapshot: Arc<IndexSnapshot>,
     plan: CompactionPlan,
+    write_lock: std::fs::File,
 ) -> Result<super::Index, IndexError> {
     fs::create_dir_all(&config.index_dir)?;
     #[cfg(unix)]
@@ -161,7 +162,7 @@ pub(super) fn compact_index(
     lock_file
         .try_lock_exclusive()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
-    let _write_lock = super::helpers::acquire_writer_lock(&config.index_dir)?;
+    let _write_lock = write_lock;
     let previous_manifest = Manifest::load(&config.index_dir)?;
     if plan.suffix_start > previous_manifest.segments.len() {
         return Err(IndexError::CorruptIndex(format!(
@@ -259,7 +260,7 @@ pub(super) fn compact_index(
     for (seg_ref, &base_doc_id) in seg_refs.iter_mut().zip(manifest_bases.iter()) {
         seg_ref.base_doc_id = Some(base_doc_id);
     }
-    for (writer_idx, writer) in state.writers.iter_mut().enumerate() {
+    for (writer_idx, writer) in state.writers.into_iter().enumerate() {
         if writer.doc_count() == 0 {
             continue;
         }

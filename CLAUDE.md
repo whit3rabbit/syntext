@@ -256,6 +256,7 @@ src/
   main.rs                     # binary entry point (st); empty stub on wasm32
   wasm.rs                     # wasm-bindgen WasmIndex public API (wasm feature only)
   base64.rs                   # base64 encoding helpers
+  git_util.rs                 # git binary resolution + path safety (shared by CLI and index)
   path_util.rs                # path normalization utilities
   tokenizer/
     mod.rs                    # sparse n-gram extraction (build_all, forced boundaries)
@@ -278,6 +279,7 @@ src/
     segment/
       mod.rs                  # SNTX segment format constants, DocEntry, MmapSegment
       tests.rs                # unit tests for segment round-trips and security checks
+      open.rs                 # MmapSegment constructors: from_bytes, open (v2), open_split (v3)
       reader.rs               # MmapSegment::open and open_split (mmap read path)
       segment_writer.rs       # SegmentWriter (serialize to SNTX)
     overlay.rs                # OverlayView + ArcSwap<IndexSnapshot>
@@ -298,6 +300,7 @@ src/
     mod.rs                    # search executor
     tests.rs                  # unit tests for search routing and selectivity
     lines.rs                  # line extraction for context rendering
+    executor.rs               # query execution against base segments + overlay
     resolver.rs               # doc_id -> path + content resolver
     verifier.rs               # tiered: memchr for literals, regex for patterns
   path/
@@ -313,6 +316,7 @@ src/
     commands.rs               # management subcommand definitions
     scope.rs                  # path-scope filtering: glob matching, --files mode, deduplication
     bench.rs                  # hidden bench-search subcommand (in-process latency)
+    git_resolve.rs            # git binary resolution + path safety helpers
     manage.rs                 # index/status/update subcommand handlers
     render/
       mod.rs                  # shared utilities, re-exports, JSON helpers, flat/heading/vimgrep

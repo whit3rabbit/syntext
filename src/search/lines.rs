@@ -8,6 +8,14 @@
 /// - byte offset of the line start in the original content
 /// - line bytes without trailing newline
 ///
+/// # Mixed line endings (`\r\n` and `\n` in the same file)
+///
+/// Each line is handled independently: if a `\n` is preceded by `\r`, the
+/// `\r` is excluded from the line slice but `line_start` always advances to
+/// the byte after the `\n`. This means byte offsets are correct regardless
+/// of whether any given line uses `\r\n` or bare `\n`. No per-line offset
+/// drift occurs.
+///
 /// # Classic Mac `\r`-only files
 ///
 /// Files using `\r` as the sole line separator (no `\n`) are treated as a

@@ -12,7 +12,7 @@ pub(crate) mod encoding;
 mod helpers;
 pub(crate) mod io_util;
 pub(crate) use io_util::open_readonly_nofollow;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) use io_util::verify_fd_matches_stat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod manifest;
@@ -94,6 +94,16 @@ impl Index {
         Ok(self.stats())
     }
 
+    /// Rebuild the index by releasing the shared dir lock, running `build_fn`,
+    /// then re-acquiring shared.
+    ///
+    /// # Lock gap
+    /// File locks do not support atomic shared-to-exclusive promotion. We must
+    /// release shared before `build_fn` can acquire exclusive internally. During
+    /// this window another process could grab exclusive and modify the index.
+    /// Both the success and error paths call `try_lock_shared`; if re-acquisition
+    /// fails (another writer took the lock), we return `LockConflict` rather than
+    /// leaving the `Index` without a directory lock.
     fn rebuild_with(
         &self,
         build_fn: impl FnOnce(Config) -> Result<Index, IndexError>,
@@ -274,11 +284,48 @@ impl Index {
             self.commit_batch()?;
         }
 
+        // Quick check: bail early if no compaction is needed.
+        {
+            let snap = self.snapshot();
+            if compact::forced_plan(snap.as_ref(), &self.config).is_none() {
+                return Ok(());
+            }
+        }
+
+        // Acquire write.lock BEFORE taking the snapshot. This prevents a
+        // concurrent commit_batch from modifying the overlay between snapshot
+        // capture and compact_index's lock acquisition (B13 fix).
+        let write_lock = helpers::acquire_writer_lock(&self.config.index_dir)?;
         let snapshot = self.snapshot();
         let Some(plan) = compact::forced_plan(snapshot.as_ref(), &self.config) else {
             return Ok(());
         };
-        self.rebuild_with(|config| compact::compact_index(config, snapshot, plan))?;
+
+        // Release the shared dir lock so compact_index can acquire exclusive.
+        // Same lock-gap caveat as rebuild_with: another process could grab
+        // exclusive between unlock and compact_index's lock acquisition.
+        // write_lock (held above) prevents concurrent commit_batch; if
+        // compact_index fails to lock, we re-acquire shared and return error.
+        self._dir_lock.unlock()?;
+        let rebuilt = match compact::compact_index(
+            self.config.clone(),
+            snapshot,
+            plan,
+            write_lock,
+        ) {
+            Ok(rebuilt) => rebuilt,
+            Err(err) => {
+                self._dir_lock
+                    .try_lock_shared()
+                    .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+                return Err(err);
+            }
+        };
+        self._dir_lock
+            .try_lock_shared()
+            .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+
+        self.install_rebuilt_index(&rebuilt)?;
         Ok(())
     }
 

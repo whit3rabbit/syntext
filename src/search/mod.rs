@@ -9,6 +9,7 @@
 //! 3. Each candidate doc is read from disk (or overlay memory) and passed to the verifier.
 //! 4. Matches are sorted by path, then line number.
 
+mod executor;
 pub(crate) mod lines;
 mod resolver;
 pub mod verifier;
@@ -27,6 +28,10 @@ use crate::index::IndexSnapshot;
 use crate::path::filter::{build_filter, matches_path_filter};
 use crate::query::{literal_grams, route_query, GramQuery, QueryRoute};
 use crate::{Config, IndexError, SearchMatch, SearchOptions};
+
+use executor::{
+    execute_query, gram_cardinality, is_selective_enough, posting_bitmap,
+};
 
 /// 10 MiB cap on regex NFA/DFA size: prevents ReDoS during compilation (not just matching).
 ///
@@ -257,136 +262,6 @@ fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> Result<bool, IndexE
     }
 
     Ok(false)
-}
-
-/// Execute a gram query against base segments plus overlay and return sorted
-/// global doc IDs.
-fn execute_query(query: &GramQuery, snap: &IndexSnapshot) -> Result<Vec<u32>, IndexError> {
-    Ok(execute_query_bitmap(query, snap)?.iter().collect())
-}
-
-fn execute_query_bitmap(
-    query: &GramQuery,
-    snap: &IndexSnapshot,
-) -> Result<RoaringBitmap, IndexError> {
-    match query {
-        GramQuery::And(children) => {
-            let mut ordered: Vec<_> = children.iter().collect();
-            ordered.sort_unstable_by_key(|child| query_cardinality_upper_bound(child, snap));
-            let mut iter = ordered.into_iter();
-            let Some(first) = iter.next() else {
-                return Ok(snap.all_doc_ids().clone());
-            };
-            let mut acc = execute_query_bitmap(first, snap)?;
-            for child in iter {
-                let child_bitmap = execute_query_bitmap(child, snap)?;
-                acc &= &child_bitmap;
-                if acc.is_empty() {
-                    break;
-                }
-            }
-            Ok(acc)
-        }
-        GramQuery::Or(children) => {
-            let mut acc = RoaringBitmap::new();
-            for child in children {
-                let child_bitmap = execute_query_bitmap(child, snap)?;
-                acc |= &child_bitmap;
-            }
-            Ok(acc)
-        }
-        GramQuery::Grams(hashes) => {
-            let mut ordered = hashes.to_vec();
-            ordered.sort_unstable_by_key(|&hash| gram_cardinality(hash, snap));
-            let mut iter = ordered.into_iter();
-            let Some(first) = iter.next() else {
-                return Ok(snap.all_doc_ids().clone());
-            };
-            let first_bm = posting_bitmap(first, snap)?;
-            let mut acc: RoaringBitmap = if let Some(second) = iter.next() {
-                let second_bm = posting_bitmap(second, snap)?;
-                first_bm.as_ref() & second_bm.as_ref()
-            } else {
-                first_bm.as_ref().clone()
-            };
-            for hash in iter {
-                if acc.is_empty() {
-                    break;
-                }
-                let postings = posting_bitmap(hash, snap)?;
-                acc &= postings.as_ref();
-            }
-            Ok(acc)
-        }
-        GramQuery::All => Ok(snap.all_doc_ids().clone()),
-        GramQuery::None => Ok(RoaringBitmap::new()),
-    }
-}
-
-fn gram_cardinality(gram_hash: u64, snap: &IndexSnapshot) -> u32 {
-    let base_total: u32 = snap
-        .base_segments()
-        .iter()
-        .filter_map(|seg| seg.gram_cardinality(gram_hash))
-        .sum();
-    let overlay_total = snap
-        .overlay
-        .gram_index
-        .get(&gram_hash)
-        .map_or(0, |ids| ids.len() as u32);
-    base_total.saturating_add(overlay_total)
-}
-
-fn query_cardinality_upper_bound(query: &GramQuery, snap: &IndexSnapshot) -> u32 {
-    let total_docs = snap.all_doc_ids().len() as u32;
-    match query {
-        GramQuery::And(children) => children
-            .iter()
-            .map(|child| query_cardinality_upper_bound(child, snap))
-            .min()
-            .unwrap_or(total_docs),
-        GramQuery::Or(children) => children
-            .iter()
-            .fold(0u32, |acc, child| {
-                acc.saturating_add(query_cardinality_upper_bound(child, snap))
-            })
-            .min(total_docs),
-        GramQuery::Grams(hashes) => hashes
-            .iter()
-            .map(|&hash| gram_cardinality(hash, snap))
-            .min()
-            .unwrap_or(total_docs),
-        GramQuery::All => total_docs,
-        GramQuery::None => 0,
-    }
-}
-
-fn is_selective_enough(candidate_count: u64, total_docs: u64, threshold: f64) -> bool {
-    (candidate_count as f64) <= (total_docs as f64) * threshold
-}
-
-fn posting_bitmap(gram_hash: u64, snap: &IndexSnapshot) -> Result<Arc<RoaringBitmap>, IndexError> {
-    if let Some(bitmap) = snap.cached_posting_bitmap(gram_hash) {
-        return Ok(bitmap);
-    }
-
-    let mut bitmap = RoaringBitmap::new();
-
-    for seg in snap.base_segments() {
-        if let Some(postings) = seg.lookup_gram(gram_hash) {
-            let ids = postings
-                .to_vec()
-                .map_err(|err| IndexError::CorruptIndex(err.to_string()))?;
-            bitmap.extend(ids);
-        }
-    }
-
-    if let Some(ids) = snap.overlay.gram_index.get(&gram_hash) {
-        bitmap.extend(ids.iter().copied());
-    }
-
-    bitmap -= &snap.delete_set;
-    Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
 }
 
 #[cfg(test)]

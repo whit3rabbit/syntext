@@ -66,7 +66,7 @@ impl Index {
             // and compare dev+ino to catch directory-component symlink swaps that
             // occur in the window between canonicalize() and open() (O_NOFOLLOW
             // only blocks the final component, not intermediate ones).
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             let pre_open_meta = match std::fs::metadata(&resolved) {
                 Ok(m) => m,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -98,7 +98,7 @@ impl Index {
                 }
                 Err(e) => return Err(IndexError::Io(e)),
             };
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if !io_util::verify_fd_matches_stat(&file, &pre_open_meta) {
                 return Err(IndexError::PathOutsideRepo(abs.clone()));
             }

@@ -13,29 +13,9 @@ use crate::index::snapshot::IndexSnapshot;
 use crate::IndexError;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn resolve_git_binary() -> std::path::PathBuf {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            for name in ["git", "git.exe"] {
-                let candidate = dir.join(name);
-                if candidate.is_file() {
-                    if let Ok(resolved) = candidate.canonicalize() {
-                        return resolved;
-                    }
-                }
-            }
-        }
-    }
-    #[cfg(windows)]
-    return std::path::PathBuf::from("git.exe");
-    #[cfg(not(windows))]
-    return std::path::PathBuf::from("/usr/bin/git");
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn current_repo_head(repo_root: &Path) -> Result<Option<String>, IndexError> {
     let canonical_root = std::fs::canonicalize(repo_root)?;
-    let output = match Command::new(resolve_git_binary())
+    let output = match Command::new(crate::git_util::resolve_git_binary())
         .arg("-C")
         .arg(&canonical_root)
         .args(["rev-parse", "--verify", "HEAD"])

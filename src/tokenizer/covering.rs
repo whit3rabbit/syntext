@@ -41,6 +41,13 @@ pub fn build_covering(input: &[u8]) -> Option<Vec<u64>> {
         return None;
     }
 
+    // Perf note: the boundary buffer inside with_boundary_positions_lower is a
+    // thread-local Vec reused across calls (no per-call allocation). The small
+    // `lower` and `hashes` Vecs below are the only allocations, and both callers
+    // (route_query, literal_grams) consume the gram data in the Some branch.
+    // The early return above already handles the common "too short" case with
+    // zero work, so a separate "is indexable?" fast path would only help the
+    // rare case where the pattern is long enough but no spans qualify.
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
     with_boundary_positions_lower(&lower, |boundaries| {
         let mut hashes = Vec::new();

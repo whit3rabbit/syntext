@@ -40,6 +40,22 @@ impl PendingEdits {
 
     /// Buffer a file change. NOT visible to queries until `commit_batch()`.
     /// Only records the path; file content is read at commit time.
+    ///
+    /// # Poison recovery
+    /// Recovery via `into_inner` is safe here: the only operation under the lock
+    /// is `Vec::push`, which cannot panic except on OOM (which aborts, not
+    /// unwinds, under the default allocator). The same reasoning applies to
+    /// `notify_delete`, `reset`, `has_uncommitted`, and `uncommitted_count`.
+    ///
+    /// `take_for_commit` is theoretically riskier: if unwinding occurred
+    /// mid-`drain` (e.g. a custom allocator that unwinds on OOM during
+    /// `HashSet::insert`), the Vec would retain only the un-drained suffix,
+    /// silently dropping earlier edits from the commit. In practice this cannot
+    /// happen with the default global allocator.
+    ///
+    /// Contrast with `SymbolIndex` (symbol/mod.rs), which deliberately does NOT
+    /// recover from poison because its `rusqlite::Connection` may hold open
+    /// transactions or inconsistent prepared-statement cache state.
     pub fn notify_change(&self, path: &Path) {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         state.uncommitted.push(super::overlay::FileEdit {

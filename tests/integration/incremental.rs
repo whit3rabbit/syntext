@@ -597,6 +597,7 @@ fn concurrent_reads_during_commit_batch() {
     }
 
     // Writer: modify files and commit several rounds.
+    let mut commits_ok = 0u32;
     for round in 0..5 {
         fs::write(
             repo.path().join(format!("file{round}.rs")),
@@ -608,11 +609,17 @@ fn concurrent_reads_during_commit_batch() {
             .unwrap();
         // commit_batch may fail with LockConflict if a prior round is still
         // committing; retry once after a short sleep.
-        if index.commit_batch().is_err() {
+        let ok = if index.commit_batch().is_ok() {
+            true
+        } else {
             thread::sleep(Duration::from_millis(10));
-            let _ = index.commit_batch();
+            index.commit_batch().is_ok()
+        };
+        if ok {
+            commits_ok += 1;
         }
     }
+    assert!(commits_ok > 0, "writer failed to commit any round");
 
     // Signal readers to stop and join.
     stop.store(true, Ordering::Relaxed);

@@ -163,10 +163,10 @@ pub(in crate::cli) fn read_repo_file_bytes(
 ) -> io::Result<Vec<u8>> {
     let abs_path = config.repo_root.join(rel_path);
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let pre_open_meta = std::fs::metadata(&abs_path)?;
     let mut file = crate::index::open_readonly_nofollow(&abs_path)?;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
         return Err(io::Error::new(io::ErrorKind::Other, "path changed during verification"));
     }

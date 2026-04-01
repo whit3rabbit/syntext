@@ -3,6 +3,10 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
 use xxhash_rust::xxh64::xxh64;
 
+/// Process-local mutex that serializes index-heavy tests within this binary.
+/// Cross-binary isolation is unnecessary: every test creates its own `TempDir`
+/// for both repo and index directories, so no mutable state is shared between
+/// test binaries that `cargo test` runs in parallel.
 fn serial_index_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))

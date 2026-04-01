@@ -204,6 +204,9 @@ fn detect_repo_root() -> Option<PathBuf> {
 ///
 /// Only absolute paths matching a known-sensitive prefix are rejected.
 /// Relative paths and paths under user-owned directories are always accepted.
+///
+/// The core prefix-matching logic is in `overlaps_sensitive_prefix` so it can
+/// be unit-tested on any platform.
 #[cfg(unix)]
 fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
     if !index_dir.is_absolute() {
@@ -228,22 +231,66 @@ fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
         "/private/var/root",
     ];
     let dir_str = index_dir.to_string_lossy();
-    for prefix in SENSITIVE_PREFIXES {
-        // Reject exact match (e.g., /etc) or subpath (e.g., /etc/syntext).
-        if dir_str == *prefix || dir_str.starts_with(&format!("{prefix}/")) {
-            return Err(format!(
-                "st: refusing --index-dir '{}': overlaps system path '{prefix}'; \
-                 use a path under the repository or a user-owned directory",
-                index_dir.display(),
-            ));
-        }
+    if let Some(matched) = overlaps_sensitive_prefix(&dir_str, SENSITIVE_PREFIXES, '/') {
+        return Err(format!(
+            "st: refusing --index-dir '{}': overlaps system path '{matched}'; \
+             use a path under the repository or a user-owned directory",
+            index_dir.display(),
+        ));
     }
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn validate_index_dir(_index_dir: &std::path::Path) -> Result<(), String> {
+fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
+    if !index_dir.is_absolute() {
+        return Ok(());
+    }
+    // Build sensitive prefixes from environment variables (handles non-standard
+    // Windows installs, e.g. Windows on D:\). Fall back to hardcoded defaults.
+    let mut sensitive: Vec<String> = Vec::new();
+    for var in ["SYSTEMROOT", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA"] {
+        if let Some(val) = std::env::var_os(var) {
+            let lower = val.to_string_lossy().to_lowercase().replace('/', "\\");
+            if !sensitive.contains(&lower) {
+                sensitive.push(lower);
+            }
+        }
+    }
+    for fb in [
+        "c:\\windows",
+        "c:\\program files",
+        "c:\\program files (x86)",
+        "c:\\programdata",
+    ] {
+        let s = fb.to_string();
+        if !sensitive.contains(&s) {
+            sensitive.push(s);
+        }
+    }
+    // Normalize the input path: lowercase, forward slashes -> backslashes.
+    let dir_lower = index_dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    let prefixes: Vec<&str> = sensitive.iter().map(|s| s.as_str()).collect();
+    if let Some(matched) = overlaps_sensitive_prefix(&dir_lower, &prefixes, '\\') {
+        return Err(format!(
+            "st: refusing --index-dir '{}': overlaps system path '{matched}'; \
+             use a path under the repository or a user-owned directory",
+            index_dir.display(),
+        ));
+    }
     Ok(())
+}
+
+/// Return the matched prefix if `dir` equals or is a child of any entry in
+/// `prefixes` (separated by `sep`). Platform-independent so it can be tested
+/// on any OS.
+fn overlaps_sensitive_prefix<'a>(dir: &str, prefixes: &[&'a str], sep: char) -> Option<&'a str> {
+    for &prefix in prefixes {
+        if dir == prefix || dir.starts_with(&format!("{prefix}{sep}")) {
+            return Some(prefix);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

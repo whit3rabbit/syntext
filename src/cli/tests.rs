@@ -8,7 +8,7 @@ use clap::Parser;
 use crate::index::Index;
 use crate::{Config, SearchOptions};
 
-use super::{manage::cmd_index, manage::cmd_update, Cli, ManageCommand};
+use super::{manage::cmd_index, manage::cmd_update, overlaps_sensitive_prefix, Cli, ManageCommand};
 
 /// Build a temporary index from a list of (relative_path, content) pairs.
 /// Returns (repo_dir, index_dir, config) — caller must keep all three alive.
@@ -806,5 +806,62 @@ fn context_separator_custom_string() {
     assert!(
         !output.contains("--\n"),
         "default separator should not appear when custom one is set"
+    );
+}
+
+// --- overlaps_sensitive_prefix tests (platform-independent) ---
+
+#[test]
+fn sensitive_prefix_rejects_exact_match_unix() {
+    let prefixes = &["/etc", "/usr", "/bin"];
+    assert_eq!(overlaps_sensitive_prefix("/etc", prefixes, '/'), Some("/etc"));
+}
+
+#[test]
+fn sensitive_prefix_rejects_subpath_unix() {
+    let prefixes = &["/etc", "/usr"];
+    assert_eq!(
+        overlaps_sensitive_prefix("/etc/syntext", prefixes, '/'),
+        Some("/etc"),
+    );
+}
+
+#[test]
+fn sensitive_prefix_accepts_safe_path_unix() {
+    let prefixes = &["/etc", "/usr"];
+    assert_eq!(overlaps_sensitive_prefix("/home/user/index", prefixes, '/'), None);
+}
+
+#[test]
+fn sensitive_prefix_no_false_positive_on_prefix_substring() {
+    // "/etcetera" should NOT match "/etc" because there is no separator after "/etc".
+    let prefixes = &["/etc"];
+    assert_eq!(overlaps_sensitive_prefix("/etcetera", prefixes, '/'), None);
+}
+
+#[test]
+fn sensitive_prefix_rejects_exact_match_windows() {
+    let prefixes = &["c:\\windows", "c:\\program files"];
+    assert_eq!(
+        overlaps_sensitive_prefix("c:\\windows", prefixes, '\\'),
+        Some("c:\\windows"),
+    );
+}
+
+#[test]
+fn sensitive_prefix_rejects_subpath_windows() {
+    let prefixes = &["c:\\windows"];
+    assert_eq!(
+        overlaps_sensitive_prefix("c:\\windows\\system32\\foo", prefixes, '\\'),
+        Some("c:\\windows"),
+    );
+}
+
+#[test]
+fn sensitive_prefix_accepts_safe_path_windows() {
+    let prefixes = &["c:\\windows", "c:\\program files"];
+    assert_eq!(
+        overlaps_sensitive_prefix("d:\\projects\\index", prefixes, '\\'),
+        None,
     );
 }

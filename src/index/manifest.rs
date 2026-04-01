@@ -3,6 +3,10 @@
 //! Persisted as `manifest.json` using atomic write-then-rename.
 //! Reads on startup load segment metadata; GC removes orphan files.
 
+// io::Error::new(ErrorKind::Other, ...) is used instead of io::Error::other()
+// for Rust < 1.74 compatibility (Windows CI constraint).
+#![allow(clippy::io_other_error)]
+
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -149,7 +153,7 @@ impl Manifest {
             let mut canonical_manifest = manifest.clone();
             canonical_manifest.checksum = None;
             let canonical_json =
-                serde_json::to_string(&canonical_manifest).map_err(io::Error::other)?;
+                serde_json::to_string(&canonical_manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             let computed_checksum = xxhash_rust::xxh64::xxh64(canonical_json.as_bytes(), 0);
             if computed_checksum != stored_checksum {
                 return Err(io::Error::new(
@@ -160,6 +164,12 @@ impl Manifest {
                 )
                 .into());
             }
+        } else {
+            eprintln!(
+                "syntext: warning: manifest at '{}' has no checksum; \
+                 re-run `st index` to add one",
+                path.display(),
+            );
         }
 
         // Validate that each segment_id is a well-formed UUID. The field is not
@@ -187,12 +197,12 @@ impl Manifest {
         let mut canonical_manifest = self.clone();
         canonical_manifest.checksum = None;
         let canonical_json =
-            serde_json::to_string(&canonical_manifest).map_err(io::Error::other)?;
+            serde_json::to_string(&canonical_manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         let checksum = xxhash_rust::xxh64::xxh64(canonical_json.as_bytes(), 0);
 
         let mut persisted_manifest = self.clone();
         persisted_manifest.checksum = Some(checksum);
-        let json = serde_json::to_string_pretty(&persisted_manifest).map_err(io::Error::other)?;
+        let json = serde_json::to_string_pretty(&persisted_manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         {
             let mut file = std::fs::File::create(&tmp)?;
             file.write_all(json.as_bytes())?;

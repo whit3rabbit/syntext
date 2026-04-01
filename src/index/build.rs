@@ -31,6 +31,27 @@ pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 ///
 /// Returns a value in [0.01, 0.50]. Falls back to 0.10 if measurement fails
 /// (e.g., no files indexed, timing resolution too coarse).
+///
+/// # Why sequential reads are acceptable here
+///
+/// The scan cost measurement reads files sequentially. Parallel I/O on NVMe
+/// (high queue depth) would lower effective scan cost per doc, and that speedup
+/// does NOT cancel in the ratio: posting cost is pure CPU (roaring bitmap AND),
+/// so `threshold = scan / (scan + posting)` shifts downward when scan shrinks
+/// but posting stays fixed. The calibrated threshold is therefore slightly
+/// higher than the true parallel-aware threshold, biasing toward index use.
+///
+/// This bias is acceptable for three reasons:
+///
+/// 1. The warmup pass populates the page cache. The timed pass measures
+///    hot-cache memcpy cost, not device latency. Parallel I/O gains come
+///    primarily from device queue depth on cold reads; for cached files the
+///    speedup factor is small.
+/// 2. The bias direction is conservative: we use the index slightly more than
+///    optimal, paying marginal extra posting cost but reading fewer files.
+///    This never produces wrong results, only marginally suboptimal routing.
+/// 3. The clamp to [0.01, 0.50] bounds the maximum error regardless of
+///    measurement quality.
 pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) -> f64 {
     const DEFAULT: f64 = 0.10;
     const SCAN_SAMPLE: usize = 100;
@@ -179,21 +200,43 @@ pub(super) fn build_index_with_batch_size(
         // space. The overlay path already uses checked_add; this matches it.
         // Parallel: read file content and extract grams.
         // results[i] is None if file i was binary or could not be read.
+        let verbose = config.verbose;
         let map_fn = |(abs_path, _, _): &(PathBuf, PathBuf, u64)| -> Option<(u64, Vec<u64>)> {
             // Security: close the TOCTOU window between enumerate_files()'s
             // symlink resolution (symlink_metadata + canonicalize) and this
             // read. open_readonly_nofollow blocks final-component substitution;
             // verify_fd_matches_stat catches directory-component swaps.
-            let pre_meta = std::fs::symlink_metadata(abs_path).ok()?;
-            let mut file = super::open_readonly_nofollow(abs_path).ok()?;
-            #[cfg(unix)]
+            let pre_meta = match std::fs::symlink_metadata(abs_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    if verbose {
+                        eprintln!("syntext: skipping {}: stat: {e}", abs_path.display());
+                    }
+                    return None;
+                }
+            };
+            let mut file = match super::open_readonly_nofollow(abs_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    if verbose {
+                        eprintln!("syntext: skipping {}: open: {e}", abs_path.display());
+                    }
+                    return None;
+                }
+            };
+            #[cfg(any(unix, windows))]
             if !super::verify_fd_matches_stat(&file, &pre_meta) {
                 return None;
             }
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             let _ = &pre_meta;
             let mut raw = Vec::new();
-            file.read_to_end(&mut raw).ok()?;
+            if let Err(e) = file.read_to_end(&mut raw) {
+                if verbose {
+                    eprintln!("syntext: skipping {}: read: {e}", abs_path.display());
+                }
+                return None;
+            }
             let content = crate::index::normalize_encoding(&raw, config.verbose);
             if is_binary(&content) {
                 return None;
@@ -223,7 +266,7 @@ pub(super) fn build_index_with_batch_size(
                 }
                 indexed_paths.push(rel_path.clone());
             } else {
-                // File was binary or unreadable; log at trace level if verbose.
+                // File was binary or unreadable; logged in map_fn when verbose.
                 let _ = abs_path;
             }
         }

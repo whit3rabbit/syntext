@@ -57,6 +57,38 @@ chmod +x st && sudo mv st /usr/local/bin/
 
 </details>
 
+<details>
+<summary>Windows (PowerShell)</summary>
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.ps1 | iex
+```
+
+Installs `st.exe` to `%LOCALAPPDATA%\syntext` and adds it to the user `PATH`. Restart your terminal after install.
+
+To pin a version or run from a saved script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+</details>
+
+<details>
+<summary>WASM</summary>
+
+Prebuilt WASM packages are available on the [releases page](https://github.com/whit3rabbit/syntext/releases) as `syntext-wasm-<version>.tar.gz`. To build from source:
+
+```bash
+cargo install wasm-pack
+wasm-pack build --target bundler -- --features wasm --no-default-features
+# output: pkg/  (JS glue + .wasm + TypeScript types)
+```
+
+Other targets: `--target nodejs`, `--target web`.
+
+</details>
+
 ### From source
 
 ```bash

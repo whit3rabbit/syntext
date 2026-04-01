@@ -6,7 +6,7 @@ use tempfile::TempDir;
 #[test]
 fn round_trip_empty_segment() {
     let dir = TempDir::new().unwrap();
-    let mut writer = SegmentWriter::new();
+    let writer = SegmentWriter::new();
     let meta = writer.write_to_dir(dir.path()).unwrap();
     assert_eq!(meta.doc_count, 0);
     assert_eq!(meta.gram_count, 0);

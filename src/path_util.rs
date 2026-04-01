@@ -17,6 +17,7 @@ pub(crate) fn path_bytes(path: &Path) -> Cow<'_, [u8]> {
 /// Normalize a relative path to use forward-slash separators on all platforms.
 /// On Unix this is a no-op. On Windows it replaces backslashes so that
 /// byte-level matching in `path/filter.rs` (which splits on `b'/'`) works.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn normalize_to_forward_slashes(path: PathBuf) -> PathBuf {
     #[cfg(not(windows))]
     {

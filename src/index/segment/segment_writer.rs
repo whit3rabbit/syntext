@@ -86,7 +86,7 @@ impl SegmentWriter {
     /// Returns metadata whose `dict_filename` and `post_filename` match the
     /// files created on disk. Use this in production code so the manifest is
     /// always consistent.
-    pub fn write_to_dir(&mut self, dir: &Path) -> io::Result<SegmentMeta> {
+    pub fn write_to_dir(mut self, dir: &Path) -> io::Result<SegmentMeta> {
         let segment_id = Uuid::new_v4();
         let dict_filename = format!("{}.dict", segment_id);
         let post_filename = format!("{}.post", segment_id);
@@ -108,7 +108,7 @@ impl SegmentWriter {
     /// Writes `{stem}.dict` and `{stem}.post` alongside the provided path,
     /// replacing whatever extension was given. The `SegmentMeta.dict_filename`
     /// and `post_filename` reflect the actual names created on disk.
-    pub fn write_to_file(&mut self, path: &Path) -> io::Result<SegmentMeta> {
+    pub fn write_to_file(mut self, path: &Path) -> io::Result<SegmentMeta> {
         let segment_id = Uuid::new_v4();
         let parent = path.parent().unwrap_or(Path::new("."));
         let stem = path
@@ -142,11 +142,8 @@ impl SegmentWriter {
 
     /// Build the on-disk byte representations.
     ///
-    /// **Single-use semantics:** `serialize` sorts and deduplicates `self.docs`
-    /// and `self.postings` in-place. Calling it a second time on the same writer
-    /// is safe and produces identical output (the data is already sorted/deduped),
-    /// but the mutation is surprising. Treat `write_to_dir` / `write_to_file` as
-    /// consuming the writer: do not call both on the same instance.
+    /// Sorts and deduplicates `self.docs` and `self.postings` in place, so
+    /// `write_to_dir` / `write_to_file` consume `self` to prevent reuse.
     ///
     /// Returns `(dict_bytes, post_bytes, doc_count, gram_count)`.
     ///

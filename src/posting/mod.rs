@@ -157,6 +157,13 @@ impl PostingList {
     ///
     /// O(1) for both variants (checks byte-slice length for `Small`,
     /// bitmap length for `Large`).
+    ///
+    /// Note: for `Small`, this checks `bytes.is_empty()`, not whether the
+    /// varint stream decodes to zero entries. A corrupted stream (non-empty
+    /// bytes, zero decodable entries) would return `false` here but `len() == 0`.
+    /// This is acceptable because segment checksums (xxh64) are validated on
+    /// open, so corrupt varint bytes only arise from bit-flips that pass
+    /// checksum validation -- astronomically unlikely.
     pub fn is_empty(&self) -> bool {
         match self {
             PostingList::Small(bytes) => bytes.is_empty(),

@@ -59,6 +59,26 @@ pub const MIN_GRAM_LEN: usize = 3;
 pub const MAX_GRAM_LEN: usize = 128;
 
 // ---------------------------------------------------------------------------
+// Thread-local buffer shrink policy
+// ---------------------------------------------------------------------------
+
+/// Minimum capacity retained by boundary-position buffers (`Vec<usize>`).
+/// Small enough that idle rayon workers don't hold noticeable memory, large
+/// enough to avoid reallocating for typical source files.
+const BOUNDARY_BUF_MIN_CAPACITY: usize = 256;
+
+/// Minimum capacity retained by the lowercase copy buffer (`Vec<u8>`).
+/// Larger than `BOUNDARY_BUF_MIN_CAPACITY` because this buffer stores one
+/// byte per input byte (vs. one `usize` per boundary position).
+const LOWER_BUF_MIN_CAPACITY: usize = 4096;
+
+/// Shrink trigger multiplier. When a buffer's capacity exceeds the larger of
+/// its minimum and `needed * SHRINK_TRIGGER_FACTOR`, it is shrunk back to
+/// `max(minimum, needed)`. The 4x factor prevents shrink/grow churn when file
+/// sizes vary by less than 4:1 within a batch.
+const SHRINK_TRIGGER_FACTOR: usize = 4;
+
+// ---------------------------------------------------------------------------
 // T014: Gram hash
 // ---------------------------------------------------------------------------
 
@@ -187,10 +207,9 @@ where
         // Shrink the buffer when its capacity far exceeds the current input.
         // This bounds per-thread memory in rayon workers that process large
         // files early in a batch and small files afterward.
-        const MIN_CAPACITY: usize = 256;
         let needed = bytes.len() / 4 + 16;
-        if buf.capacity() > MIN_CAPACITY.max(needed * 4) {
-            buf.shrink_to(MIN_CAPACITY.max(needed));
+        if buf.capacity() > BOUNDARY_BUF_MIN_CAPACITY.max(needed * SHRINK_TRIGGER_FACTOR) {
+            buf.shrink_to(BOUNDARY_BUF_MIN_CAPACITY.max(needed));
         }
         let n = bytes.len();
         buf.push(0);
@@ -250,11 +269,12 @@ pub fn build_all(input: &[u8]) -> Vec<u64> {
         {
             let mut lower = buf.borrow_mut();
             lower.clear();
-            // Shrink when capacity far exceeds current input, matching the
-            // BUF shrink policy in with_boundary_positions_lower.
-            const MIN_CAPACITY: usize = 4096;
-            if lower.capacity() > MIN_CAPACITY.max(input.len() * 4) {
-                lower.shrink_to(MIN_CAPACITY.max(input.len()));
+            // Shrink when capacity far exceeds current input (same shape as
+            // the BUF policy in with_boundary_positions_lower, but with a
+            // larger floor: LOWER_BUF stores one byte per input byte, while
+            // BUF stores usize boundary positions).
+            if lower.capacity() > LOWER_BUF_MIN_CAPACITY.max(input.len() * SHRINK_TRIGGER_FACTOR) {
+                lower.shrink_to(LOWER_BUF_MIN_CAPACITY.max(input.len()));
             }
             lower.extend(input.iter().map(|b| b.to_ascii_lowercase()));
         } // mutable borrow released here

@@ -268,8 +268,20 @@ impl OverlayView {
         // is fast in practice (< 5 ms for typical overlay sizes), but grows
         // linearly with overlay size and eventually dominates the delta advantage.
         //
-        // Mitigation (v2): use a persistent/CoW map (e.g., `im::HashMap`) so only
-        // the changed entries are copied. See ARCHITECTURE.md "Overlay compaction".
+        // In-place mutation is NOT possible: the old OverlayView is embedded in
+        // Arc<IndexSnapshot> (snapshot.rs), held by ArcSwap + in-flight readers.
+        // Arc::get_mut requires refcount == 1, which never holds during normal
+        // operation. Wrapping gram_index in Arc<HashMap> doesn't help either:
+        // the old overlay still holds its Arc ref through the snapshot, so
+        // Arc::make_mut would clone anyway.
+        //
+        // Note: the .cloned() carry-forward of unchanged OverlayDocs (below)
+        // has comparable allocation cost (clones grams: Vec<u64> and path per
+        // doc). Both costs should be addressed together.
+        //
+        // Mitigation (v2): use a persistent/CoW map (e.g., `im::HashMap`) so
+        // only the changed entries are copied, or HashMap<u64, Arc<Vec<u32>>>
+        // to share posting list data. See ARCHITECTURE.md "Overlay compaction".
         let mut gram_index = old_overlay.gram_index.clone();
         let overlay_docs =
             (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
@@ -287,6 +299,10 @@ impl OverlayView {
         gram_index.retain(|_, list| !list.is_empty());
 
         // Carry forward unchanged docs with their existing (stable) doc_ids.
+        // Cost: .cloned() deep-copies grams (Vec<u64>, ~120 elements) and path
+        // (PathBuf) per unchanged doc. Content is Arc<[u8]> (refcount bump only).
+        // For single-file edits in a 1000-doc overlay, this is ~999 Vec clones,
+        // comparable to the gram_index clone above.
         let mut docs: Vec<OverlayDoc> = old_overlay
             .docs
             .iter()
@@ -312,13 +328,15 @@ impl OverlayView {
             });
         }
 
-        // Verify sorted-order invariant: new doc_ids > all existing, so push() keeps lists sorted.
-        #[cfg(debug_assertions)]
-        for (gram_hash, ids) in &gram_index {
-            debug_assert!(
-                ids.windows(2).all(|w| w[0] < w[1]),
-                "posting list for gram {gram_hash:#x} is not strictly sorted after delta build: {ids:?}"
-            );
+        // Sorted-order invariant: new doc_ids > all existing, so push() keeps lists sorted.
+        // This is structurally guaranteed by monotonic next_doc_id, but we enforce it
+        // defensively in release builds: if a future refactor breaks monotonicity,
+        // unsorted posting lists cause silent intersection misses.
+        for ids in gram_index.values_mut() {
+            if ids.windows(2).any(|w| w[0] >= w[1]) {
+                ids.sort_unstable();
+                ids.dedup();
+            }
         }
 
         let doc_id_map = docs

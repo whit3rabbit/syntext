@@ -5,7 +5,7 @@
 //! without any filesystem access.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
 use roaring::RoaringBitmap;
@@ -29,18 +29,29 @@ pub struct InMemoryIndex {
 impl InMemoryIndex {
     /// Build an in-memory index from a map of `repo_relative_path -> content`.
     pub fn build(files: HashMap<String, Vec<u8>>) -> Result<Self, IndexError> {
-        // Normalize and filter binary files.
-        let dirty_files: Vec<(PathBuf, Arc<[u8]>)> = files
-            .iter()
-            .filter_map(|(rel_str, raw)| {
-                let content = crate::index::normalize_encoding(raw, false);
-                if is_binary(&content) {
-                    return None;
-                }
-                let path = PathBuf::from(rel_str);
-                Some((path, Arc::from(content.as_ref())))
-            })
-            .collect();
+        // Validate and filter files.
+        let mut dirty_files: Vec<(PathBuf, Arc<[u8]>)> = Vec::with_capacity(files.len());
+        for (rel_str, raw) in &files {
+            let path = PathBuf::from(rel_str);
+            // Reject traversal, absolute, and prefix paths (same rules as
+            // Index::repo_relative_path). This is sufficient even without
+            // canonicalization: WASM has no filesystem, so there are no symlinks
+            // to resolve, and Component::ParentDir catches all ".." segments
+            // regardless of encoding.
+            if path.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            }) {
+                return Err(IndexError::PathOutsideRepo(path));
+            }
+            let content = crate::index::normalize_encoding(raw, false);
+            if is_binary(&content) {
+                continue;
+            }
+            dirty_files.push((path, Arc::from(content.as_ref())));
+        }
 
         // base_doc_count = 0: overlay doc_ids start at 0 (no base segments).
         // build() consumes dirty_files; extract paths from overlay.docs afterward.
@@ -97,5 +108,47 @@ impl InMemoryIndex {
             pattern,
             opts,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expect_path_outside(result: Result<InMemoryIndex, IndexError>) {
+        match result {
+            Err(IndexError::PathOutsideRepo(_)) => {}
+            Err(e) => panic!("expected PathOutsideRepo, got: {e}"),
+            Ok(_) => panic!("expected PathOutsideRepo, got Ok"),
+        }
+    }
+
+    #[test]
+    fn build_rejects_parent_dir_traversal() {
+        let mut files = HashMap::new();
+        files.insert("../../etc/passwd".into(), b"root:x:0:0".to_vec());
+        expect_path_outside(InMemoryIndex::build(files));
+    }
+
+    #[test]
+    fn build_rejects_absolute_path() {
+        let mut files = HashMap::new();
+        files.insert("/etc/passwd".into(), b"root:x:0:0".to_vec());
+        expect_path_outside(InMemoryIndex::build(files));
+    }
+
+    #[test]
+    fn build_rejects_embedded_traversal() {
+        let mut files = HashMap::new();
+        files.insert("src/../../../etc/shadow".into(), b"secret".to_vec());
+        expect_path_outside(InMemoryIndex::build(files));
+    }
+
+    #[test]
+    fn build_accepts_clean_relative_paths() {
+        let mut files = HashMap::new();
+        files.insert("src/main.rs".into(), b"fn main() {}".to_vec());
+        files.insert("lib/util.rs".into(), b"pub fn hello() {}".to_vec());
+        assert!(InMemoryIndex::build(files).is_ok());
     }
 }

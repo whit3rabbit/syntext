@@ -94,6 +94,11 @@ impl IndexSnapshot {
             .get_or_init(|| Mutex::new(HashMap::new()))
     }
 
+    /// # Poison recovery
+    /// Recovery is safe: the cache is a derived, performance-only structure over
+    /// immutable base segment data. The worst case after a panic mid-operation is
+    /// a partially cleared HashMap; the next query simply recomputes the entry.
+    /// No correctness invariant depends on cache completeness.
     pub(crate) fn cached_posting_bitmap(&self, gram_hash: u64) -> Option<Arc<RoaringBitmap>> {
         let cache = self
             .posting_bitmap_cache()
@@ -181,6 +186,11 @@ pub fn new_snapshot(
         base_doc_to_file_id,
         overlay_doc_to_file_id,
         scan_threshold,
+        // Left as OnceLock::new() (not pre-populated) intentionally.
+        // commit_batch() calls all_doc_ids() eagerly after constructing the
+        // snapshot, filling the cache before readers see it. Keeping this
+        // constructor cheap lets tests (clone_for_test, with_scan_threshold)
+        // skip the bitmap cost.
         all_doc_ids_cache: OnceLock::new(),
         posting_bitmap_cache: OnceLock::new(),
     }
