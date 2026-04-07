@@ -144,9 +144,7 @@ fn status_json_escapes_special_characters_in_index_dir() {
     let repo = tempfile::TempDir::new().unwrap();
     let index_root = tempfile::TempDir::new().unwrap();
     // Windows doesn't allow " in filenames.
-    let index = index_root
-        .path()
-        .join("index _quoted_ \\ tab\tline\nbreak");
+    let index = index_root.path().join("index _quoted_ \\ tab\tline\nbreak");
     write_text(
         &repo.path().join("src/main.rs"),
         "fn main() { println!(\"needle\"); }\n",
@@ -484,12 +482,18 @@ fn default_filename_and_line_number_heuristics_match_scope() {
     let single_file_with_number =
         run_repo(repo.path(), index.path(), &["-n", "needle", "src/one.rs"]);
     assert_eq!(single_file_with_number.status.code(), Some(0));
-    assert_eq!(fix_path(stdout_text(&single_file_with_number)), "1:needle\n");
+    assert_eq!(
+        fix_path(stdout_text(&single_file_with_number)),
+        "1:needle\n"
+    );
 
     let single_file_with_name =
         run_repo(repo.path(), index.path(), &["-H", "needle", "src/one.rs"]);
     assert_eq!(single_file_with_name.status.code(), Some(0));
-    assert_eq!(fix_path(stdout_text(&single_file_with_name)), "src/one.rs:needle\n");
+    assert_eq!(
+        fix_path(stdout_text(&single_file_with_name)),
+        "src/one.rs:needle\n"
+    );
 
     let dir_scope = run_repo(repo.path(), index.path(), &["needle", "src"]);
     assert_eq!(dir_scope.status.code(), Some(0));
@@ -594,7 +598,9 @@ fn non_utf8_file_content_matches_in_literal_and_regex_modes() {
         if let Some(pos) = actual_literal.iter().position(|&b| b == b':') {
             let mut fixed = actual_literal[..pos].to_vec();
             for b in &mut fixed {
-                if *b == b'\\' { *b = b'/'; }
+                if *b == b'\\' {
+                    *b = b'/';
+                }
             }
             actual_literal.splice(..pos, fixed);
         }
@@ -608,7 +614,9 @@ fn non_utf8_file_content_matches_in_literal_and_regex_modes() {
         if let Some(pos) = actual_regex.iter().position(|&b| b == b':') {
             let mut fixed = actual_regex[..pos].to_vec();
             for b in &mut fixed {
-                if *b == b'\\' { *b = b'/'; }
+                if *b == b'\\' {
+                    *b = b'/';
+                }
             }
             actual_regex.splice(..pos, fixed);
         }
@@ -641,7 +649,15 @@ fn json_output_uses_bytes_fields_for_non_utf8_match_lines() {
         .find(|msg| msg["type"] == "match")
         .expect("match message");
 
-    assert_eq!(fix_path(matched["data"]["path"]["text"].as_str().unwrap().to_string()), "src/non_utf8.txt");
+    assert_eq!(
+        fix_path(
+            matched["data"]["path"]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        ),
+        "src/non_utf8.txt"
+    );
     assert!(matched["data"]["lines"]["text"].is_null());
     assert_eq!(
         matched["data"]["lines"]["bytes"],
@@ -888,11 +904,17 @@ fn invert_match_count_and_files_with_matches_follow_selected_lines() {
 
     let count = run_repo(repo.path(), index.path(), &["-v", "-c", "needle", "src"]);
     assert_eq!(count.status.code(), Some(0));
-    assert_eq!(fix_path(stdout_text(&count)), "src/one.txt:1\nsrc/three.txt:1\n");
+    assert_eq!(
+        fix_path(stdout_text(&count)),
+        "src/one.txt:1\nsrc/three.txt:1\n"
+    );
 
     let files = run_repo(repo.path(), index.path(), &["-v", "-l", "needle", "src"]);
     assert_eq!(files.status.code(), Some(0));
-    assert_eq!(fix_path(stdout_text(&files)), "src/one.txt\nsrc/three.txt\n");
+    assert_eq!(
+        fix_path(stdout_text(&files)),
+        "src/one.txt\nsrc/three.txt\n"
+    );
 
     let without = run_repo(
         repo.path(),
@@ -918,7 +940,10 @@ fn files_without_match_lists_only_unmatched_files() {
         &["--files-without-match", "needle", "src"],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(fix_path(stdout_text(&output)), "src/three.txt\nsrc/two.txt\n");
+    assert_eq!(
+        fix_path(stdout_text(&output)),
+        "src/three.txt\nsrc/two.txt\n"
+    );
 }
 
 #[test]
@@ -935,7 +960,10 @@ fn count_matches_counts_individual_matches_per_file() {
         &["--count-matches", "needle", "src"],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(fix_path(stdout_text(&output)), "src/one.txt:2\nsrc/two.txt:1\n");
+    assert_eq!(
+        fix_path(stdout_text(&output)),
+        "src/one.txt:2\nsrc/two.txt:1\n"
+    );
 
     let no_filename = run_repo(
         repo.path(),
@@ -1205,7 +1233,11 @@ fn smart_case_lowercase_pattern_matches_mixed_case() {
 
     // Without -S, "hello" should NOT match "Hello World" (case-sensitive default)
     let out = run_repo(repo.path(), idx.path(), &["hello"]);
-    assert_eq!(out.status.code(), Some(1), "case-sensitive should not match");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "case-sensitive should not match"
+    );
 
     // -S with mixed-case pattern: should still match exact case
     let out = run_repo(repo.path(), idx.path(), &["-S", "Hello"]);
@@ -1225,7 +1257,10 @@ fn null_separator_in_files_with_matches() {
     assert_eq!(out.status.code(), Some(0));
     // NUL-terminated: output should contain NUL bytes, no newlines
     assert!(out.stdout.contains(&b'\0'), "expected NUL bytes in output");
-    assert!(!out.stdout.contains(&b'\n'), "expected no newlines when --null is set");
+    assert!(
+        !out.stdout.contains(&b'\n'),
+        "expected no newlines when --null is set"
+    );
     // Two files → two NUL terminators
     assert_eq!(out.stdout.iter().filter(|&&b| b == b'\0').count(), 2);
 }
@@ -1240,9 +1275,18 @@ fn stats_flag_writes_to_stderr() {
     let out = run_repo(repo.path(), idx.path(), &["--stats", "needle"]);
     assert_eq!(out.status.code(), Some(0));
     let err = stderr_text(&out);
-    assert!(err.contains("Elapsed:"), "expected Elapsed in stats: {err:?}");
-    assert!(err.contains("Matches: 1"), "expected match count in stats: {err:?}");
-    assert!(err.contains("Files with matches: 1"), "expected file count in stats: {err:?}");
+    assert!(
+        err.contains("Elapsed:"),
+        "expected Elapsed in stats: {err:?}"
+    );
+    assert!(
+        err.contains("Matches: 1"),
+        "expected match count in stats: {err:?}"
+    );
+    assert!(
+        err.contains("Files with matches: 1"),
+        "expected file count in stats: {err:?}"
+    );
 }
 
 #[test]
@@ -1258,9 +1302,18 @@ fn files_flag_lists_indexed_paths() {
     let out = run_repo(repo.path(), idx.path(), &["--files"]);
     assert_eq!(out.status.code(), Some(0));
     let stdout = fix_path(stdout_text(&out));
-    assert!(stdout.contains("src/lib.rs"), "expected src/lib.rs in --files output");
-    assert!(stdout.contains("src/main.rs"), "expected src/main.rs in --files output");
-    assert!(stdout.contains("README.md"), "expected README.md in --files output");
+    assert!(
+        stdout.contains("src/lib.rs"),
+        "expected src/lib.rs in --files output"
+    );
+    assert!(
+        stdout.contains("src/main.rs"),
+        "expected src/main.rs in --files output"
+    );
+    assert!(
+        stdout.contains("README.md"),
+        "expected README.md in --files output"
+    );
 }
 
 #[test]
@@ -1268,8 +1321,14 @@ fn type_list_prints_known_types() {
     let out = run(&["--type-list"]);
     assert_eq!(out.status.code(), Some(0));
     let stdout = stdout_text(&out);
-    assert!(stdout.contains("rust:"), "expected 'rust:' in --type-list output");
-    assert!(stdout.contains("python:"), "expected 'python:' in --type-list output");
+    assert!(
+        stdout.contains("rust:"),
+        "expected 'rust:' in --type-list output"
+    );
+    assert!(
+        stdout.contains("python:"),
+        "expected 'python:' in --type-list output"
+    );
 }
 
 #[test]
@@ -1286,5 +1345,8 @@ fn pcre2_warns_but_searches_normally() {
         err.contains("--pcre2 is not supported"),
         "expected pcre2 warning in stderr: {err:?}"
     );
-    assert!(stdout_text(&out).contains("foo bar"), "expected match output despite pcre2 flag");
+    assert!(
+        stdout_text(&out).contains("foo bar"),
+        "expected match output despite pcre2 flag"
+    );
 }

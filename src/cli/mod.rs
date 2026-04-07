@@ -51,11 +51,32 @@ pub fn run() -> i32 {
                 return cmd_files(config, &cli);
             }
 
-            let pattern = match cli.pattern.or(cli.regexp) {
-                Some(p) => p,
-                None => {
-                    eprintln!("st: a pattern is required (try `st --help`)");
-                    return 2;
+            // When -e/--regexp supplies the pattern, clap still assigns the
+            // first positional to `pattern` (it doesn't know it's a path).
+            // Shift that positional into `paths` so `st -e "pat" dir` works
+            // like ripgrep.  Multiple -e values are OR-combined with `|`.
+            let (pattern, paths) = if !cli.regexp.is_empty() {
+                let mut p = cli.paths;
+                if let Some(pos) = cli.pattern {
+                    p.insert(0, PathBuf::from(pos));
+                }
+                let combined = if cli.regexp.len() == 1 {
+                    cli.regexp.into_iter().next().unwrap()
+                } else {
+                    cli.regexp
+                        .iter()
+                        .map(|r| format!("(?:{r})"))
+                        .collect::<Vec<_>>()
+                        .join("|")
+                };
+                (combined, p)
+            } else {
+                match cli.pattern {
+                    Some(pat) => (pat, cli.paths),
+                    None => {
+                        eprintln!("st: a pattern is required (try `st --help`)");
+                        return 2;
+                    }
                 }
             };
 
@@ -78,7 +99,7 @@ pub fn run() -> i32 {
             let ctx = cli.context.unwrap_or(0);
             let search_args = SearchArgs {
                 pattern,
-                paths: cli.paths,
+                paths,
                 fixed_strings: cli.fixed_strings,
                 ignore_case,
                 word_regexp: cli.word_regexp,
@@ -249,7 +270,12 @@ fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
     // Build sensitive prefixes from environment variables (handles non-standard
     // Windows installs, e.g. Windows on D:\). Fall back to hardcoded defaults.
     let mut sensitive: Vec<String> = Vec::new();
-    for var in ["SYSTEMROOT", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA"] {
+    for var in [
+        "SYSTEMROOT",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMDATA",
+    ] {
         if let Some(val) = std::env::var_os(var) {
             let lower = val.to_string_lossy().to_lowercase().replace('/', "\\");
             if !sensitive.contains(&lower) {
@@ -269,7 +295,10 @@ fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
         }
     }
     // Normalize the input path: lowercase, forward slashes -> backslashes.
-    let dir_lower = index_dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    let dir_lower = index_dir
+        .to_string_lossy()
+        .to_lowercase()
+        .replace('/', "\\");
     let prefixes: Vec<&str> = sensitive.iter().map(|s| s.as_str()).collect();
     if let Some(matched) = overlaps_sensitive_prefix(&dir_lower, &prefixes, '\\') {
         return Err(format!(

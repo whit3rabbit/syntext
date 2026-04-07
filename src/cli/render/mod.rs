@@ -168,7 +168,10 @@ pub(in crate::cli) fn read_repo_file_bytes(
     let mut file = crate::index::open_readonly_nofollow(&abs_path)?;
     #[cfg(any(unix, windows))]
     if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
-        return Err(io::Error::new(io::ErrorKind::Other, "path changed during verification"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "path changed during verification",
+        ));
     }
 
     let mut raw_content = Vec::new();
@@ -176,9 +179,7 @@ pub(in crate::cli) fn read_repo_file_bytes(
     Ok(raw_content)
 }
 
-pub(in crate::cli) fn compile_output_regex(
-    args: &SearchArgs,
-) -> io::Result<regex::bytes::Regex> {
+pub(in crate::cli) fn compile_output_regex(args: &SearchArgs) -> io::Result<regex::bytes::Regex> {
     regex::bytes::RegexBuilder::new(&build_effective_pattern(args))
         .case_insensitive(args.ignore_case)
         .size_limit(REGEX_SIZE_LIMIT)
@@ -221,7 +222,9 @@ pub(in crate::cli) fn render_flat_to(
     };
     for m in matches {
         let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
-        let Some(line) = apply_output_modifiers(&raw, args) else { continue };
+        let Some(line) = apply_output_modifiers(&raw, args) else {
+            continue;
+        };
         if args.byte_offset {
             write!(out, "{}:", m.byte_offset)?;
         }
@@ -270,7 +273,9 @@ pub(in crate::cli) fn render_heading_to(
             current_path = Some(m.path.clone());
         }
         let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
-        let Some(line) = apply_output_modifiers(&raw, args) else { continue };
+        let Some(line) = apply_output_modifiers(&raw, args) else {
+            continue;
+        };
         if args.byte_offset {
             write!(out, "{}:", m.byte_offset)?;
         }
@@ -311,7 +316,9 @@ pub(in crate::cli) fn render_vimgrep_to(
             args.replace.as_deref(),
             &m.line_content,
         );
-        let Some(line) = apply_output_modifiers(&raw, args) else { continue };
+        let Some(line) = apply_output_modifiers(&raw, args) else {
+            continue;
+        };
         for hit in re.find_iter(&m.line_content) {
             if hit.start() == hit.end() {
                 continue;
@@ -344,9 +351,15 @@ fn apply_replace<'a>(
 }
 
 /// Apply --trim and --max-columns to a line. Returns None if the line should be skipped.
-fn apply_output_modifiers<'a>(line: &'a [u8], args: &SearchArgs) -> Option<std::borrow::Cow<'a, [u8]>> {
+fn apply_output_modifiers<'a>(
+    line: &'a [u8],
+    args: &SearchArgs,
+) -> Option<std::borrow::Cow<'a, [u8]>> {
     let trimmed: &[u8] = if args.trim {
-        let start = line.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(line.len());
+        let start = line
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .unwrap_or(line.len());
         &line[start..]
     } else {
         line

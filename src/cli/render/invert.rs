@@ -10,8 +10,11 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
+use super::{
+    compile_output_regex, json_data, json_elapsed, json_stats, read_repo_file_bytes,
+    write_formatted_line, write_json_line,
+};
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
-use super::{compile_output_regex, json_data, json_elapsed, json_stats, read_repo_file_bytes, write_formatted_line, write_json_line};
 
 pub(in crate::cli) fn render_invert_match(
     index: &Index,

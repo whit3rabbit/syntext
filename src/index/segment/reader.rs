@@ -224,4 +224,3 @@ pub(super) fn read_posting_list_pread(
         )),
     }
 }
-

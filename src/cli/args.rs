@@ -54,13 +54,14 @@ pub struct Cli {
     pub invert_match: bool,
 
     /// Specify pattern explicitly (avoids subcommand name conflicts).
+    /// Can be given multiple times; patterns are combined with OR (|).
     #[arg(
         short = 'e',
         long = "regexp",
         value_name = "PATTERN",
-        conflicts_with = "pattern"
+        action = clap::ArgAction::Append,
     )]
-    pub regexp: Option<String>,
+    pub regexp: Vec<String>,
 
     // --- Output format ---
     /// Print only paths of files with at least one match.
@@ -168,7 +169,11 @@ pub struct Cli {
     pub context: Option<usize>,
 
     /// String to print between non-contiguous context blocks.
-    #[arg(long = "context-separator", value_name = "SEPARATOR", default_value = "--")]
+    #[arg(
+        long = "context-separator",
+        value_name = "SEPARATOR",
+        default_value = "--"
+    )]
     pub context_separator: String,
 
     // --- Filtering ---

@@ -29,9 +29,7 @@ use crate::path::filter::{build_filter, matches_path_filter};
 use crate::query::{literal_grams, route_query, GramQuery, QueryRoute};
 use crate::{Config, IndexError, SearchMatch, SearchOptions};
 
-use executor::{
-    execute_query, gram_cardinality, is_selective_enough, posting_bitmap,
-};
+use executor::{execute_query, gram_cardinality, is_selective_enough, posting_bitmap};
 
 /// 10 MiB cap on regex NFA/DFA size: prevents ReDoS during compilation (not just matching).
 ///

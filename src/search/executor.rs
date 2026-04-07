@@ -150,11 +150,7 @@ fn query_cardinality_upper_bound(query: &GramQuery, snap: &IndexSnapshot) -> u32
     }
 }
 
-pub(crate) fn is_selective_enough(
-    candidate_count: u64,
-    total_docs: u64,
-    threshold: f64,
-) -> bool {
+pub(crate) fn is_selective_enough(candidate_count: u64, total_docs: u64, threshold: f64) -> bool {
     (candidate_count as f64) <= (total_docs as f64) * threshold
 }
 

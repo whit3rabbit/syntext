@@ -296,4 +296,3 @@ pub(super) fn cmd_type_list() -> i32 {
     }
     0
 }
-

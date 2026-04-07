@@ -8,8 +8,8 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
-use crate::cli::search::SearchArgs;
 use super::{compile_output_regex, read_repo_file_bytes};
+use crate::cli::search::SearchArgs;
 
 pub(in crate::cli) fn render_count_matches(
     config: &Config,

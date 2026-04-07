@@ -34,10 +34,10 @@
 pub mod base64;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cli;
-pub mod index;
-pub mod path;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod git_util;
+pub mod index;
+pub mod path;
 pub(crate) mod path_util;
 pub mod posting;
 pub mod query;
