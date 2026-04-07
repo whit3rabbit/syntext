@@ -302,7 +302,10 @@ fn posting_budget_charge_rejects_over_limit() {
     let budget = PostingBudget::new(100);
     assert!(budget.charge(50).is_ok());
     assert!(budget.charge(50).is_ok());
-    assert!(budget.charge(1).is_err(), "budget should reject when exhausted");
+    assert!(
+        budget.charge(1).is_err(),
+        "budget should reject when exhausted"
+    );
 }
 
 #[test]

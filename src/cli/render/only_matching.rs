@@ -8,8 +8,10 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
+use super::{
+    compile_output_regex, group_matches_by_path, read_repo_file_bytes, write_formatted_line,
+};
 use crate::cli::search::SearchArgs;
-use super::{compile_output_regex, group_matches_by_path, read_repo_file_bytes, write_formatted_line};
 
 pub(in crate::cli) fn render_only_matching(
     config: &Config,

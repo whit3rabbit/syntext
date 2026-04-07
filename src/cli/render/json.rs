@@ -8,11 +8,11 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
-use crate::cli::search::{collect_scoped_paths, SearchArgs};
 use super::{
     compile_output_regex, group_matches_by_path, json_data, json_elapsed, json_line_message,
     json_stats, json_submatches, read_repo_file_bytes, write_json_line,
 };
+use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
 pub(in crate::cli) fn render_json(

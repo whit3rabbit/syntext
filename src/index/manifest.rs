@@ -152,8 +152,8 @@ impl Manifest {
         if let Some(stored_checksum) = manifest.checksum {
             let mut canonical_manifest = manifest.clone();
             canonical_manifest.checksum = None;
-            let canonical_json =
-                serde_json::to_string(&canonical_manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let canonical_json = serde_json::to_string(&canonical_manifest)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             let computed_checksum = xxhash_rust::xxh64::xxh64(canonical_json.as_bytes(), 0);
             if computed_checksum != stored_checksum {
                 return Err(io::Error::new(
@@ -196,13 +196,14 @@ impl Manifest {
         let final_path = index_dir.join(Self::FILENAME);
         let mut canonical_manifest = self.clone();
         canonical_manifest.checksum = None;
-        let canonical_json =
-            serde_json::to_string(&canonical_manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let canonical_json = serde_json::to_string(&canonical_manifest)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         let checksum = xxhash_rust::xxh64::xxh64(canonical_json.as_bytes(), 0);
 
         let mut persisted_manifest = self.clone();
         persisted_manifest.checksum = Some(checksum);
-        let json = serde_json::to_string_pretty(&persisted_manifest).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(&persisted_manifest)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         {
             let mut file = std::fs::File::create(&tmp)?;
             file.write_all(json.as_bytes())?;

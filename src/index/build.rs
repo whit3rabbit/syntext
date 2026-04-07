@@ -428,11 +428,7 @@ mod tests {
         let mut paths = Vec::new();
         for i in 0..5 {
             let rel = PathBuf::from(format!("f{i}.rs"));
-            std::fs::write(
-                repo.path().join(&rel),
-                format!("fn test_{i}() {{}}\n"),
-            )
-            .unwrap();
+            std::fs::write(repo.path().join(&rel), format!("fn test_{i}() {{}}\n")).unwrap();
             paths.push(rel);
         }
         let config = Config {

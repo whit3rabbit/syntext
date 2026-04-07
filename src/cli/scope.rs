@@ -62,6 +62,11 @@ pub(super) fn explicit_path_specs(repo_root: &Path, paths: &[PathBuf]) -> Vec<Ex
             rel_path: relativize_cli_path(repo_root, path),
             is_dir: path_is_directory(repo_root, path),
         })
+        // Drop specs whose rel_path is empty (e.g. "." or the repo root
+        // itself).  An empty rel_path means "search everything", which is
+        // the default when no paths are given.  Keeping it would pass "/"
+        // as the index path filter, matching nothing.
+        .filter(|spec| !spec.rel_path.as_os_str().is_empty())
         .collect()
 }
 

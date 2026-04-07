@@ -307,12 +307,8 @@ impl Index {
         // write_lock (held above) prevents concurrent commit_batch; if
         // compact_index fails to lock, we re-acquire shared and return error.
         self._dir_lock.unlock()?;
-        let rebuilt = match compact::compact_index(
-            self.config.clone(),
-            snapshot,
-            plan,
-            write_lock,
-        ) {
+        let rebuilt = match compact::compact_index(self.config.clone(), snapshot, plan, write_lock)
+        {
             Ok(rebuilt) => rebuilt,
             Err(err) => {
                 self._dir_lock

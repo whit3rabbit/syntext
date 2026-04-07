@@ -9,14 +9,12 @@ use memmap2::MmapOptions;
 #[cfg(feature = "memmap2")]
 use xxhash_rust::xxh64::xxh64;
 
-#[cfg(feature = "memmap2")]
-use super::MAX_SEGMENT_SIZE;
 use super::reader::parse_segment_mmap;
 #[cfg(feature = "memmap2")]
 use super::reader::read_exact_at;
-use super::{
-    MmapSegment, PostingsBacking, SegmentData, FORMAT_VERSION_V2, FORMAT_VERSION_V3,
-};
+#[cfg(feature = "memmap2")]
+use super::MAX_SEGMENT_SIZE;
+use super::{MmapSegment, PostingsBacking, SegmentData, FORMAT_VERSION_V2, FORMAT_VERSION_V3};
 use crate::IndexError;
 
 impl MmapSegment {

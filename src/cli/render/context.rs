@@ -7,8 +7,8 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
-use crate::cli::search::SearchArgs;
 use super::{group_matches_by_path, read_repo_file_bytes, write_formatted_line};
+use crate::cli::search::SearchArgs;
 
 /// Print matches with surrounding context lines to stdout.
 ///

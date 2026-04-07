@@ -12,9 +12,7 @@ use super::{manage::cmd_index, manage::cmd_update, overlaps_sensitive_prefix, Cl
 
 /// Build a temporary index from a list of (relative_path, content) pairs.
 /// Returns (repo_dir, index_dir, config) — caller must keep all three alive.
-fn build_index_for_files(
-    files: &[(&str, &str)],
-) -> (tempfile::TempDir, tempfile::TempDir, Config) {
+fn build_index_for_files(files: &[(&str, &str)]) -> (tempfile::TempDir, tempfile::TempDir, Config) {
     let repo = tempfile::TempDir::new().unwrap();
     let idx = tempfile::TempDir::new().unwrap();
     for (name, content) in files {
@@ -387,7 +385,12 @@ fn noops_color_and_colors_are_accepted() {
 #[test]
 fn noops_ignore_and_discovery_flags_are_accepted() {
     let cli = Cli::try_parse_from([
-        "st", "--no-ignore", "--no-ignore-vcs", "--hidden", "--follow", "pat",
+        "st",
+        "--no-ignore",
+        "--no-ignore-vcs",
+        "--hidden",
+        "--follow",
+        "pat",
     ])
     .unwrap();
     assert!(cli.no_ignore && cli.no_ignore_vcs && cli.hidden && cli.follow);
@@ -410,9 +413,17 @@ fn noops_sort_and_sortr_are_accepted() {
 
 #[test]
 fn noops_binary_text_encoding_flags_are_accepted() {
-    let cli =
-        Cli::try_parse_from(["st", "-a", "--binary", "-E", "utf-8", "--crlf", "--null-data", "pat"])
-            .unwrap();
+    let cli = Cli::try_parse_from([
+        "st",
+        "-a",
+        "--binary",
+        "-E",
+        "utf-8",
+        "--crlf",
+        "--null-data",
+        "pat",
+    ])
+    .unwrap();
     assert!(cli.text && cli.binary && cli.crlf && cli.null_data);
     assert_eq!(cli.encoding.as_deref(), Some("utf-8"));
 }
@@ -608,8 +619,7 @@ fn column_flag_in_heading_mode() {
 
 #[test]
 fn vimgrep_output_format() {
-    let (_repo, _idx, config) =
-        build_index_for_files(&[("a.rs", "fn foo() {}\nfn bar() {}\n")]);
+    let (_repo, _idx, config) = build_index_for_files(&[("a.rs", "fn foo() {}\nfn bar() {}\n")]);
     let index = Index::open(config.clone()).unwrap();
     let args = super::search::SearchArgs {
         pattern: "foo".to_string(),
@@ -627,7 +637,10 @@ fn vimgrep_output_format() {
         output.contains("a.rs:1:4:"),
         "expected path:line:col: in vimgrep output, got: {output:?}"
     );
-    assert!(!output.contains("bar"), "bar should not appear in results for 'foo'");
+    assert!(
+        !output.contains("bar"),
+        "bar should not appear in results for 'foo'"
+    );
     drop(index);
 }
 
@@ -814,7 +827,10 @@ fn context_separator_custom_string() {
 #[test]
 fn sensitive_prefix_rejects_exact_match_unix() {
     let prefixes = &["/etc", "/usr", "/bin"];
-    assert_eq!(overlaps_sensitive_prefix("/etc", prefixes, '/'), Some("/etc"));
+    assert_eq!(
+        overlaps_sensitive_prefix("/etc", prefixes, '/'),
+        Some("/etc")
+    );
 }
 
 #[test]
@@ -829,7 +845,10 @@ fn sensitive_prefix_rejects_subpath_unix() {
 #[test]
 fn sensitive_prefix_accepts_safe_path_unix() {
     let prefixes = &["/etc", "/usr"];
-    assert_eq!(overlaps_sensitive_prefix("/home/user/index", prefixes, '/'), None);
+    assert_eq!(
+        overlaps_sensitive_prefix("/home/user/index", prefixes, '/'),
+        None
+    );
 }
 
 #[test]
