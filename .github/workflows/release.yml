@@ -52,7 +52,7 @@ jobs:
               --output "dist/syntext_${VER}_${DEB_ARCH}.deb"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.deb_arch }}
           path: dist/
@@ -97,7 +97,7 @@ jobs:
           cp "target/${TARGET}/release/st" dist/st
           cd dist && zip "st-${VER}-${SUFFIX}.zip" st && rm st
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.suffix }}
           path: dist/
@@ -128,7 +128,7 @@ jobs:
           mkdir -p dist
           cp "target/x86_64-pc-windows-msvc/release/st.exe" "dist/st-${VER}-windows-amd64.exe"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-amd64
           path: dist/
@@ -161,7 +161,7 @@ jobs:
           mkdir -p dist
           tar -czf "dist/syntext-wasm-${VER}.tar.gz" -C pkg .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wasm-bundler
           path: dist/
@@ -173,7 +173,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts/
           merge-multiple: true
@@ -184,7 +184,7 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
           generate_release_notes: true
