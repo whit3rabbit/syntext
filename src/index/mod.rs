@@ -28,6 +28,8 @@ pub mod walk;
 #[cfg(feature = "wasm")]
 pub mod wasm_index;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use build::ExternalFileRecord;
 pub use snapshot::{BaseSegments, IndexSnapshot};
 
 pub(crate) use encoding::normalize_encoding;
@@ -192,6 +194,18 @@ impl Index {
     /// `config.max_file_size`.
     pub fn build(config: Config) -> Result<Self, IndexError> {
         build::build_index(config)
+    }
+
+    /// Build the index from a caller-supplied corpus instead of walking the
+    /// repository internally.
+    ///
+    /// This preserves syntext's locking, manifest, calibration, and symbol
+    /// build behavior while letting the caller own discovery policy.
+    pub fn build_from_file_records(
+        config: Config,
+        records: Vec<ExternalFileRecord>,
+    ) -> Result<Self, IndexError> {
+        build::build_index_from_external_records(config, records)
     }
 
     /// Return index statistics from the current snapshot.

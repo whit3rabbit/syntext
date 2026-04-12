@@ -10,6 +10,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use syntext::index::segment::{MmapSegment, FOOTER_SIZE, MAGIC};
+use syntext::index::ExternalFileRecord;
 use syntext::index::Index;
 use syntext::{Config, SearchOptions};
 
@@ -128,6 +129,55 @@ fn binary_file_skipped() {
         .iter()
         .any(|p| p == std::path::Path::new("src/hello.rs"));
     assert!(has_text, "text file not indexed");
+    drop(idx);
+}
+
+#[test]
+fn build_from_file_records_uses_exact_caller_supplied_corpus() {
+    let repo = TempDir::new().unwrap();
+    std::fs::write(repo.path().join(".gitignore"), "ignored.rs\n").unwrap();
+    std::fs::write(
+        repo.path().join("ignored.rs"),
+        "fn ignored_only() { let token = 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.path().join("visible.rs"),
+        "fn visible_only() { let other = 2; }\n",
+    )
+    .unwrap();
+
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    let ignored_meta = std::fs::metadata(repo.path().join("ignored.rs")).unwrap();
+    let idx = Index::build_from_file_records(
+        config,
+        vec![ExternalFileRecord {
+            absolute_path: repo.path().join("ignored.rs"),
+            relative_path: "ignored.rs".into(),
+            size_bytes: ignored_meta.len(),
+        }],
+    )
+    .unwrap();
+
+    assert_eq!(idx.stats().total_documents, 1);
+    assert_eq!(
+        idx.search("ignored_only", &SearchOptions::default())
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        idx.search("visible_only", &SearchOptions::default())
+            .unwrap()
+            .is_empty(),
+        "build_from_file_records must not silently re-walk the repo"
+    );
     drop(idx);
 }
 

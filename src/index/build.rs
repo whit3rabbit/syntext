@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[cfg(feature = "fs2")]
 use fs2::FileExt;
@@ -17,14 +17,31 @@ use xxhash_rust::xxh64::xxh64;
 
 use crate::index::manifest::{Manifest, SegmentRef};
 use crate::index::segment::SegmentWriter;
-use crate::index::walk::is_binary;
 #[cfg(feature = "ignore")]
-use crate::index::walk::{enumerate_files, split_batches};
+use crate::index::walk::enumerate_files;
+use crate::index::walk::is_binary;
+use crate::index::walk::{split_batches, FileRecord};
 use crate::tokenizer::build_all;
 use crate::{Config, IndexError};
 
 /// Target batch size (content bytes) before flushing a segment.
 pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// A caller-supplied file admitted to a full rebuild without syntext walking
+/// the repository itself.
+///
+/// The caller owns discovery policy; syntext trusts `absolute_path` to refer
+/// to a readable file. TOCTOU defenses (`open_readonly_nofollow` +
+/// `verify_fd_matches_stat`) still apply at read time.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExternalFileRecord {
+    /// Absolute path read during index construction.
+    pub absolute_path: PathBuf,
+    /// Repository-relative path stored in the manifest and returned in matches.
+    pub relative_path: PathBuf,
+    /// Size of the file in bytes at discovery time.
+    pub size_bytes: u64,
+}
 
 /// Measure the crossover fraction where index lookup becomes cheaper than a
 /// full scan for this repository.
@@ -52,7 +69,7 @@ pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 ///    This never produces wrong results, only marginally suboptimal routing.
 /// 3. The clamp to [0.01, 0.50] bounds the maximum error regardless of
 ///    measurement quality.
-pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) -> f64 {
+pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf]) -> f64 {
     const DEFAULT: f64 = 0.10;
     const SCAN_SAMPLE: usize = 100;
     // Entries per bitmap in the posting-cost microbenchmark.
@@ -76,7 +93,7 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
     // Warm the page cache first so we do not calibrate against first-read
     // latency right after a clone or reboot.
     for path in &sample_paths {
-        let _ = std::fs::read(config.repo_root.join(path));
+        let _ = std::fs::read(path);
     }
 
     let mut docs_read = 0usize;
@@ -86,7 +103,7 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
     let mut scan_elapsed_ns = 0u128;
     for path in &sample_paths {
         let t0 = std::time::Instant::now();
-        if std::fs::read(config.repo_root.join(path)).is_ok() {
+        if std::fs::read(path).is_ok() {
             docs_read += 1;
             scan_elapsed_ns += t0.elapsed().as_nanos();
         }
@@ -138,12 +155,58 @@ pub(super) fn calibrate_threshold(indexed_paths: &[PathBuf], config: &Config) ->
 /// `Index` by delegating to `Index::open()` after writing all segments.
 #[cfg(feature = "ignore")]
 pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
-    build_index_with_batch_size(config, BATCH_SIZE_BYTES)
+    let file_list = enumerate_files(&config)?;
+    build_index_from_file_list(config, file_list, BATCH_SIZE_BYTES)
 }
 
-#[cfg(feature = "ignore")]
+#[cfg(all(test, feature = "ignore"))]
 pub(super) fn build_index_with_batch_size(
     config: Config,
+    batch_size_bytes: u64,
+) -> Result<super::Index, IndexError> {
+    let file_list = enumerate_files(&config)?;
+    build_index_from_file_list(config, file_list, batch_size_bytes)
+}
+
+/// Full build from a caller-supplied file list.
+pub(super) fn build_index_from_external_records(
+    config: Config,
+    records: Vec<ExternalFileRecord>,
+) -> Result<super::Index, IndexError> {
+    build_index_from_file_list(
+        config,
+        normalize_external_records(records)?,
+        BATCH_SIZE_BYTES,
+    )
+}
+
+fn normalize_external_records(
+    records: Vec<ExternalFileRecord>,
+) -> Result<Vec<FileRecord>, IndexError> {
+    let mut file_list = Vec::with_capacity(records.len());
+    for record in records {
+        if record.relative_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            return Err(IndexError::PathOutsideRepo(record.relative_path));
+        }
+
+        file_list.push((
+            record.absolute_path,
+            crate::path_util::normalize_to_forward_slashes(record.relative_path),
+            record.size_bytes,
+        ));
+    }
+    file_list.sort_unstable_by(|left, right| left.1.cmp(&right.1));
+    Ok(file_list)
+}
+
+fn build_index_from_file_list(
+    config: Config,
+    file_list: Vec<FileRecord>,
     batch_size_bytes: u64,
 ) -> Result<super::Index, IndexError> {
     fs::create_dir_all(&config.index_dir)?;
@@ -182,8 +245,6 @@ pub(super) fn build_index_with_batch_size(
         }
     }
 
-    // Enumerate all candidate files, sorted by relative path.
-    let file_list = enumerate_files(&config)?;
     let total_candidate = file_list.len();
     if config.verbose {
         eprintln!("syntext: indexing {} candidate files", total_candidate);
@@ -192,7 +253,9 @@ pub(super) fn build_index_with_batch_size(
     // Split into ~256MB batches and process each.
     let batches = split_batches(&file_list, batch_size_bytes.max(1));
     let mut seg_refs: Vec<SegmentRef> = Vec::new();
-    let mut indexed_paths: Vec<PathBuf> = Vec::new();
+    // Files successfully indexed, in doc_id order: position in this vec
+    // equals the file's doc_id (and stable file_id for the symbol index).
+    let mut indexed_files: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(total_candidate);
     let mut next_doc_id: u32 = 0;
 
     for batch in &batches {
@@ -264,7 +327,7 @@ pub(super) fn build_index_with_batch_size(
                 for &gram_hash in grams {
                     writer.add_gram_posting(gram_hash, doc_id);
                 }
-                indexed_paths.push(rel_path.clone());
+                indexed_files.push((abs_path.clone(), rel_path.clone()));
             } else {
                 // File was binary or unreadable; logged in map_fn when verbose.
                 let _ = abs_path;
@@ -307,7 +370,8 @@ pub(super) fn build_index_with_batch_size(
     let total_indexed = next_doc_id;
 
     // Calibrate index-vs-scan crossover threshold from actual disk timing.
-    let scan_threshold = calibrate_threshold(&indexed_paths, &config);
+    let scan_paths: Vec<PathBuf> = indexed_files.iter().map(|(abs, _)| abs.clone()).collect();
+    let scan_threshold = calibrate_threshold(&scan_paths);
     if config.verbose {
         eprintln!("syntext: calibrated scan threshold: {:.3}", scan_threshold);
     }
@@ -337,36 +401,28 @@ pub(super) fn build_index_with_batch_size(
         let _ = fs::remove_file(&db_path);
         match crate::symbol::SymbolIndex::open(&db_path) {
             Ok(sym_idx) => {
-                // Re-enumerate: iterate batches and index each file's symbols.
-                for batch in &batches {
-                    for (abs_path, rel_path, _size) in batch {
-                        if let Ok(raw) = fs::read(abs_path) {
-                            let content = crate::index::normalize_encoding(&raw, config.verbose);
-                            if !is_binary(&content) {
-                                // file_id from path_index built in open(); use position
-                                // in indexed_paths as a stable id for build time.
-                                // Security: skip symbol indexing for files absent from
-                                // indexed_paths (binary or unreadable during gram indexing).
-                                // unwrap_or(0) would silently assign file_id 0, colliding
-                                // with the first legitimately indexed file and corrupting
-                                // its symbol rows and any incremental delete operation.
-                                let Some(pos) = indexed_paths.iter().position(|p| p == rel_path)
-                                else {
-                                    continue;
-                                };
-                                let file_id = pos as u32;
-                                let rel_path_str = rel_path.to_string_lossy();
-                                if let Err(e) =
-                                    sym_idx.index_file(file_id, &rel_path_str, content.as_ref())
-                                {
-                                    if config.verbose {
-                                        eprintln!(
-                                            "syntext: warning: symbol index failed for {}: {e}",
-                                            rel_path.display()
-                                        );
-                                    }
-                                }
-                            }
+                // Iterate in doc_id order; binary/unreadable files were already
+                // filtered from indexed_files during gram indexing. file_id =
+                // position in indexed_files, which matches the doc_id assigned
+                // above. Using unwrap_or(0) on a fallback lookup would collide
+                // with the first legitimately indexed file and corrupt its
+                // symbol rows and any incremental delete operation.
+                for (file_id, (abs_path, rel_path)) in indexed_files.iter().enumerate() {
+                    let file_id = file_id as u32;
+                    let Ok(raw) = fs::read(abs_path) else {
+                        continue;
+                    };
+                    let content = crate::index::normalize_encoding(&raw, config.verbose);
+                    if is_binary(&content) {
+                        continue;
+                    }
+                    let rel_path_str = rel_path.to_string_lossy();
+                    if let Err(e) = sym_idx.index_file(file_id, &rel_path_str, content.as_ref()) {
+                        if config.verbose {
+                            eprintln!(
+                                "syntext: warning: symbol index failed for {}: {e}",
+                                rel_path.display()
+                            );
                         }
                     }
                 }
@@ -398,7 +454,6 @@ pub(super) fn build_index_with_batch_size(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Config;
     use tempfile::TempDir;
 
     #[test]
@@ -406,13 +461,7 @@ mod tests {
         // B08: calibrate_threshold must not divide by zero (or panic) when
         // indexed_paths is empty. An empty repository returns the default
         // threshold (0.10) instead of attempting sample_count / 0.
-        let index_dir = TempDir::new().unwrap();
-        let config = Config {
-            index_dir: index_dir.path().to_path_buf(),
-            repo_root: index_dir.path().to_path_buf(),
-            ..Config::default()
-        };
-        let threshold = calibrate_threshold(&[], &config);
+        let threshold = calibrate_threshold(&[]);
         assert_eq!(
             threshold, 0.10,
             "empty path list must return default threshold 0.10, got {threshold}"
@@ -425,18 +474,13 @@ mod tests {
     #[test]
     fn calibrate_threshold_returns_clamped_value() {
         let repo = TempDir::new().unwrap();
-        let mut paths = Vec::new();
+        let mut absolute_paths = Vec::new();
         for i in 0..5 {
-            let rel = PathBuf::from(format!("f{i}.rs"));
-            std::fs::write(repo.path().join(&rel), format!("fn test_{i}() {{}}\n")).unwrap();
-            paths.push(rel);
+            let abs = repo.path().join(format!("f{i}.rs"));
+            std::fs::write(&abs, format!("fn test_{i}() {{}}\n")).unwrap();
+            absolute_paths.push(abs);
         }
-        let config = Config {
-            repo_root: repo.path().to_path_buf(),
-            index_dir: repo.path().join(".syntext"),
-            ..Config::default()
-        };
-        let threshold = calibrate_threshold(&paths, &config);
+        let threshold = calibrate_threshold(&absolute_paths);
         assert!(
             (0.01..=0.50).contains(&threshold),
             "threshold {threshold} outside [0.01, 0.50]"

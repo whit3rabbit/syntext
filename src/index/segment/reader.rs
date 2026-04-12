@@ -141,12 +141,39 @@ pub(super) fn read_exact_at(
         use std::os::unix::fs::FileExt;
         file.read_exact_at(buf, offset)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // `seek_read` issues a single `ReadFile` with the offset in an
+        // `OVERLAPPED` struct: no handle dup, no separate `SetFilePointerEx`.
+        // It is not strictly pread-equivalent (on a synchronous handle the file
+        // pointer is updated as a side effect), but every caller here supplies
+        // its own offset and never reads from the current position, so the
+        // trailing cursor value is unobserved. Loop to handle short reads.
+        use std::io::{Error, ErrorKind};
+        use std::os::windows::fs::FileExt;
+        let mut remaining = buf;
+        let mut off = offset;
+        while !remaining.is_empty() {
+            match file.seek_read(remaining, off) {
+                Ok(0) => {
+                    return Err(Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "failed to fill buffer",
+                    ));
+                }
+                Ok(n) => {
+                    remaining = &mut remaining[n..];
+                    off += n as u64;
+                }
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         use std::io::{Read, Seek, SeekFrom};
-        // TODO: use seek_read on Windows (std::os::windows::fs::FileExt::seek_read)
-        // for a truly cursor-free positional read. This clone-and-seek fallback is
-        // acceptable for the current macOS/Linux target set.
         let mut owned = file.try_clone()?;
         owned.seek(SeekFrom::Start(offset))?;
         owned.read_exact(buf)
