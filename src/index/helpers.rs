@@ -37,6 +37,19 @@ pub(super) fn current_repo_head(repo_root: &Path) -> Result<Option<String>, Inde
     }
 }
 
+/// Opens the directory-level lock file (`lock`) with consistent options across
+/// all call sites: read+write, create-if-absent, no truncation. The caller is
+/// responsible for calling `try_lock_exclusive` or `try_lock_shared` afterward.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn open_dir_lock_file(index_dir: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(index_dir.join("lock"))
+}
+
 #[cfg(feature = "fs2")]
 pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
     use fs2::FileExt;

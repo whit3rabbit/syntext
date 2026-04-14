@@ -68,6 +68,7 @@ pub(crate) fn resolve_git_binary() -> PathBuf {
 /// parent-directory component (`..`), and (on Windows) components
 /// containing `:` which could reference NTFS alternate data streams
 /// (e.g. `file.rs::$DATA`).
+#[cfg_attr(not(feature = "clap"), allow(dead_code))]
 pub(crate) fn is_safe_git_path(path: &Path) -> bool {
     if path.as_os_str().is_empty() {
         return false;

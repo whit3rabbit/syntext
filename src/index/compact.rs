@@ -152,13 +152,7 @@ pub(super) fn compact_index(
         fs::set_permissions(&config.index_dir, fs::Permissions::from_mode(0o700))?;
     }
 
-    let lock_path = config.index_dir.join("lock");
-    let lock_file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
+    let lock_file = super::helpers::open_dir_lock_file(&config.index_dir)?;
     lock_file
         .try_lock_exclusive()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
@@ -284,6 +278,12 @@ pub(super) fn compact_index(
         );
     }
 
+    // Same downgrade pattern as build_index: flock has no atomic EX -> SH
+    // downgrade, so a competing writer could grab EX briefly between unlock and
+    // try_lock_shared. It will fail at write.lock (still held) and release.
+    // If try_lock_shared races with that brief hold, surface LockConflict and
+    // let the caller retry. _write_lock is dropped only AFTER the shared lock
+    // is held to bound the window.
     lock_file
         .unlock()
         .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;

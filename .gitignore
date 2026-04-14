@@ -27,8 +27,11 @@ fuzz/target/
 fuzz/artifacts/
 fuzz/corpus/
 
-# Syntext index
+# Syntext index (default index_dir; lock files at root cover non-default paths
+# where users put the index at the repo root rather than .syntext/)
 .syntext/
+/lock
+/write.lock
 
 # Distribution artifacts
 dist/

@@ -225,8 +225,7 @@ fn build_index_from_file_list(
 
     // Exclusive lock for the duration of the build. Prevents concurrent
     // builds and blocks open() callers until the build completes.
-    let lock_path = config.index_dir.join("lock");
-    let lock_file = std::fs::File::create(&lock_path)?;
+    let lock_file = super::helpers::open_dir_lock_file(&config.index_dir)?;
     lock_file
         .try_lock_exclusive()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
@@ -438,15 +437,19 @@ fn build_index_from_file_list(
         }
     }
 
-    // Downgrade the exclusive directory lock to shared in-place.
-    // This ensures no competing build can start between unlock and re-lock.
+    // Downgrade the exclusive directory lock to shared in-place. flock has no
+    // atomic EX -> SH downgrade, so there is a brief window between unlock and
+    // try_lock_shared. A competing writer could acquire EX during that window,
+    // but it will fail at write.lock (still held) and release immediately. If
+    // try_lock_shared races with that brief hold, we surface LockConflict and
+    // the caller retries. write.lock is dropped only AFTER the shared lock is
+    // held to bound the window to a single failed try_lock_exclusive.
     lock_file
         .unlock()
         .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;
     lock_file
         .try_lock_shared()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
-    // Drop writer lock only after the shared lock is held, closing the gap.
     drop(write_lock);
     super::Index::open_with_lock(config, lock_file)
 }

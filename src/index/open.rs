@@ -20,13 +20,7 @@ impl Index {
     /// and rebuilds the path index from segment doc tables.
     pub fn open(config: Config) -> Result<Self, IndexError> {
         // Shared lock: multiple readers are fine, but blocks an active build.
-        let lock_path = config.index_dir.join("lock");
-        let dir_lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
+        let dir_lock = super::helpers::open_dir_lock_file(&config.index_dir)?;
         dir_lock
             .try_lock_shared()
             .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;

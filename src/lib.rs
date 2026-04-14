@@ -32,7 +32,7 @@
 //! ```
 
 pub mod base64;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "clap"))]
 pub mod cli;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod git_util;
