@@ -552,7 +552,9 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
 #[test]
 fn concurrent_reads_during_commit_batch() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
+
+    const READERS: usize = 4;
 
     let repo = tempfile::TempDir::new().unwrap();
     let index_dir = tempfile::TempDir::new().unwrap();
@@ -573,14 +575,33 @@ fn concurrent_reads_during_commit_batch() {
     };
     let index = Arc::new(Index::build(config).unwrap());
     let stop = Arc::new(AtomicBool::new(false));
+    // Rendezvous reader startup with writer start so every reader performs at
+    // least one search before any commit runs. Without this, slow thread
+    // scheduling (observed on Windows CI) can let the writer finish all rounds
+    // and flip `stop` before any reader iterates, tripping the
+    // `total_searches > 0` soundness assertion below.
+    let barrier = Arc::new(Barrier::new(READERS + 1));
 
     // Spawn reader threads that search continuously.
     let mut readers = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..READERS {
         let idx = Arc::clone(&index);
         let done = Arc::clone(&stop);
+        let gate = Arc::clone(&barrier);
         readers.push(thread::spawn(move || {
-            let mut search_count = 0u64;
+            // One guaranteed pre-write search. All 10 seeded files contain
+            // "fn" and no writer has run yet, so the match invariant holds
+            // trivially. Counting it here guarantees total_searches >= READERS
+            // regardless of scheduling.
+            let matches = idx
+                .search("fn", &SearchOptions::default())
+                .expect("pre-write search must not fail");
+            assert!(
+                !matches.is_empty(),
+                "pre-write search returned 0 matches"
+            );
+            let mut search_count = 1u64;
+            gate.wait();
             while !done.load(Ordering::Relaxed) {
                 let result = idx.search("fn", &SearchOptions::default());
                 // Must never error: the snapshot should always be consistent.
@@ -595,6 +616,10 @@ fn concurrent_reads_during_commit_batch() {
             search_count
         }));
     }
+
+    // Release the writer only after every reader has completed its guaranteed
+    // search and entered the loop.
+    barrier.wait();
 
     // Writer: modify files and commit several rounds.
     let mut commits_ok = 0u32;
