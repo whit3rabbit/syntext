@@ -36,6 +36,8 @@ pub mod base64;
 pub mod cli;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod git_util;
+#[cfg(all(not(target_arch = "wasm32"), feature = "clap"))]
+pub mod hook;
 pub mod index;
 pub mod path;
 pub(crate) mod path_util;

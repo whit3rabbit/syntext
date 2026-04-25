@@ -8,7 +8,10 @@ use clap::Parser;
 use crate::index::Index;
 use crate::{Config, SearchOptions};
 
-use super::{manage::cmd_index, manage::cmd_update, overlaps_sensitive_prefix, Cli, ManageCommand};
+use super::{
+    commands::AgentCommand, manage::cmd_index, manage::cmd_update, overlaps_sensitive_prefix, Cli,
+    ManageCommand,
+};
 
 /// Build a temporary index from a list of (relative_path, content) pairs.
 /// Returns (repo_dir, index_dir, config) — caller must keep all three alive.
@@ -121,6 +124,92 @@ fn manage_index_subcommand_still_routes_correctly() {
     let cli = Cli::try_parse_from(["st", "index"]).expect("parse failed");
     assert!(cli.pattern.is_none());
     assert!(matches!(cli.command, Some(ManageCommand::Index { .. })));
+}
+
+#[test]
+fn agent_claude_commands_parse_scope_flags() {
+    let cli = Cli::try_parse_from(["st", "agent", "install", "claude", "--global"])
+        .expect("parse failed");
+    match cli.command {
+        Some(ManageCommand::Agent {
+            command: AgentCommand::Install { agent, scope },
+        }) => {
+            assert_eq!(agent, "claude");
+            assert!(scope.global);
+            assert!(!scope.project);
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+
+    let cli =
+        Cli::try_parse_from(["st", "agent", "show", "claude", "--project"]).expect("parse failed");
+    assert!(matches!(
+        cli.command,
+        Some(ManageCommand::Agent {
+            command: AgentCommand::Show { .. }
+        })
+    ));
+}
+
+#[test]
+fn agent_commands_parse_supported_agent_scope_matrix() {
+    let cases = [
+        ("claude", "--global"),
+        ("claude", "--project"),
+        ("cursor", "--global"),
+        ("copilot", "--project"),
+        ("gemini", "--global"),
+        ("opencode", "--global"),
+        ("openclaw", "--global"),
+        ("codex", "--global"),
+        ("codex", "--project"),
+        ("cline", "--project"),
+        ("windsurf", "--project"),
+        ("kilocode", "--project"),
+        ("antigravity", "--project"),
+    ];
+
+    for (agent, scope_flag) in cases {
+        let cli =
+            Cli::try_parse_from(["st", "agent", "install", agent, scope_flag]).expect("parse");
+        match cli.command {
+            Some(ManageCommand::Agent {
+                command:
+                    AgentCommand::Install {
+                        agent: parsed,
+                        scope,
+                    },
+            }) => {
+                assert_eq!(parsed, agent);
+                assert_eq!(scope.global, scope_flag == "--global");
+                assert_eq!(scope.project, scope_flag == "--project");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn hidden_hook_commands_parse() {
+    let cli = Cli::try_parse_from(["st", "__hook", "claude"]).expect("parse failed");
+    assert!(matches!(
+        cli.command,
+        Some(ManageCommand::Hook { ref target }) if target == "claude"
+    ));
+
+    let cli = Cli::try_parse_from(["st", "__rewrite", "rg foo src/"]).expect("parse failed");
+    assert!(matches!(
+        cli.command,
+        Some(ManageCommand::Rewrite { ref command, cwd: None }) if command == "rg foo src/"
+    ));
+
+    let cli = Cli::try_parse_from(["st", "__rewrite", "--cwd", "/tmp/repo", "rg foo src/"])
+        .expect("parse failed");
+    assert!(matches!(
+        cli.command,
+        Some(ManageCommand::Rewrite { ref command, ref cwd })
+            if command == "rg foo src/" && cwd.as_deref() == Some(std::path::Path::new("/tmp/repo"))
+    ));
 }
 
 #[test]

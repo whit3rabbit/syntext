@@ -1,9 +1,49 @@
 //! Management subcommand definitions for the top-level CLI.
 
-use clap::Subcommand;
+use std::path::PathBuf;
+
+use clap::{Args, Subcommand};
+
+/// Scope selector shared by agent install/show/uninstall commands.
+#[derive(Args, Debug, Clone, Copy)]
+pub struct AgentScope {
+    /// Install in the agent's global configuration.
+    #[arg(long, conflicts_with = "project")]
+    pub global: bool,
+
+    /// Install in the current project's agent configuration.
+    #[arg(long, conflicts_with = "global")]
+    pub project: bool,
+}
+
+/// Agent integration subcommands.
+#[derive(Subcommand, Debug)]
+pub enum AgentCommand {
+    /// Install an agent integration.
+    Install {
+        /// Agent integration name.
+        agent: String,
+        #[command(flatten)]
+        scope: AgentScope,
+    },
+    /// Uninstall an agent integration.
+    Uninstall {
+        /// Agent integration name.
+        agent: String,
+        #[command(flatten)]
+        scope: AgentScope,
+    },
+    /// Show agent integration status.
+    Show {
+        /// Agent integration name.
+        agent: String,
+        #[command(flatten)]
+        scope: AgentScope,
+    },
+}
 
 /// Management subcommands dispatched from the top-level CLI.
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum ManageCommand {
     /// Build or rebuild the search index.
     Index {
@@ -31,6 +71,26 @@ pub enum ManageCommand {
         /// Suppress output.
         #[arg(short, long)]
         quiet: bool,
+    },
+    /// Manage agent integrations.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+    /// Internal hook entrypoint for agent integrations.
+    #[command(name = "__hook", hide = true)]
+    Hook {
+        /// Hook target name.
+        target: String,
+    },
+    /// Internal command rewrite helper.
+    #[command(name = "__rewrite", hide = true)]
+    Rewrite {
+        /// Directory used to decide whether a .syntext index is present.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Shell command to rewrite.
+        command: String,
     },
     #[command(hide = true)]
     BenchSearch {

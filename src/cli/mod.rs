@@ -17,8 +17,10 @@ use clap::Parser;
 
 use crate::Config;
 
+use crate::hook::vendors::{AgentAction, InstallScope};
 pub use args::{Cli, ManageCommand};
 use bench::cmd_bench_search;
+use commands::{AgentCommand, AgentScope};
 use manage::{cmd_index, cmd_status, cmd_type_list, cmd_update};
 use scope::cmd_files;
 use search::{cmd_search, SearchArgs};
@@ -26,6 +28,16 @@ use search::{cmd_search, SearchArgs};
 /// Run the CLI. Returns the process exit code.
 pub fn run() -> i32 {
     let cli = Cli::parse();
+
+    match &cli.command {
+        Some(ManageCommand::Agent { command }) => return cmd_agent(command),
+        Some(ManageCommand::Hook { target }) => return crate::hook::protocols::cmd_hook(target),
+        Some(ManageCommand::Rewrite { cwd, command }) => {
+            return crate::hook::core::rewrite::cmd_rewrite(command, cwd.as_deref());
+        }
+        _ => {}
+    }
+
     let mut config = resolve_config(&cli);
     config.verbose = cli.verbose || cli.debug;
 
@@ -37,6 +49,9 @@ pub fn run() -> i32 {
         }) => cmd_index(config, force, stats, quiet),
         Some(ManageCommand::Status { json }) => cmd_status(config, json),
         Some(ManageCommand::Update { flush, quiet }) => cmd_update(config, flush, quiet),
+        Some(ManageCommand::Agent { .. })
+        | Some(ManageCommand::Hook { .. })
+        | Some(ManageCommand::Rewrite { .. }) => unreachable!("handled before config resolution"),
         Some(ManageCommand::BenchSearch {
             queries,
             iterations,
@@ -135,6 +150,40 @@ pub fn run() -> i32 {
                 max_depth: cli.max_depth,
             };
             cmd_search(config, &search_args)
+        }
+    }
+}
+
+fn cmd_agent(command: &AgentCommand) -> i32 {
+    match command {
+        AgentCommand::Install { agent, scope } => {
+            let Some(scope) = resolve_agent_scope(scope) else {
+                return 2;
+            };
+            crate::hook::vendors::cmd_agent(AgentAction::Install, agent, scope)
+        }
+        AgentCommand::Uninstall { agent, scope } => {
+            let Some(scope) = resolve_agent_scope(scope) else {
+                return 2;
+            };
+            crate::hook::vendors::cmd_agent(AgentAction::Uninstall, agent, scope)
+        }
+        AgentCommand::Show { agent, scope } => {
+            let Some(scope) = resolve_agent_scope(scope) else {
+                return 2;
+            };
+            crate::hook::vendors::cmd_agent(AgentAction::Show, agent, scope)
+        }
+    }
+}
+
+fn resolve_agent_scope(scope: &AgentScope) -> Option<InstallScope> {
+    match (scope.global, scope.project) {
+        (true, false) => Some(InstallScope::Global),
+        (false, true) => Some(InstallScope::Project),
+        _ => {
+            eprintln!("st: choose exactly one of --global or --project");
+            None
         }
     }
 }
