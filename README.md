@@ -156,36 +156,58 @@ Notes:
 - Like ripgrep, file names are shown by default when searching a directory, the whole repo, or multiple positional paths.
 - Like ripgrep, line numbers are off by default when stdout is not a TTY. Use `-n` to force them on.
 
-## Agent configuration
+## Agent harness install
 
-To tell an AI agent to use `st` instead of `rg` or `grep`, add the following to your `CLAUDE.md`, `AGENTS.md`, or equivalent agent instruction file. The key constraint: check for the index once, not on every search.
+`st` can install RTK-style agent harness integrations. Programmatic hooks rewrite
+safe agent shell searches from `rg` or `grep` to `st` only when a `.syntext/`
+index exists. Human shells, scripts, pipes, CI, and unsupported search forms are
+left alone. Hooks never run `st index` or `st update` automatically.
 
-```markdown
-## Code search
+Quick installs:
 
-Use `st` instead of `rg` or `grep` for all code searches. `st` is a
-drop-in replacement for ripgrep: same flags, identical output, but searches
-a pre-built index and is significantly faster on repeated queries.
+```bash
+# Claude Code project instructions only
+st init
 
-Before the first search in a session, check whether the index exists:
+# Claude Code global Bash hook plus Grep blocker
+st init -g
 
-    test -d .syntext || st index
-
-Do not check for the index on every search. Once built, assume it is valid
-for the session. If files change mid-task, run `st update` to sync
-incrementally instead of rebuilding.
-
-Common usage (same flags as rg):
-
-    st "pattern"              # regex search
-    st -F "literal string"    # fixed string, no regex interpretation
-    st -i "pattern"           # case-insensitive
-    st -t rs "pattern"        # restrict to file type (e.g. rs, py, ts)
-    st -l "pattern"           # list matching files only
-    st -n "pattern"           # include line numbers
-    st "pattern" src/         # restrict to a directory
-    st --json "pattern"       # machine-readable NDJSON output
+# RTK-style agent selectors
+st init -g --agent cursor
+st init -g --gemini
+st init --copilot        # project hook; `st init -g --copilot` is also accepted
+st init --codex          # project rules
+st init -g --codex       # global Codex rules
 ```
+
+Explicit install, show, and uninstall commands are also available:
+
+```bash
+st agent install claude --global
+st agent show claude --global
+st agent uninstall claude --global
+```
+
+Supported harnesses:
+
+| Harness | Scope | Install command | What is patched or written |
+|---|---|---|---|
+| Claude Code | global | `st init -g` or `st agent install claude --global` | `~/.claude/settings.json`, `~/.claude/SYNTEXT.md`, `~/.claude/CLAUDE.md` |
+| Claude Code | project | `st init` or `st agent install claude --project` | `./CLAUDE.md` |
+| Cursor | global | `st init -g --agent cursor` or `st agent install cursor --global` | `~/.cursor/hooks.json` |
+| GitHub Copilot | project | `st init --copilot` or `st agent install copilot --project` | `./.github/hooks/syntext-rewrite.json`, `./.github/copilot-instructions.md` |
+| Gemini CLI | global | `st init -g --gemini` or `st agent install gemini --global` | `~/.gemini/hooks/syntext-hook.sh`, `~/.gemini/settings.json`, `~/.gemini/GEMINI.md` |
+| OpenCode | global | `st init -g --opencode` or `st agent install opencode --global` | `~/.config/opencode/plugins/syntext.ts` |
+| OpenClaw | global | `st init -g --openclaw` or `st agent install openclaw --global` | `~/.openclaw/extensions/syntext-rewrite/` |
+| Codex CLI | global or project | `st init -g --codex`, `st init --codex`, or `st agent install codex --global/--project` | `SYNTEXT.md` plus `AGENTS.md` include |
+| Cline / Roo Code | project | `st init --cline` or `st agent install cline --project` | `./.clinerules` |
+| Windsurf | project | `st init --windsurf` or `st agent install windsurf --project` | `./.windsurfrules` |
+| Kilo Code | project | `st init --kilocode` or `st agent install kilocode --project` | `./.kilocode/rules/syntext-rules.md` |
+| Google Antigravity | project | `st init --antigravity` or `st agent install antigravity --project` | `./.agents/rules/antigravity-syntext-rules.md` |
+
+Each install is idempotent, preserves unrelated settings, writes a timestamped
+backup before editing an existing file, and only removes syntext-owned entries
+on uninstall.
 
 ## Architecture
 

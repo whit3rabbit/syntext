@@ -190,6 +190,66 @@ fn agent_commands_parse_supported_agent_scope_matrix() {
 }
 
 #[test]
+fn init_commands_parse_rtk_style_flags() {
+    let cli = Cli::try_parse_from(["st", "init"]).expect("parse failed");
+    let Some(ManageCommand::Init(args)) = cli.command else {
+        panic!("expected init command");
+    };
+    assert!(!args.scope.global);
+    assert!(!args.scope.project);
+    assert_eq!(super::resolve_init_agent(&args).unwrap(), "claude");
+    assert_eq!(
+        super::resolve_init_scope(&args, "claude"),
+        crate::hook::vendors::InstallScope::Project
+    );
+
+    let cli = Cli::try_parse_from(["st", "init", "-g"]).expect("parse failed");
+    let Some(ManageCommand::Init(args)) = cli.command else {
+        panic!("expected init command");
+    };
+    assert!(args.scope.global);
+    assert_eq!(
+        super::resolve_init_scope(&args, "claude"),
+        crate::hook::vendors::InstallScope::Global
+    );
+
+    let cli = Cli::try_parse_from(["st", "init", "-g", "--agent", "cursor"]).expect("parse failed");
+    let Some(ManageCommand::Init(args)) = cli.command else {
+        panic!("expected init command");
+    };
+    assert_eq!(super::resolve_init_agent(&args).unwrap(), "cursor");
+    assert_eq!(
+        super::resolve_init_scope(&args, "cursor"),
+        crate::hook::vendors::InstallScope::Global
+    );
+
+    let cli = Cli::try_parse_from(["st", "init", "-g", "--copilot"]).expect("parse failed");
+    let Some(ManageCommand::Init(args)) = cli.command else {
+        panic!("expected init command");
+    };
+    assert_eq!(super::resolve_init_agent(&args).unwrap(), "copilot");
+    assert_eq!(
+        super::resolve_init_scope(&args, "copilot"),
+        crate::hook::vendors::InstallScope::Project
+    );
+}
+
+#[test]
+fn init_rejects_ambiguous_agent_selection() {
+    let cli = Cli::try_parse_from(["st", "init", "--agent", "cursor", "--gemini"]).expect("parse");
+    let Some(ManageCommand::Init(args)) = cli.command else {
+        panic!("expected init command");
+    };
+    assert!(super::resolve_init_agent(&args).is_err());
+
+    let cli = Cli::try_parse_from(["st", "init", "--cursor", "--gemini"]).expect("parse");
+    let Some(ManageCommand::Init(args)) = cli.command else {
+        panic!("expected init command");
+    };
+    assert!(super::resolve_init_agent(&args).is_err());
+}
+
+#[test]
 fn hidden_hook_commands_parse() {
     let cli = Cli::try_parse_from(["st", "__hook", "claude"]).expect("parse failed");
     assert!(matches!(

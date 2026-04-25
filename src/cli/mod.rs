@@ -20,7 +20,7 @@ use crate::Config;
 use crate::hook::vendors::{AgentAction, InstallScope};
 pub use args::{Cli, ManageCommand};
 use bench::cmd_bench_search;
-use commands::{AgentCommand, AgentScope};
+use commands::{AgentCommand, AgentScope, InitArgs};
 use manage::{cmd_index, cmd_status, cmd_type_list, cmd_update};
 use scope::cmd_files;
 use search::{cmd_search, SearchArgs};
@@ -30,6 +30,7 @@ pub fn run() -> i32 {
     let cli = Cli::parse();
 
     match &cli.command {
+        Some(ManageCommand::Init(args)) => return cmd_init(args),
         Some(ManageCommand::Agent { command }) => return cmd_agent(command),
         Some(ManageCommand::Hook { target }) => return crate::hook::protocols::cmd_hook(target),
         Some(ManageCommand::Rewrite { cwd, command }) => {
@@ -49,7 +50,8 @@ pub fn run() -> i32 {
         }) => cmd_index(config, force, stats, quiet),
         Some(ManageCommand::Status { json }) => cmd_status(config, json),
         Some(ManageCommand::Update { flush, quiet }) => cmd_update(config, flush, quiet),
-        Some(ManageCommand::Agent { .. })
+        Some(ManageCommand::Init(_))
+        | Some(ManageCommand::Agent { .. })
         | Some(ManageCommand::Hook { .. })
         | Some(ManageCommand::Rewrite { .. }) => unreachable!("handled before config resolution"),
         Some(ManageCommand::BenchSearch {
@@ -151,6 +153,58 @@ pub fn run() -> i32 {
             };
             cmd_search(config, &search_args)
         }
+    }
+}
+
+fn cmd_init(args: &InitArgs) -> i32 {
+    let agent = match resolve_init_agent(args) {
+        Ok(agent) => agent,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let scope = resolve_init_scope(args, &agent);
+    crate::hook::vendors::cmd_agent(AgentAction::Install, &agent, scope)
+}
+
+fn resolve_init_agent(args: &InitArgs) -> Result<String, String> {
+    let selected = [
+        ("claude", args.claude),
+        ("cursor", args.cursor),
+        ("copilot", args.copilot),
+        ("gemini", args.gemini),
+        ("opencode", args.opencode),
+        ("openclaw", args.openclaw),
+        ("codex", args.codex),
+        ("cline", args.cline),
+        ("windsurf", args.windsurf),
+        ("kilocode", args.kilocode),
+        ("antigravity", args.antigravity),
+    ]
+    .into_iter()
+    .filter_map(|(name, enabled)| enabled.then_some(name))
+    .collect::<Vec<_>>();
+
+    match (args.agent.as_deref(), selected.as_slice()) {
+        (Some(_), [_first, ..]) => {
+            Err("st: choose either --agent or one agent shortcut flag, not both".to_string())
+        }
+        (Some(agent), []) => Ok(agent.to_string()),
+        (None, []) => Ok("claude".to_string()),
+        (None, [agent]) => Ok((*agent).to_string()),
+        (None, [..]) => Err("st: choose only one agent shortcut flag".to_string()),
+    }
+}
+
+fn resolve_init_scope(args: &InitArgs, agent: &str) -> InstallScope {
+    if args.scope.global && agent == "copilot" {
+        return InstallScope::Project;
+    }
+    if args.scope.global {
+        InstallScope::Global
+    } else {
+        InstallScope::Project
     }
 }
 

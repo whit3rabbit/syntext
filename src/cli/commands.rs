@@ -8,12 +8,67 @@ use clap::{Args, Subcommand};
 #[derive(Args, Debug, Clone, Copy)]
 pub struct AgentScope {
     /// Install in the agent's global configuration.
-    #[arg(long, conflicts_with = "project")]
+    #[arg(short = 'g', long, conflicts_with = "project")]
     pub global: bool,
 
     /// Install in the current project's agent configuration.
     #[arg(long, conflicts_with = "global")]
     pub project: bool,
+}
+
+/// RTK-style convenience installer arguments.
+#[derive(Args, Debug)]
+pub struct InitArgs {
+    #[command(flatten)]
+    pub scope: AgentScope,
+
+    /// Agent integration name.
+    #[arg(long, value_name = "AGENT")]
+    pub agent: Option<String>,
+
+    /// Install the Claude Code integration.
+    #[arg(long)]
+    pub claude: bool,
+
+    /// Install the Cursor integration.
+    #[arg(long)]
+    pub cursor: bool,
+
+    /// Install the GitHub Copilot integration.
+    #[arg(long)]
+    pub copilot: bool,
+
+    /// Install the Gemini CLI integration.
+    #[arg(long)]
+    pub gemini: bool,
+
+    /// Install the OpenCode integration.
+    #[arg(long)]
+    pub opencode: bool,
+
+    /// Install the OpenClaw integration.
+    #[arg(long)]
+    pub openclaw: bool,
+
+    /// Install the Codex CLI integration.
+    #[arg(long)]
+    pub codex: bool,
+
+    /// Install the Cline / Roo Code rules integration.
+    #[arg(long)]
+    pub cline: bool,
+
+    /// Install the Windsurf rules integration.
+    #[arg(long)]
+    pub windsurf: bool,
+
+    /// Install the Kilo Code rules integration.
+    #[arg(long)]
+    pub kilocode: bool,
+
+    /// Install the Google Antigravity rules integration.
+    #[arg(long)]
+    pub antigravity: bool,
 }
 
 /// Agent integration subcommands.
@@ -72,6 +127,8 @@ pub enum ManageCommand {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Install an agent integration using RTK-style flags.
+    Init(InitArgs),
     /// Manage agent integrations.
     Agent {
         #[command(subcommand)]
