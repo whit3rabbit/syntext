@@ -1,6 +1,6 @@
 [package]
 name = "syntext"
-version = "1.0.5"
+version = "1.1.0"
 edition = "2021"
 description = "Hybrid code search index for agent workflows"
 license = "MIT"

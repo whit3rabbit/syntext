@@ -9,7 +9,7 @@
 
 Hybrid code search index for agent workflows, built in Rust. Indexes repositories using sparse n-grams, then narrows to a small candidate set before verification. Drop-in replacement for `rg` in AI agent loops where grep is called repeatedly and in parallel.
 
-**Status: stable (v1.0).**
+**Status: stable (v1.1).**
 
 ## Installation
 
@@ -24,7 +24,7 @@ Installs `st` to `/usr/local/bin`. On macOS, uses Homebrew cask if `brew` is ava
 Override defaults with environment variables:
 
 ```bash
-INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=1.0.1 \
+INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=1.1.0 \
   curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
 ```
 
@@ -42,7 +42,7 @@ brew install --cask whit3rabbit/tap/syntext
 <summary>Linux (manual)</summary>
 
 ```bash
-VERSION=1.0.1
+VERSION=1.1.0
 
 # Debian/Ubuntu (x86_64)
 curl -L "https://github.com/whit3rabbit/syntext/releases/download/v${VERSION}/syntext_${VERSION}_amd64.deb" \
@@ -246,7 +246,7 @@ wasm-pack build --target bundler -- --features wasm --no-default-features
 
 ## Project status
 
-**All phases complete (v1.0).** Core `st index && st "pattern"` workflow validated against ripgrep. Symbol search available behind `--features symbols`.
+**All phases complete (v1.1).** Core `st index && st "pattern"` workflow validated against ripgrep. Symbol search available behind `--features symbols`.
 
 | Phase | Status | What it delivers |
 |---|---|---|

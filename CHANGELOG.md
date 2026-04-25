@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-04-25
+
+### Added
+
+- Native multi-harness agent hooks for Claude Code, Cursor, GitHub Copilot,
+  Gemini CLI, OpenCode, OpenClaw, Codex CLI, Cline / Roo Code, Windsurf,
+  Kilo Code, and Google Antigravity.
+- RTK-style `st init` installer shortcuts plus explicit
+  `st agent install|show|uninstall` commands.
+- Conservative `rg` / `grep` rewrite path that only rewrites safe agent shell
+  searches when `.syntext/` exists.
+
+### Changed
+
+- README now documents agent harness install locations and supported scopes.
+- `install.sh` default version updated to 1.1.0.
+
 ## [1.0.2] - 2026-03-31
 
 ### Fixed
