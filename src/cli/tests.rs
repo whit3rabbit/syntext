@@ -100,13 +100,21 @@ fn context_flag_sets_both_before_and_after() {
 #[test]
 fn line_number_and_filename_aliases_match_ripgrep() {
     let cli = Cli::try_parse_from(["st", "-N", "-n", "-I", "-H", "pattern"]).expect("parse failed");
-    assert!(cli.line_number, "last line-number flag should win");
+    assert!(cli.line_number > 0, "last line-number flag should win");
     assert!(
-        !cli.no_line_number,
+        cli.no_line_number == 0,
         "overridden no-line-number should be cleared"
     );
     assert!(cli.with_filename, "last filename flag should win");
     assert!(!cli.no_filename, "overridden no-filename should be cleared");
+}
+
+#[test]
+fn duplicate_line_number_flag_is_idempotent() {
+    let cli = Cli::try_parse_from(["st", "-n", "pattern", "src", "-n"]).expect("parse failed");
+    assert!(cli.line_number > 0);
+    assert_eq!(cli.pattern.as_deref(), Some("pattern"));
+    assert_eq!(cli.paths, [PathBuf::from("src")]);
 }
 
 #[test]
@@ -620,6 +628,70 @@ fn noops_pattern_file_type_management_are_accepted() {
 }
 
 #[test]
+fn repeated_glob_and_type_filters_are_accepted() {
+    let cli = Cli::try_parse_from([
+        "st",
+        "-g",
+        "*.rs",
+        "--glob",
+        "!tests/**",
+        "-t",
+        "rs",
+        "-t",
+        "md",
+        "-T",
+        "log",
+        "-T",
+        "tmp",
+        "needle",
+    ])
+    .expect("parse failed");
+
+    assert_eq!(cli.glob, ["*.rs", "!tests/**"]);
+    assert_eq!(cli.file_type, ["rs", "md"]);
+    assert_eq!(cli.type_not, ["log", "tmp"]);
+}
+
+#[test]
+fn regexp_allows_hyphen_leading_pattern() {
+    let cli = Cli::try_parse_from(["st", "-F", "-e", "--global", "src"]).expect("parse failed");
+    assert_eq!(cli.regexp, ["--global"]);
+    assert_eq!(cli.pattern.as_deref(), Some("src"));
+}
+
+#[test]
+fn repeated_regexp_values_are_appended() {
+    let cli = Cli::try_parse_from(["st", "-e", "foo", "-e", "bar", "src"]).expect("parse failed");
+    assert_eq!(cli.regexp, ["foo", "bar"]);
+    assert_eq!(cli.pattern.as_deref(), Some("src"));
+}
+
+#[test]
+fn include_and_exclude_aliases_feed_glob_set() {
+    let cli = Cli::try_parse_from([
+        "st",
+        "--include",
+        "*.rs",
+        "--exclude",
+        "*tests.rs",
+        "needle",
+    ])
+    .expect("parse failed");
+
+    assert_eq!(cli.include, ["*.rs"]);
+    assert_eq!(cli.exclude, ["*tests.rs"]);
+    assert_eq!(cli.combined_globs(), ["*.rs", "!*tests.rs"]);
+}
+
+#[test]
+fn index_alias_matches_index_dir() {
+    let cli =
+        Cli::try_parse_from(["st", "--index", "/tmp/st-index", "needle"]).expect("parse failed");
+    assert_eq!(cli.index_dir, Some(PathBuf::from("/tmp/st-index")));
+    assert_eq!(cli.pattern.as_deref(), Some("needle"));
+}
+
+#[test]
 fn noops_threads_mmap_performance_flags_are_accepted() {
     let cli = Cli::try_parse_from(["st", "-j", "4", "--mmap", "pat"]).unwrap();
     assert_eq!(cli.threads, Some(4));
@@ -717,6 +789,63 @@ fn max_depth_filters_results_by_directory_depth() {
     };
     let results = super::search::run_search(&index, &config, &args_all).unwrap();
     assert_eq!(results.len(), 3);
+
+    drop(index);
+}
+
+#[test]
+fn multi_glob_filters_or_positive_and_apply_excludes() {
+    let (_repo, _idx, config) = build_index_for_files(&[
+        ("src/lib.rs", "needle\n"),
+        ("docs/readme.md", "needle\n"),
+        ("tests/lib_tests.rs", "needle\n"),
+        ("src/tool.py", "needle\n"),
+    ]);
+    let index = Index::open(config.clone()).unwrap();
+
+    let args = super::search::SearchArgs {
+        pattern: "needle".to_string(),
+        globs: vec![
+            "*.rs".to_string(),
+            "*.md".to_string(),
+            "!*tests.rs".to_string(),
+        ],
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    let paths: Vec<_> = results.iter().map(|m| m.path.as_path()).collect();
+
+    assert!(paths.contains(&std::path::Path::new("src/lib.rs")));
+    assert!(paths.contains(&std::path::Path::new("docs/readme.md")));
+    assert!(!paths.contains(&std::path::Path::new("tests/lib_tests.rs")));
+    assert!(!paths.contains(&std::path::Path::new("src/tool.py")));
+
+    drop(index);
+}
+
+#[test]
+fn multi_type_filters_or_includes_and_apply_excludes() {
+    let (_repo, _idx, config) = build_index_for_files(&[
+        ("src/lib.rs", "needle\n"),
+        ("docs/readme.md", "needle\n"),
+        ("logs/debug.log", "needle\n"),
+        ("src/tool.py", "needle\n"),
+    ]);
+    let index = Index::open(config.clone()).unwrap();
+
+    let args = super::search::SearchArgs {
+        pattern: "needle".to_string(),
+        file_types: vec!["rs".to_string(), "md".to_string(), "log".to_string()],
+        type_nots: vec!["log".to_string()],
+        ..super::search::SearchArgs::default()
+    };
+    let results = super::search::run_search(&index, &config, &args).unwrap();
+    let paths: Vec<_> = results.iter().map(|m| m.path.as_path()).collect();
+
+    assert!(paths.contains(&std::path::Path::new("src/lib.rs")));
+    assert!(paths.contains(&std::path::Path::new("docs/readme.md")));
+    assert!(!paths.contains(&std::path::Path::new("logs/debug.log")));
+    assert!(!paths.contains(&std::path::Path::new("src/tool.py")));
 
     drop(index);
 }

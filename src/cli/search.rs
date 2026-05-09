@@ -39,9 +39,9 @@ pub(super) struct SearchArgs {
     pub no_filename: bool,
     pub after_context: usize,
     pub before_context: usize,
-    pub file_type: Option<String>,
-    pub type_not: Option<String>,
-    pub glob: Option<String>,
+    pub file_types: Vec<String>,
+    pub type_nots: Vec<String>,
+    pub globs: Vec<String>,
     pub column: bool,
     pub vimgrep: bool,
     pub replace: Option<String>,
@@ -79,9 +79,9 @@ impl Default for SearchArgs {
             no_filename: false,
             after_context: 0,
             before_context: 0,
-            file_type: None,
-            type_not: None,
-            glob: None,
+            file_types: Vec::new(),
+            type_nots: Vec::new(),
+            globs: Vec::new(),
             column: false,
             vimgrep: false,
             replace: None,
@@ -282,7 +282,7 @@ pub(super) fn run_search(
     let effective_pattern = build_effective_pattern(args);
     let explicit_specs = explicit_path_specs(&config.repo_root, &args.paths);
     let mut results = if explicit_specs.is_empty() {
-        index.search(&effective_pattern, &search_options(args, args.glob.clone()))?
+        index.search(&effective_pattern, &search_options(args, None))?
     } else {
         let mut merged = Vec::new();
         for spec in &explicit_specs {
@@ -293,15 +293,14 @@ pub(super) fn run_search(
         }
         sort_and_dedup_matches(merged)
     };
-    if !explicit_specs.is_empty() || args.glob.is_some() {
+    if !explicit_specs.is_empty()
+        || !args.file_types.is_empty()
+        || !args.type_nots.is_empty()
+        || !args.globs.is_empty()
+    {
         results.retain(|m| {
             matches_any_explicit_path(&m.path, &explicit_specs)
-                && matches_optional_glob(
-                    &m.path,
-                    args.file_type.as_deref(),
-                    args.type_not.as_deref(),
-                    args.glob.as_deref(),
-                )
+                && matches_optional_glob(&m.path, &args.file_types, &args.type_nots, &args.globs)
         });
     }
     if let Some(depth) = args.max_depth {

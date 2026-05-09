@@ -60,6 +60,7 @@ pub struct Cli {
         long = "regexp",
         value_name = "PATTERN",
         action = clap::ArgAction::Append,
+        allow_hyphen_values = true,
     )]
     pub regexp: Vec<String>,
 
@@ -119,12 +120,22 @@ pub struct Cli {
     pub no_heading: bool,
 
     /// Show line numbers.
-    #[arg(short = 'n', long = "line-number", overrides_with = "no_line_number")]
-    pub line_number: bool,
+    #[arg(
+        short = 'n',
+        long = "line-number",
+        action = clap::ArgAction::Count,
+        overrides_with = "no_line_number"
+    )]
+    pub line_number: u8,
 
     /// Suppress line numbers in output.
-    #[arg(short = 'N', long = "no-line-number", overrides_with = "line_number")]
-    pub no_line_number: bool,
+    #[arg(
+        short = 'N',
+        long = "no-line-number",
+        action = clap::ArgAction::Count,
+        overrides_with = "line_number"
+    )]
+    pub no_line_number: u8,
 
     /// Show file names with matches.
     #[arg(short = 'H', long = "with-filename", overrides_with = "no_filename")]
@@ -178,16 +189,39 @@ pub struct Cli {
 
     // --- Filtering ---
     /// Restrict to file type extension (e.g. rs, py, js).
-    #[arg(short = 't', long = "type", value_name = "TYPE")]
-    pub file_type: Option<String>,
+    #[arg(
+        short = 't',
+        long = "type",
+        value_name = "TYPE",
+        action = clap::ArgAction::Append
+    )]
+    pub file_type: Vec<String>,
 
     /// Exclude file type extension.
-    #[arg(short = 'T', long = "type-not", value_name = "TYPE")]
-    pub type_not: Option<String>,
+    #[arg(
+        short = 'T',
+        long = "type-not",
+        value_name = "TYPE",
+        action = clap::ArgAction::Append
+    )]
+    pub type_not: Vec<String>,
 
     /// Restrict to paths matching GLOB (e.g. "*.rs" or "src/**").
-    #[arg(short = 'g', long = "glob", value_name = "GLOB")]
-    pub glob: Option<String>,
+    #[arg(
+        short = 'g',
+        long = "glob",
+        value_name = "GLOB",
+        action = clap::ArgAction::Append
+    )]
+    pub glob: Vec<String>,
+
+    /// Include paths matching GLOB (grep compatibility alias for --glob).
+    #[arg(long = "include", value_name = "GLOB", action = clap::ArgAction::Append)]
+    pub include: Vec<String>,
+
+    /// Exclude paths matching GLOB (grep compatibility alias for --glob '!GLOB').
+    #[arg(long = "exclude", value_name = "GLOB", action = clap::ArgAction::Append)]
+    pub exclude: Vec<String>,
 
     /// Show all supported file types and their extensions.
     #[arg(long = "type-list")]
@@ -382,7 +416,7 @@ pub struct Cli {
 
     // --- Index configuration ---
     /// Override index directory (default: .syntext/ at repo root).
-    #[arg(long, global = true, env = "SYNTEXT_INDEX_DIR")]
+    #[arg(long, alias = "index", global = true, env = "SYNTEXT_INDEX_DIR")]
     pub index_dir: Option<PathBuf>,
 
     /// Override repository root (default: nearest .git ancestor).
@@ -396,4 +430,13 @@ pub struct Cli {
     /// Management subcommands (index, update, status).
     #[command(subcommand)]
     pub command: Option<ManageCommand>,
+}
+
+impl Cli {
+    pub(super) fn combined_globs(&self) -> Vec<String> {
+        let mut globs = self.glob.clone();
+        globs.extend(self.include.iter().cloned());
+        globs.extend(self.exclude.iter().map(|glob| format!("!{glob}")));
+        globs
+    }
 }

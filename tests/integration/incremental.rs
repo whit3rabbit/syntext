@@ -596,10 +596,7 @@ fn concurrent_reads_during_commit_batch() {
             let matches = idx
                 .search("fn", &SearchOptions::default())
                 .expect("pre-write search must not fail");
-            assert!(
-                !matches.is_empty(),
-                "pre-write search returned 0 matches"
-            );
+            assert!(!matches.is_empty(), "pre-write search returned 0 matches");
             let mut search_count = 1u64;
             gate.wait();
             while !done.load(Ordering::Relaxed) {
