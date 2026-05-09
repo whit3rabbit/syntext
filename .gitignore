@@ -30,6 +30,7 @@ fuzz/corpus/
 # Syntext index (default index_dir; lock files at root cover non-default paths
 # where users put the index at the repo root rather than .syntext/)
 .syntext/
+.synrepo/
 /lock
 /write.lock
 

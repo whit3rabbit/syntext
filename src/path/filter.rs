@@ -142,6 +142,15 @@ pub(crate) fn path_matches_glob(path: &Path, glob: &str) -> bool {
         return memmem::find(path, rest).is_some();
     }
 
+    if glob.contains(&b'*') || glob.contains(&b'?') {
+        if glob.contains(&b'/') {
+            return path_glob_matches(path, glob);
+        }
+        return path
+            .split(|&b| b == b'/')
+            .any(|component| glob_matches_bytes(component, glob));
+    }
+
     if glob.ends_with(b"/") {
         return path.starts_with(glob) || memmem::find(path, &[b"/", glob].concat()).is_some();
     }
@@ -151,6 +160,48 @@ pub(crate) fn path_matches_glob(path: &Path, glob: &str) -> bool {
     }
 
     path_has_component(path, glob)
+}
+
+fn path_glob_matches(path: &[u8], glob: &[u8]) -> bool {
+    if glob_matches_bytes(path, glob) {
+        return true;
+    }
+    path.iter()
+        .enumerate()
+        .filter_map(|(idx, byte)| (*byte == b'/').then_some(idx + 1))
+        .any(|start| glob_matches_bytes(&path[start..], glob))
+}
+
+fn glob_matches_bytes(text: &[u8], pattern: &[u8]) -> bool {
+    let mut text_idx = 0usize;
+    let mut pattern_idx = 0usize;
+    let mut star_idx = None::<usize>;
+    let mut star_text_idx = 0usize;
+
+    while text_idx < text.len() {
+        if pattern_idx < pattern.len()
+            && (pattern[pattern_idx] == text[text_idx] || pattern[pattern_idx] == b'?')
+        {
+            text_idx += 1;
+            pattern_idx += 1;
+        } else if pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+            star_idx = Some(pattern_idx);
+            pattern_idx += 1;
+            star_text_idx = text_idx;
+        } else if let Some(star) = star_idx {
+            pattern_idx = star + 1;
+            star_text_idx += 1;
+            text_idx = star_text_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+        pattern_idx += 1;
+    }
+
+    pattern_idx == pattern.len()
 }
 
 fn path_has_extension(path: &[u8], ext: &[u8]) -> bool {
@@ -289,6 +340,31 @@ mod tests {
     fn path_with_slash_still_uses_substring() {
         assert!(path_matches_glob(Path::new("src/test/foo.rs"), "src/test"));
         assert!(!path_matches_glob(Path::new("lib/test/foo.rs"), "src/test"));
+    }
+
+    #[test]
+    fn wildcard_glob_matches_file_component() {
+        assert!(path_matches_glob(
+            Path::new("tests/search_tests.rs"),
+            "*tests.rs"
+        ));
+        assert!(!path_matches_glob(
+            Path::new("tests/search.rs"),
+            "*tests.rs"
+        ));
+    }
+
+    #[test]
+    fn wildcard_glob_with_slash_matches_component_suffix() {
+        assert!(path_matches_glob(Path::new("vendor/lib.rs"), "vendor/**"));
+        assert!(path_matches_glob(
+            Path::new("src/vendor/lib.rs"),
+            "vendor/**"
+        ));
+        assert!(!path_matches_glob(
+            Path::new("src/not_vendor/lib.rs"),
+            "vendor/**"
+        ));
     }
 
     #[test]

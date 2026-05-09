@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::index::Index;
-use crate::path::filter::matches_path_filter;
+use crate::path::filter::{matches_path_filter, path_matches_glob};
 use crate::path_util::path_bytes;
 use crate::{Config, SearchOptions};
 
@@ -133,20 +133,56 @@ fn normalize_relative_path(path: &Path) -> PathBuf {
 pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> SearchOptions {
     SearchOptions {
         case_insensitive: args.ignore_case,
-        file_type: args.file_type.clone(),
-        exclude_type: args.type_not.clone(),
+        file_type: single_filter(&args.file_types),
+        exclude_type: single_filter(&args.type_nots),
         max_results: None,
         path_filter,
     }
 }
 
+fn single_filter(filters: &[String]) -> Option<String> {
+    if filters.len() == 1 {
+        Some(filters[0].clone())
+    } else {
+        None
+    }
+}
+
 pub(super) fn matches_optional_glob(
     path: &Path,
-    file_type: Option<&str>,
-    exclude_type: Option<&str>,
-    path_glob: Option<&str>,
+    file_types: &[String],
+    exclude_types: &[String],
+    path_globs: &[String],
 ) -> bool {
-    matches_path_filter(path, file_type, exclude_type, path_glob)
+    if !file_types.is_empty()
+        && !file_types
+            .iter()
+            .any(|file_type| matches_path_filter(path, Some(file_type.as_str()), None, None))
+    {
+        return false;
+    }
+
+    if exclude_types
+        .iter()
+        .any(|exclude_type| matches_path_filter(path, Some(exclude_type.as_str()), None, None))
+    {
+        return false;
+    }
+
+    let mut has_positive_glob = false;
+    let mut matched_positive_glob = false;
+    for glob in path_globs {
+        if let Some(exclude_glob) = glob.strip_prefix('!') {
+            if !exclude_glob.is_empty() && path_matches_glob(path, exclude_glob) {
+                return false;
+            }
+            continue;
+        }
+        has_positive_glob = true;
+        matched_positive_glob |= path_matches_glob(path, glob);
+    }
+
+    !has_positive_glob || matched_positive_glob
 }
 
 pub(super) fn collect_scoped_paths(
@@ -161,12 +197,7 @@ pub(super) fn collect_scoped_paths(
         .visible_paths()
         .filter(|(_, path)| {
             matches_any_explicit_path(path, &explicit_specs)
-                && matches_optional_glob(
-                    path,
-                    args.file_type.as_deref(),
-                    args.type_not.as_deref(),
-                    args.glob.as_deref(),
-                )
+                && matches_optional_glob(path, &args.file_types, &args.type_nots, &args.globs)
         })
         .map(|(_, path)| path.to_path_buf())
         .collect();
@@ -187,17 +218,11 @@ pub(super) fn cmd_files(config: Config, cli: &super::args::Cli) -> i32 {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let sep = if cli.null { b'\0' } else { b'\n' };
+    let globs = cli.combined_globs();
     let mut paths: Vec<_> = snapshot
         .path_index
         .visible_paths()
-        .filter(|(_, path)| {
-            matches_optional_glob(
-                path,
-                cli.file_type.as_deref(),
-                cli.type_not.as_deref(),
-                cli.glob.as_deref(),
-            )
-        })
+        .filter(|(_, path)| matches_optional_glob(path, &cli.file_type, &cli.type_not, &globs))
         .map(|(_, path)| path.to_path_buf())
         .collect();
     if let Some(depth) = cli.max_depth {

@@ -72,6 +72,7 @@ pub fn run() -> i32 {
             // first positional to `pattern` (it doesn't know it's a path).
             // Shift that positional into `paths` so `st -e "pat" dir` works
             // like ripgrep.  Multiple -e values are OR-combined with `|`.
+            let globs = cli.combined_globs();
             let (pattern, paths) = if !cli.regexp.is_empty() {
                 let mut p = cli.paths;
                 if let Some(pos) = cli.pattern {
@@ -111,7 +112,7 @@ pub fn run() -> i32 {
 
             // --pretty is an alias for --heading --line-number (color is no-op).
             let heading = cli.heading || cli.pretty;
-            let line_number = cli.line_number || cli.pretty;
+            let line_number = cli.line_number > 0 || cli.pretty;
 
             let ctx = cli.context.unwrap_or(0);
             let search_args = SearchArgs {
@@ -133,13 +134,13 @@ pub fn run() -> i32 {
                 only_matching: cli.only_matching,
                 json: cli.json,
                 heading,
-                no_line_number: cli.no_line_number,
+                no_line_number: cli.no_line_number > 0,
                 no_filename: cli.no_filename,
                 after_context: cli.after_context.unwrap_or(ctx),
                 before_context: cli.before_context.unwrap_or(ctx),
-                file_type: cli.file_type,
-                type_not: cli.type_not,
-                glob: cli.glob,
+                file_types: cli.file_type,
+                type_nots: cli.type_not,
+                globs,
                 column: cli.column || cli.vimgrep,
                 vimgrep: cli.vimgrep,
                 replace: cli.replace,
