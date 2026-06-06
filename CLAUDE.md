@@ -48,6 +48,16 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 | proptest | property-based coverage invariant tests (dev-only) |
 | tempfile | temporary dirs in tests (dev-only) |
 
+## Feature Flags
+
+The crate supports the following Cargo feature flags:
+
+* `default`: Enables the `cli` feature (command-line interface binary and native library support).
+* `cli`: Builds the command-line binary `st`. Depends on `native` and the optional `clap` dependency.
+* `native`: Native library support. Includes `memmap2`, `rayon`, `fs2`, and `ignore` (enables filesystem access, multi-threading, and Git integrations).
+* `wasm`: WASM target support. Enables `wasm-bindgen` API, fully in-memory index, and disables all native filesystem and threading dependencies.
+* `symbols`: Tree-sitter symbol extraction and SQLite local cache storage support.
+
 ## Implementation Order
 
 These are non-negotiable ordering constraints:

@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-06-06
+
+### Added
+
+- Native features split: introduced `cli` and `native` Cargo feature flags to allow building the library without CLI-specific dependencies (such as `clap`). The `st` binary now requires the `cli` feature.
+
+### Changed
+
+- Switched conditional compilation gates from checking the `clap` feature to the new `cli` feature.
+- Improved integration test robustness for advisory file locking (`flock`) on macOS by matching production file open options.
+- Added `commit_batch_result` retry helper in tests to safely handle transient lock conflict results.
+- Isolated the Cursor protocol test to a temporary directory to avoid workspace pollution.
+
 ## [1.1.0] - 2026-04-25
 
 ### Added
