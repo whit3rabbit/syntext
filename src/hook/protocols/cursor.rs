@@ -66,7 +66,11 @@ mod tests {
 
     #[test]
     fn cursor_passthrough_is_empty_json() {
-        let input = json!({ "tool_input": { "command": "rg parse_query src/" } });
+        let dir = tempfile::TempDir::new().unwrap();
+        let input = json!({
+            "tool_input": { "command": "rg parse_query src/" },
+            "cwd": dir.path()
+        });
         let ProtocolOutput::Json(output) = response_from_str(&input.to_string(), "st").unwrap()
         else {
             panic!("expected JSON output");
