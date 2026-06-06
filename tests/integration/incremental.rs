@@ -68,6 +68,24 @@ fn commit_batch_with_retry(index: &Index) {
     }
 }
 
+/// Like `commit_batch_with_retry`, but returns the result instead of
+/// panicking on non-LockConflict errors. Used by tests that assert on
+/// specific error variants.
+fn commit_batch_result(index: &Index) -> Result<(), IndexError> {
+    const MAX_ATTEMPTS: usize = 5;
+    const RETRY_DELAY: Duration = Duration::from_millis(10);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match index.commit_batch() {
+            Err(IndexError::LockConflict(_)) if attempt < MAX_ATTEMPTS => {
+                thread::sleep(RETRY_DELAY);
+            }
+            other => return other,
+        }
+    }
+    unreachable!()
+}
+
 // ---------------------------------------------------------------------------
 // T044: Build -> modify -> commit_batch -> search
 // ---------------------------------------------------------------------------
@@ -394,13 +412,12 @@ fn large_file_rejected_during_commit() {
     fs::write(&big_path, "x".repeat(200)).unwrap();
 
     index.notify_change(&big_path).unwrap();
-    let result = index.commit_batch();
-    assert!(result.is_err(), "oversized file should fail commit");
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("too large"),
-        "error should mention 'too large', got: {err_msg}"
-    );
+    let result = commit_batch_result(&index);
+    match result {
+        Err(IndexError::FileTooLarge { .. }) => {}
+        Err(other) => panic!("expected FileTooLarge, got: {other}"),
+        Ok(()) => panic!("oversized file should fail commit"),
+    }
     drop(index);
 }
 
@@ -487,10 +504,18 @@ fn concurrent_commit_batch_returns_lock_conflict() {
     index.notify_change(&repo.path().join("a.rs")).unwrap();
 
     // Hold the write lock manually to simulate a concurrent writer.
+    // Use the same open mode as the production writer-lock helper
+    // (OpenOptions + try_lock_exclusive) for consistent macOS flock behavior.
     let lock_path = index_dir.path().join("write.lock");
-    let lock_file = std::fs::File::create(&lock_path).unwrap();
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
     use fs2::FileExt;
-    lock_file.lock_exclusive().unwrap();
+    lock_file.try_lock_exclusive().unwrap();
 
     // commit_batch should fail with LockConflict, not block or succeed.
     let result = index.commit_batch();
@@ -504,6 +529,7 @@ fn concurrent_commit_batch_returns_lock_conflict() {
 
     // Release lock and verify commit succeeds.
     lock_file.unlock().unwrap();
+    drop(lock_file);
     commit_batch_with_retry(&index);
     drop(index);
 }
@@ -516,10 +542,17 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
 
     fs::write(repo.path().join("a.rs"), "fn aaa() {}\n").unwrap();
 
+    // Use the same open mode as the production writer-lock helper.
     let lock_path = index_dir.path().join("write.lock");
-    let lock_file = std::fs::File::create(&lock_path).unwrap();
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
     use fs2::FileExt;
-    lock_file.lock_exclusive().unwrap();
+    lock_file.try_lock_exclusive().unwrap();
 
     let config = Config {
         index_dir: index_dir.path().to_path_buf(),
@@ -538,7 +571,8 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
     );
 
     lock_file.unlock().unwrap();
-    // After unlocking, build should succeed.
+    drop(lock_file);
+    // After unlocking and closing the FD, build should succeed.
     let index = Index::build(config).unwrap();
     drop(index);
 }

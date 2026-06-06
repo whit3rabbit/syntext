@@ -2,14 +2,13 @@
 //!
 //! Exposes a command-line interface to index and search code.
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(windows))]
+#[cfg(all(not(target_arch = "wasm32"), not(windows), feature = "cli"))]
 fn main() {
     let code = syntext::cli::run();
     std::process::exit(code);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), windows))]
+#[cfg(all(not(target_arch = "wasm32"), windows, feature = "cli"))]
 fn main() {
     // clap's generated parser for the rg-compatible CLI can exceed the default
     // Windows main-thread stack. Run the actual CLI on a modestly larger stack.
@@ -24,5 +23,5 @@ fn main() {
     std::process::exit(code);
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", not(feature = "cli")))]
 fn main() {}
