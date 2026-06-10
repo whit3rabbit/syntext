@@ -56,3 +56,6 @@ repomix.xml
 _syntext-bench/
 _ripline-bench/
 .worktrees/
+
+.agent-config-mcp.json
+.mcp.json
