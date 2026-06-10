@@ -479,3 +479,47 @@ comparable to `syntext-persistent`. On the rare query syntext-persistent wins
 (3.1 ms vs 5.9 ms for an exhaustive 1,425-match enumeration). The structural
 difference dominates: an agent forking per query pays fff's 1,057 ms scan every
 time, vs 6–13 ms total for `syntext-fork` against the persisted index.
+
+### fff comparison, zed corpus (2026-06-10)
+
+Same harness on a larger mixed-language corpus, including the preset's indexed
+regex query (which fff skips, literal-only). Corpus: shallow zed clone at
+HEAD `3ecb869` (2026-06-10), 4,065 tracked files. Run:
+
+```sh
+python3 scripts/bench_compare.py --preset zed_mixed_app \
+  --repo /tmp/zed-bench --syntext-search-mode both \
+  --fff-bin /tmp/fff-bench/target/release/fff-mcp
+```
+
+Index-build analogs: syntext build median 329.0 ms one-time (3.40 MB on disk)
+vs fff startup-to-ready 517.9 ms per process.
+
+| Query | Tool | Matches | Median ms |
+|---|---:|---:|---:|
+| `literal:workspace` | `syntext-fork` | `24948` | `27.091` |
+| `literal:workspace` | `syntext-persistent` | `24948` | `11.980` |
+| `literal:workspace` | `rg` | `24968` | `49.861` |
+| `literal:workspace` | `grep` | `24968` | `267.003` |
+| `literal:workspace` | `fff` | `26` | `0.463` |
+| `literal:LanguageServerId` | `syntext-fork` | `528` | `9.639` |
+| `literal:LanguageServerId` | `syntext-persistent` | `528` | `2.133` |
+| `literal:LanguageServerId` | `rg` | `528` | `50.113` |
+| `literal:LanguageServerId` | `grep` | `528` | `237.484` |
+| `literal:LanguageServerId` | `fff` | `29` | `0.666` |
+| `regex:LanguageServer(Id\|InstallationStatus)` | `syntext-fork` | `612` | `24.009` |
+| `regex:LanguageServer(Id\|InstallationStatus)` | `syntext-persistent` | `612` | `16.158` |
+| `regex:LanguageServer(Id\|InstallationStatus)` | `rg` | `612` | `50.298` |
+| `regex:LanguageServer(Id\|InstallationStatus)` | `grep` | `612` | `267.364` |
+
+`LanguageServerId` and the regex query have exact count parity. The
+`literal:workspace` counts differ by 20 lines (24,948 vs 24,968); the gap was
+diffed line-by-line and is fully explained: syntext's output is a strict
+subset of rg's, and every missing line is a mid-token substring occurrence
+(`workspaces`, `recent_workspaces`, `xcworkspace`, `/workspaces`) where no
+token boundary precedes/follows the query inside the longer identifier. This
+is the documented coverage limitation for non-token-aligned literals (0.08% of
+matches here); the timing comparison stands. fff's `workspace` latency
+(0.46 ms for 26 ranked results) is not comparable to the exhaustive
+24,948-match enumerations; on the selective literal the gap is 2.1 ms
+(syntext-persistent, exhaustive) vs 0.67 ms (fff, top-N).
