@@ -1052,3 +1052,145 @@ fn commit_batch_max_file_size_saturates_not_wraps() {
     assert_eq!(sentinel, u64::MAX, "saturating_add must not wrap");
     assert_ne!(sentinel, 0u64, "must not wrap to 0");
 }
+
+#[test]
+fn open_rejects_truncated_post_file() {
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("a.rs"), b"fn alpha_one() {}\n").unwrap();
+    std::fs::write(repo.path().join("b.rs"), b"fn beta_two() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config.clone()).unwrap();
+    drop(index);
+
+    // Truncate the .post file by one byte: the manifest's post_len no longer
+    // matches, so open must fail before any postings are read.
+    let post_path = std::fs::read_dir(index_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "post"))
+        .expect("built index must contain a .post file");
+    let bytes = std::fs::read(&post_path).unwrap();
+    std::fs::write(&post_path, &bytes[..bytes.len() - 1]).unwrap();
+
+    let result = Index::open(config);
+    assert!(result.is_err(), "open must reject a truncated .post file");
+}
+
+#[test]
+fn structural_default_open_survives_postings_corruption_and_full_verify_detects_it() {
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+    for i in 0..10 {
+        std::fs::write(
+            repo.path().join(format!("file_{i}.rs")),
+            format!("fn corrupt_probe_{i}() {{ let value = {i}; }}\n"),
+        )
+        .unwrap();
+    }
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config.clone()).unwrap();
+    drop(index);
+
+    // Flip one byte in the middle of the postings data, keeping the length
+    // unchanged so only checksum verification can detect it.
+    let post_path = std::fs::read_dir(index_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "post"))
+        .expect("built index must contain a .post file");
+    let mut bytes = std::fs::read(&post_path).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0xFF;
+    std::fs::write(&post_path, &bytes).unwrap();
+
+    // Default (structural) open succeeds; searches degrade gracefully
+    // (possibly missing results) but must not panic, and never return
+    // fabricated content because candidates are verified against file bytes.
+    let index = Index::open(config.clone()).unwrap();
+    let _ = index.search("corrupt_probe_3", &SearchOptions::default());
+    assert!(
+        index.verify().is_err(),
+        "Index::verify must detect the flipped postings byte"
+    );
+    drop(index);
+
+    // Paranoid mode must reject the corrupted index at open time.
+    let strict_config = Config {
+        verify_on_open: true,
+        ..config
+    };
+    let result = Index::open(strict_config);
+    assert!(
+        result.is_err(),
+        "verify_on_open must reject a corrupted .post file"
+    );
+}
+
+#[test]
+fn rebuild_reuses_prior_calibrated_threshold_unless_recalibrate() {
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+    for i in 0..50 {
+        std::fs::write(
+            repo.path().join(format!("file_{i:03}.rs")),
+            format!("fn func_{i}() {{ let x = {i}; }}\n").repeat(20),
+        )
+        .unwrap();
+    }
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config.clone()).unwrap();
+    drop(index);
+    let first = crate::index::manifest::Manifest::load(&config.index_dir)
+        .unwrap()
+        .scan_threshold_fraction
+        .expect("first build must calibrate");
+
+    // Repeat build: must carry the first build's threshold forward verbatim.
+    let index = Index::build(config.clone()).unwrap();
+    drop(index);
+    let second = crate::index::manifest::Manifest::load(&config.index_dir)
+        .unwrap()
+        .scan_threshold_fraction
+        .expect("rebuild must persist a threshold");
+    assert_eq!(
+        second, first,
+        "rebuild without --recalibrate must reuse the prior threshold"
+    );
+
+    // Forced recalibration still produces a valid clamped value.
+    let recal_config = Config {
+        recalibrate: true,
+        ..config.clone()
+    };
+    let index = Index::build(recal_config).unwrap();
+    drop(index);
+    let third = crate::index::manifest::Manifest::load(&config.index_dir)
+        .unwrap()
+        .scan_threshold_fraction
+        .expect("recalibrated build must persist a threshold");
+    assert!(
+        (0.01..=0.50).contains(&third),
+        "recalibrated threshold {third} must be in [0.01, 0.50]"
+    );
+}

@@ -111,6 +111,10 @@ pub enum ManageCommand {
         /// Suppress progress output.
         #[arg(short, long)]
         quiet: bool,
+        /// Re-measure the index-vs-scan crossover threshold instead of
+        /// reusing the prior calibrated value (use after hardware changes).
+        #[arg(long)]
+        recalibrate: bool,
     },
     /// Show index statistics.
     Status {
@@ -118,6 +122,8 @@ pub enum ManageCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Verify index integrity (full checksum of all segments).
+    Verify,
     /// Incrementally update the index for changed files.
     Update {
         /// Force flush overlay to segment.

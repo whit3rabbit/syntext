@@ -155,6 +155,10 @@ harness = false
 name = "index_build"
 harness = false
 
+[[bench]]
+name = "index_open"
+harness = false
+
 [package.metadata.deb]
 name = "syntext"
 maintainer = "syntext contributors"

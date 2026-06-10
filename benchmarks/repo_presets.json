@@ -10,6 +10,12 @@
       "build_iterations": 3,
       "search_iterations": 5,
       "warmups": 1,
+      "tools": [
+        "syntext",
+        "rg",
+        "grep",
+        "fff"
+      ],
       "queries": [
         "literal:workspace",
         "literal:LanguageServerId",
@@ -17,7 +23,8 @@
       ],
       "notes": [
         "Good mixed-language application benchmark.",
-        "Useful for broad literals and indexed-regex comparisons."
+        "Useful for broad literals and indexed-regex comparisons.",
+        "fff requires fff-mcp on PATH or --fff-bin; it is skipped with a warning otherwise. The regex query is skipped for fff (literal-only)."
       ]
     },
     {
@@ -30,13 +37,20 @@
       "build_iterations": 1,
       "search_iterations": 1,
       "warmups": 0,
+      "tools": [
+        "syntext",
+        "rg",
+        "grep",
+        "fff"
+      ],
       "queries": [
         "literal:useState",
         "literal:getDisplayNameForReactElement"
       ],
       "notes": [
         "Prefer token-aligned literals.",
-        "Do not use ReactElement as a headline benchmark term. It undercounts because many hits are mid-token substrings."
+        "Do not use ReactElement as a headline benchmark term. It undercounts because many hits are mid-token substrings.",
+        "fff requires fff-mcp on PATH or --fff-bin; it is skipped with a warning otherwise."
       ]
     },
     {

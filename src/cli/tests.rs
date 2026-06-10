@@ -1162,3 +1162,9 @@ fn sensitive_prefix_accepts_safe_path_windows() {
         None,
     );
 }
+
+#[test]
+fn cli_parses_verify_subcommand() {
+    let cli = Cli::try_parse_from(["st", "verify"]).expect("parse failed");
+    assert!(matches!(cli.command, Some(ManageCommand::Verify)));
+}

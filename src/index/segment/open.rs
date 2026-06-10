@@ -6,7 +6,6 @@ use std::path::Path;
 
 #[cfg(feature = "memmap2")]
 use memmap2::MmapOptions;
-#[cfg(feature = "memmap2")]
 use xxhash_rust::xxh64::xxh64;
 
 use super::reader::parse_segment_mmap;
@@ -16,6 +15,36 @@ use super::reader::read_exact_at;
 use super::MAX_SEGMENT_SIZE;
 use super::{MmapSegment, PostingsBacking, SegmentData, FORMAT_VERSION_V2, FORMAT_VERSION_V3};
 use crate::IndexError;
+
+/// Magic bytes at the start of a v3 `.post` file.
+const POST_MAGIC: &[u8; 8] = b"SNTXPOST";
+/// Minimum `.post` file size: magic + checksum trailer (empty postings allowed).
+const POST_MIN_SIZE: usize = 8 + 8;
+
+/// How much of the `.post` file to verify when opening a v3 segment.
+///
+/// `Full` reads the entire postings file and verifies its xxh64 trailer
+/// checksum: O(post file size) I/O plus a transient heap allocation of the
+/// same size. `Structural` performs only O(1) checks (minimum size, magic
+/// header, trailer presence).
+///
+/// Security: skipping the full checksum does not weaken query-time integrity.
+/// Postings are re-read from `.post` per query via positional reads, so the
+/// open-time checksum never protected against post-open tampering — only
+/// against at-rest corruption present at open time. All postings parsing is
+/// bounds-checked (`.get()`, `checked_add`, the 8 MB posting cap, fallible
+/// roaring deserialize), so corrupt postings yield missing candidates or
+/// `CorruptIndex` errors — never memory unsafety or fabricated match content
+/// (candidates are verified against real file bytes before being reported).
+/// Use `Full` (via `Config::verify_on_open` or `st verify`) when at-rest
+/// corruption detection at open time is worth the I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostVerify {
+    /// Read and checksum the entire `.post` file at open time.
+    Full,
+    /// O(1) structural checks only (size, magic, trailer presence).
+    Structural,
+}
 
 impl MmapSegment {
     /// Load a segment entirely from in-memory bytes (WASM / tests).
@@ -100,8 +129,14 @@ impl MmapSegment {
     ///
     /// The `.dict` file is fully mmap'd (small, always needed for binary
     /// search). Postings are read on demand from `.post` via positional reads.
+    /// `verify` selects how much of the `.post` file is validated at open
+    /// time; see [`PostVerify`] for the tradeoff.
     #[cfg(feature = "memmap2")]
-    pub fn open_split(dict_path: &Path, post_path: &Path) -> Result<Self, IndexError> {
+    pub fn open_split(
+        dict_path: &Path,
+        post_path: &Path,
+        verify: PostVerify,
+    ) -> Result<Self, IndexError> {
         let file = std::fs::File::open(dict_path)?;
         let file_meta = file.metadata()?;
         if file_meta.len() > MAX_SEGMENT_SIZE {
@@ -132,48 +167,13 @@ impl MmapSegment {
             .try_lock_shared()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-        // Validate .post file magic and checksum.
-        // Note: reading the full postings data at open time is O(post_file_size).
-        // This is acceptable: the checksum read happens once per segment open, and
-        // segments are reused across many queries.
-        const POST_MAGIC: &[u8; 8] = b"SNTXPOST";
-        const POST_MIN_SIZE: usize = 8 + 8; // magic + checksum (empty postings allowed)
-
-        let post_meta = post_file.metadata()?;
-        let post_len = post_meta.len() as usize;
-        if post_len < POST_MIN_SIZE {
-            return Err(IndexError::CorruptIndex(format!(
-                "post file too small: {post_len} bytes"
-            )));
-        }
-
-        // Read the magic header (8 bytes).
-        let mut post_magic = [0u8; 8];
-        read_exact_at(&post_file, &mut post_magic, 0)?;
-        if &post_magic != POST_MAGIC {
-            return Err(IndexError::CorruptIndex(
-                "post file has wrong magic (expected SNTXPOST)".into(),
-            ));
-        }
-
-        // Read and verify the checksum (last 8 bytes cover the postings data
-        // between the magic header and checksum trailer).
-        let checksum_offset = (post_len - 8) as u64;
-        let mut stored_cksum_bytes = [0u8; 8];
-        read_exact_at(&post_file, &mut stored_cksum_bytes, checksum_offset)?;
-        let stored_post_checksum = u64::from_le_bytes(stored_cksum_bytes);
-
-        // Read postings data (bytes 8..post_len-8) to compute expected checksum.
-        let postings_data_len = post_len - 16; // subtract magic(8) + checksum(8)
-        let mut postings_data = vec![0u8; postings_data_len];
-        if postings_data_len > 0 {
-            read_exact_at(&post_file, &mut postings_data, 8)?;
-        }
-        let expected_post_checksum = xxh64(&postings_data, 0);
-        if stored_post_checksum != expected_post_checksum {
-            return Err(IndexError::CorruptIndex(
-                "post file checksum mismatch".into(),
-            ));
+        // Validate the .post file. Structural checks (O(1) preads: size, magic,
+        // trailer presence) always run; the full O(post_file_size) checksum pass
+        // runs only in PostVerify::Full. See the PostVerify doc comment for why
+        // skipping the full pass does not weaken query-time integrity.
+        check_post_file_structure(&post_file)?;
+        if verify == PostVerify::Full {
+            verify_post_file_checksum(&post_file)?;
         }
 
         Ok(MmapSegment {
@@ -188,4 +188,96 @@ impl MmapSegment {
             postings: PostingsBacking::V3File(post_file),
         })
     }
+
+    /// Re-verify the postings checksum. O(post file size); not intended for
+    /// per-query use. Complements `verify_integrity`, which covers the dict
+    /// side (and, for v2 segments, the postings embedded in the combined
+    /// mmap — hence the `Ok(())` for `V2Mmap`).
+    pub fn verify_postings(&self) -> Result<(), IndexError> {
+        match &self.postings {
+            #[cfg(feature = "memmap2")]
+            PostingsBacking::V2Mmap => Ok(()),
+            #[cfg(feature = "memmap2")]
+            PostingsBacking::V3File(post_file) => {
+                check_post_file_structure(post_file)?;
+                verify_post_file_checksum(post_file)
+            }
+            PostingsBacking::InMemory(bytes) => {
+                let len = bytes.len();
+                if len < POST_MIN_SIZE {
+                    return Err(IndexError::CorruptIndex(format!(
+                        "post bytes too small: {len} bytes"
+                    )));
+                }
+                if &bytes[..8] != POST_MAGIC {
+                    return Err(IndexError::CorruptIndex(
+                        "post bytes have wrong magic (expected SNTXPOST)".into(),
+                    ));
+                }
+                let stored = u64::from_le_bytes(
+                    bytes[len - 8..]
+                        .try_into()
+                        .map_err(|_| IndexError::CorruptIndex("post trailer slice".into()))?,
+                );
+                if xxh64(&bytes[8..len - 8], 0) != stored {
+                    return Err(IndexError::CorruptIndex(
+                        "post file checksum mismatch".into(),
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// O(1) structural validation of a `.post` file: minimum size, magic header,
+/// and a readable checksum trailer. Three positional reads, no allocation.
+#[cfg(feature = "memmap2")]
+fn check_post_file_structure(post_file: &std::fs::File) -> Result<(), IndexError> {
+    let post_len = post_file.metadata()?.len() as usize;
+    if post_len < POST_MIN_SIZE {
+        return Err(IndexError::CorruptIndex(format!(
+            "post file too small: {post_len} bytes"
+        )));
+    }
+    let mut post_magic = [0u8; 8];
+    read_exact_at(post_file, &mut post_magic, 0)?;
+    if &post_magic != POST_MAGIC {
+        return Err(IndexError::CorruptIndex(
+            "post file has wrong magic (expected SNTXPOST)".into(),
+        ));
+    }
+    // Trailer presence only: the stored value is compared against a recomputed
+    // checksum exclusively in the Full pass (verify_post_file_checksum).
+    let mut trailer = [0u8; 8];
+    read_exact_at(post_file, &mut trailer, (post_len - 8) as u64)?;
+    Ok(())
+}
+
+/// Read the entire `.post` file and verify its xxh64 trailer checksum.
+/// O(post file size) I/O plus a transient heap allocation of the same size.
+#[cfg(feature = "memmap2")]
+fn verify_post_file_checksum(post_file: &std::fs::File) -> Result<(), IndexError> {
+    let post_len = post_file.metadata()?.len() as usize;
+    if post_len < POST_MIN_SIZE {
+        return Err(IndexError::CorruptIndex(format!(
+            "post file too small: {post_len} bytes"
+        )));
+    }
+    let mut stored_cksum_bytes = [0u8; 8];
+    read_exact_at(post_file, &mut stored_cksum_bytes, (post_len - 8) as u64)?;
+    let stored_post_checksum = u64::from_le_bytes(stored_cksum_bytes);
+
+    // Postings data lies between the magic header and the checksum trailer.
+    let postings_data_len = post_len - 16;
+    let mut postings_data = vec![0u8; postings_data_len];
+    if postings_data_len > 0 {
+        read_exact_at(post_file, &mut postings_data, 8)?;
+    }
+    if xxh64(&postings_data, 0) != stored_post_checksum {
+        return Err(IndexError::CorruptIndex(
+            "post file checksum mismatch".into(),
+        ));
+    }
+    Ok(())
 }

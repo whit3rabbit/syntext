@@ -257,11 +257,15 @@ Cursor published a detailed description of their regex search architecture in [F
 3. **Git-commit anchored freshness.** Cursor anchors index state to git commits, making cold-start faster (diff from last indexed commit rather than walking all files). syntext's overlay model handles live edits well but requires a full directory walk on cold start. Git integration for diff-based incremental rebuild is a natural extension.
 4. **Hash-collision safety** is now documented in the segment format section above. Both systems rely on the same property (collisions widen candidates, never cause misses), it was previously undocumented in syntext.
 
+For a comparison with a resident-process design (in-memory bigram prefilter,
+frecency ranking, MCP server), see [COMPARISON_FFF.md](COMPARISON_FFF.md).
+
 ## Prior art
 
 - [Google Code Search (Russ Cox, 2012)](https://swtch.com/~rsc/regexp/regexp4.html): trigram index + regex verification
 - [Zoekt](https://github.com/sourcegraph/zoekt): trigram index with single-file segments
 - [GitHub Blackbird](https://github.blog/engineering/architecture-optimization/how-we-built-github-code-search/): sparse n-grams with frequency-weighted boundaries
 - [Cursor fast regex search (2025)](https://cursor.com/blog/fast-regex-search): sparse n-grams, CRC32-weighted boundaries, two-file storage
+- [fff v0.9.4](https://github.com/dmtrKovalenko/fff/tree/v0.9.4): resident in-memory bigram prefilter with frecency ranking, MCP server integration (see [COMPARISON_FFF.md](COMPARISON_FFF.md))
 
 syntext follows the same fundamental architecture (n-gram prefilter, candidate selection, verification) with specific tradeoffs for the agent-loop use case: in-process verification (no fork/exec), batch commit for read-your-writes, and Roaring bitmaps for the heavy tail of common grams.

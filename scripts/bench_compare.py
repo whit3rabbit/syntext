@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import statistics
 import subprocess
 import sys
@@ -312,16 +313,26 @@ def benchmark_command(
 
 
 def parse_tools(value: str) -> tuple[str, ...]:
-    allowed = {"syntext", "rg", "grep"}
+    allowed = {"syntext", "rg", "grep", "fff"}
     tools = tuple(part.strip() for part in value.split(",") if part.strip())
     if not tools:
         raise argparse.ArgumentTypeError("tool list must not be empty")
     unknown = [tool for tool in tools if tool not in allowed]
     if unknown:
         raise argparse.ArgumentTypeError(
-            f"unknown tool(s): {', '.join(unknown)}; expected one of syntext, rg, grep"
+            f"unknown tool(s): {', '.join(unknown)}; expected one of syntext, rg, grep, fff"
         )
     return tools
+
+
+def resolve_fff_bin(explicit: str | None) -> str | None:
+    """Resolve the fff-mcp binary. Explicit paths must exist; otherwise PATH."""
+    if explicit:
+        path = Path(explicit).expanduser()
+        if path.exists():
+            return str(path.resolve())
+        return None
+    return shutil.which("fff-mcp")
 
 
 def syntext_batch_results(
@@ -421,10 +432,28 @@ def render_markdown_report(report: dict[str, object]) -> str:
             "- `grep` uses recursive traversal and may include files that `rg` or `syntext` skip."
         )
 
+    if "fff" in report["tools"]:
+        ready = report.get("fff_startup_ready_ms")
+        if ready is not None:
+            lines.append(
+                f"- `fff` startup-to-ready (its index-build analog): `{ready}` ms."
+            )
+        lines.append(
+            "- `fff` counts are ranked file/match results from its MCP `grep` tool "
+            "(possibly capped), not grep-compatible line counts; shown for sanity, "
+            "excluded from count-agreement checks. fff is a resident process with no "
+            "fork-mode equivalent; compare it against `syntext-persistent` "
+            "(use `--syntext-search-mode both` or `persistent`)."
+        )
+
+    # fff counts have different semantics (ranked, possibly capped), so they
+    # are excluded from the strict count-agreement check.
     mismatched = [
         result
         for result in report["queries"]
-        if len(set(result["counts"].values())) != 1
+        if len(
+            set(value for key, value in result["counts"].items() if key != "fff")
+        ) > 1
     ]
     if mismatched:
         lines.append(
@@ -453,7 +482,11 @@ def render_markdown_tables(report: dict[str, object]) -> list[str]:
         counts = result["counts"]
         timings = result["timings_ms"]
         for tool in report["tools"]:
-            summary = timings[tool]
+            summary = timings.get(tool)
+            if summary is None:
+                # e.g. fff skips regex queries.
+                lines.append(f"| `{query_name}` | `{tool}` | – | – | – | – |")
+                continue
             lines.append(
                 f"| `{query_name}` | `{tool}` | `{counts[tool]}` | "
                 f"`{summary['median_ms']}` | `{summary['min_ms']}` | `{summary['max_ms']}` |"
@@ -544,6 +577,12 @@ def main() -> int:
         default="fork",
         help="fork runs one syntext process per search; persistent reuses one opened index per benchmark run; both reports both syntext modes side by side",
     )
+    parser.add_argument(
+        "--fff-bin",
+        default=None,
+        help="Path to the fff-mcp binary; default: fff-mcp on PATH. "
+        "fff is skipped with a warning when the binary cannot be found.",
+    )
     args = parser.parse_args()
 
     preset_file = Path(args.preset_file).resolve()
@@ -611,6 +650,25 @@ def main() -> int:
         tools = selected_preset.tools
     if tools is None:
         tools = ("syntext", "rg", "grep")
+
+    fff_bin: str | None = None
+    if "fff" in tools:
+        fff_bin = resolve_fff_bin(args.fff_bin)
+        if fff_bin is None:
+            print(
+                "warning: fff requested but fff-mcp was not found "
+                "(checked --fff-bin and PATH); skipping fff",
+                file=sys.stderr,
+            )
+            tools = tuple(tool for tool in tools if tool != "fff")
+        elif not any(query.mode == "literal" for query in queries) and not args.build_only:
+            print(
+                "warning: fff only handles literal queries and none were given; skipping fff",
+                file=sys.stderr,
+            )
+            tools = tuple(tool for tool in tools if tool != "fff")
+            fff_bin = None
+
     display_tools = report_tools(tools, args.syntext_search_mode)
 
     ensure_syntext_binary(syntext_bin)
@@ -640,6 +698,7 @@ def main() -> int:
             build_size_samples.append(dir_size_bytes(Path(index_dir)))
 
     query_results: list[dict[str, object]] = []
+    fff_startup_ready_ms: float | None = None
     if not args.build_only:
         with tempfile.TemporaryDirectory(prefix="syntext-bench-search-") as index_dir:
             index_path = Path(index_dir)
@@ -666,7 +725,31 @@ def main() -> int:
                 filelist.write(tracked)
                 tracked_list_path = Path(filelist.name)
 
+            fff_client = None
             try:
+                if "fff" in tools and fff_bin is not None:
+                    # Lazy import: the harness must keep working without the
+                    # driver module when fff is not requested.
+                    sys.path.insert(0, str(SCRIPT_DIR))
+                    from fff_driver import FffDriverError, FffMcpClient
+
+                    probe = next(q for q in queries if q.mode == "literal")
+                    client = FffMcpClient(fff_bin, str(repo_root))
+                    client.start()
+                    try:
+                        client.initialize()
+                        fff_startup_ready_ms = round(
+                            client.wait_until_ready(probe.pattern), 3
+                        )
+                        fff_client = client
+                    except FffDriverError as exc:
+                        print(f"warning: fff disabled: {exc}", file=sys.stderr)
+                        client.close()
+                        tools = tuple(tool for tool in tools if tool != "fff")
+                        display_tools = report_tools(
+                            tools, args.syntext_search_mode
+                        )
+
                 syntext_batch: dict[str, dict[str, object]] | None = None
                 if "syntext" in tools and args.syntext_search_mode in (
                     "persistent",
@@ -762,6 +845,18 @@ def main() -> int:
                             shell=True,
                             allowed_codes=(0, 1, 123),
                         )
+                    if fff_client is not None and query.mode == "literal":
+                        # fff is a resident process: these are warm in-process
+                        # tool calls, comparable to syntext-persistent only.
+                        for _ in range(warmups):
+                            fff_client.grep(query.pattern)
+                        fff_samples: list[float] = []
+                        fff_count = 0
+                        for _ in range(search_iterations):
+                            fff_count, elapsed = fff_client.grep(query.pattern)
+                            fff_samples.append(elapsed)
+                        counts["fff"] = fff_count
+                        timings["fff"] = summarize(fff_samples)
 
                     query_results.append(
                         {
@@ -771,6 +866,8 @@ def main() -> int:
                         }
                     )
             finally:
+                if fff_client is not None:
+                    fff_client.close()
                 tracked_list_path.unlink(missing_ok=True)
 
     report = {
@@ -786,6 +883,8 @@ def main() -> int:
         "warmups": warmups,
         "syntext_index_build_ms": summarize(build_samples),
         "syntext_index_bytes": summarize_int(build_size_samples, "bytes"),
+        "fff_bin": fff_bin,
+        "fff_startup_ready_ms": fff_startup_ready_ms,
         "queries": query_results,
     }
 

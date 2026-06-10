@@ -123,6 +123,52 @@ python3 scripts/bench_compare.py \
 
 Use `--build-only` when tokenizer, segment layout, or index construction is the thing you changed. The report includes both repeated build latency and repeated full index-directory byte totals, so you can catch cases where build time drops only because the index got smaller, or vice versa.
 
+#### Comparing against fff
+
+[fff v0.9.4](https://github.com/dmtrKovalenko/fff/tree/v0.9.4) (MIT) is a
+file-search library plus MCP server that keeps a resident in-memory index
+(bigram prefilter, frecency ranking, file watcher). It ships no one-shot CLI;
+its only runnable binary is `fff-mcp`, a stdio MCP server. The harness drives
+it through `scripts/fff_driver.py`, a stdlib-only newline-delimited JSON-RPC
+client. See `docs/COMPARISON_FFF.md` for the architectural comparison.
+
+Install (the zlob glob feature requires a matching Zig toolchain; the pure-Rust
+fallback is equivalent for benchmarking):
+
+```sh
+git clone --depth 1 -b v0.9.4 https://github.com/dmtrKovalenko/fff /tmp/fff-bench
+cargo build --release -p fff-mcp --no-default-features \
+  --manifest-path /tmp/fff-bench/Cargo.toml
+# binary: /tmp/fff-bench/target/release/fff-mcp
+```
+
+Run:
+
+```sh
+python3 scripts/bench_compare.py \
+  --preset react_token_aligned \
+  --repo _syntext-bench/react \
+  --syntext-search-mode both \
+  --fff-bin /tmp/fff-bench/target/release/fff-mcp
+```
+
+Caveats, all reflected in the report's Notes section:
+
+- fff is a resident process with no fork-mode equivalent. Its latencies are
+  warm in-process MCP tool calls; compare them against `syntext-persistent`,
+  never against `syntext-fork`, `rg`, or `grep`.
+- Startup-to-ready (process spawn until grep results stabilize) is reported as
+  fff's index-build analog. Readiness is a stabilization heuristic (two
+  consecutive equal non-zero probe counts), a lower bound on full readiness.
+- fff `grep` returns ranked results capped by `maxResults` (default 20 lines);
+  its counts are not grep-compatible line counts and are excluded from the
+  count-agreement check. Latency is insensitive to the cap on the corpora
+  tested (match-finding dominates, formatting does not).
+- fff handles literal queries only in this harness; `regex:` queries render
+  as `–` in its rows.
+- If `fff-mcp` is not on PATH and `--fff-bin` is not given, fff is skipped
+  with a warning; presets that list it still run for the remaining tools.
+
 ## Testing Rules & Query Discipline
 
 - Prefer token-aligned literal queries. Current `syntext` coverage guarantees are strongest there.
@@ -350,3 +396,86 @@ Every query in this refreshed matrix had exact count parity with its comparator
 tools. The Linux clone remained `-dirty` during the run because the local macOS
 checkout still carries the case-collision modifications called out in the setup
 warning above.
+
+### Warm/cold open fixes (2026-06-09)
+
+Two changes, measured with the new `index_open` bench
+(`cargo bench --bench index_open -- --sample-size 10`):
+
+1. **`.post` checksum on open is now opt-in.** `Index::open` previously read
+   every segment's entire `.post` file into a heap buffer just to verify the
+   trailer checksum. The default is now O(1) structural checks (size, magic,
+   trailer presence) plus an O(1) manifest length check (`SegmentRef.post_len`).
+   Full verification remains available via `Config::verify_on_open`,
+   `SYNTEXT_VERIFY_ON_OPEN=1`, or the new `st verify` subcommand. The `.dict`
+   mmap keeps its eager checksum (it preserves the MAP_PRIVATE fault-in
+   property). See `Config::verify_on_open` doc comments for the security
+   rationale: postings are re-read per query via pread, so the open-time
+   checksum was never a query-time integrity control, and postings parsing is
+   bounds-checked end to end.
+2. **Calibration reuse on rebuild.** Repeat builds reuse the prior manifest's
+   `scan_threshold_fraction` (hardware-dependent, not content-dependent)
+   instead of re-sampling file reads and re-running the bitmap microbench.
+   `st index --recalibrate` forces re-measurement.
+
+Synthetic corpus (before → after):
+
+| Benchmark | Before | After | Delta |
+|---|---|---|---|
+| `open_300_files` | 238.66 µs | 242.41 µs | within noise |
+| `open_2000_files` | 1.1996 ms | 1.2213 ms | within noise |
+| `open_2000_files_full_verify` | n/a | 1.2213 ms | opt-in old behavior |
+| `rebuild_in_place_300_files` | 27.079 ms | 25.463 ms | -4.3% (calibration reuse) |
+
+The synthetic corpus is too small (and fully page-cached) for the `.post`
+checksum skip to register: structural and full-verify opens tie at this scale.
+On a real repo (366 MB working tree, 7.9 MB index, page-cache warm), median
+`st status` process time dropped from 6.7 ms (full verify) to 6.1 ms
+(structural). The saving is proportional to total `.post` bytes and is largest
+on cold page cache and multi-hundred-MB indexes, where the old behavior cost a
+full sequential read of the postings; the transient heap allocation of the
+entire `.post` file at open is gone in both cases.
+
+Guard benches after the change (no regressions): `full_build_300_files`
+40.464 ms, `commit_batch_single_edit` 141.87 µs, `literal_common` 4.6364 ms,
+`indexed_regex_rare` 127.10 µs, `full_scan_regex` 4.8127 ms.
+
+### fff comparison, react corpus (2026-06-10)
+
+First larger-corpus run of the fff harness integration (see "Comparing against
+fff" above and `docs/COMPARISON_FFF.md`). Corpus: `_syntext-bench/react`
+(react v18.2.0, 2,447 tracked files). fff v0.9.4 built with
+`--no-default-features`. Run:
+
+```sh
+python3 scripts/bench_compare.py --preset react_token_aligned \
+  --repo _syntext-bench/react --syntext-search-mode both \
+  --fff-bin /tmp/fff-bench/target/release/fff-mcp \
+  --build-iterations 3 --search-iterations 5 --warmups 2
+```
+
+Index-build analogs: syntext build median 161.8 ms (one-time, persisted on
+disk; first build of the run was 443.7 ms including calibration, repeats reuse
+it) vs fff startup-to-ready 1,057 ms (paid on every process start).
+
+| Query | Tool | Matches | Median ms |
+|---|---:|---:|---:|
+| `literal:useState` | `syntext-fork` | `1425` | `13.087` |
+| `literal:useState` | `syntext-persistent` | `1425` | `5.892` |
+| `literal:useState` | `rg` | `1425` | `46.378` |
+| `literal:useState` | `grep` | `1425` | `128.059` |
+| `literal:useState` | `fff` | `35` | `3.074` |
+| `literal:getDisplayNameForReactElement` | `syntext-fork` | `12` | `6.003` |
+| `literal:getDisplayNameForReactElement` | `syntext-persistent` | `12` | `0.156` |
+| `literal:getDisplayNameForReactElement` | `rg` | `12` | `46.439` |
+| `literal:getDisplayNameForReactElement` | `grep` | `12` | `142.897` |
+| `literal:getDisplayNameForReactElement` | `fff` | `25` | `0.519` |
+
+syntext/rg/grep counts agree exactly on both queries. fff match counts are
+ranked, capped MCP results (35 and 25), not line counts; per the harness
+caveats they are excluded from count agreement and its latencies are only
+comparable to `syntext-persistent`. On the rare query syntext-persistent wins
+(0.16 ms vs 0.52 ms); on the common query fff's top-N cap lets it stop early
+(3.1 ms vs 5.9 ms for an exhaustive 1,425-match enumeration). The structural
+difference dominates: an agent forking per query pays fff's 1,057 ms scan every
+time, vs 6–13 ms total for `syntext-fork` against the persisted index.

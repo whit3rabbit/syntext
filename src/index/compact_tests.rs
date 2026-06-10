@@ -50,6 +50,7 @@ fn build_snapshot(
             MmapSegment::open_split(
                 &dir.path().join(&meta.dict_filename),
                 &dir.path().join(&meta.post_filename),
+                crate::index::segment::PostVerify::Full,
             )
             .unwrap(),
         );

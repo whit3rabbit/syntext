@@ -3,6 +3,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod build;
 #[cfg(not(target_arch = "wasm32"))]
+mod calibrate;
+#[cfg(not(target_arch = "wasm32"))]
 mod commit;
 #[cfg(not(target_arch = "wasm32"))]
 mod compact;
@@ -206,6 +208,20 @@ impl Index {
         records: Vec<ExternalFileRecord>,
     ) -> Result<Self, IndexError> {
         build::build_index_from_external_records(config, records)
+    }
+
+    /// Fully re-verify checksums of all base segments (dict and postings).
+    ///
+    /// O(total index size) I/O; intended for `st verify` and on-demand
+    /// integrity checks, not per-query use. Returns the first corruption
+    /// found.
+    pub fn verify(&self) -> Result<(), IndexError> {
+        let snap = self.snapshot.load();
+        for seg in snap.base_segments() {
+            seg.verify_integrity()?;
+            seg.verify_postings()?;
+        }
+        Ok(())
     }
 
     /// Return index statistics from the current snapshot.

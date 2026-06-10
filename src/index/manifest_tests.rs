@@ -81,6 +81,7 @@ fn segment_ref_round_trips_with_post_filename() {
         post_filename: format!("{id}.post"),
         doc_count: 5,
         gram_count: 10,
+        post_len: Some(4321),
     };
     let manifest = Manifest::new(vec![seg_ref], 5);
     manifest.save(dir.path()).unwrap();
@@ -88,6 +89,7 @@ fn segment_ref_round_trips_with_post_filename() {
     assert_eq!(loaded.segments[0].base_doc_id, Some(12));
     assert_eq!(loaded.segments[0].dict_filename, format!("{id}.dict"));
     assert_eq!(loaded.segments[0].post_filename, format!("{id}.post"));
+    assert_eq!(loaded.segments[0].post_len, Some(4321));
 }
 
 #[test]
@@ -109,6 +111,7 @@ fn gc_removes_orphan_dict_and_post_files() {
             post_filename: "kept.post".into(),
             doc_count: 0,
             gram_count: 0,
+            post_len: None,
         }],
         0,
     );
@@ -248,6 +251,7 @@ fn manifest_rejects_non_uuid_segment_id() {
         post_filename: "a.post".into(),
         doc_count: 1,
         gram_count: 1,
+        post_len: None,
     };
     let manifest = Manifest::new(vec![seg_ref], 1);
     manifest.save(dir.path()).unwrap();

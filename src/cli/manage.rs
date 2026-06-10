@@ -86,6 +86,36 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
     0
 }
 
+pub(super) fn cmd_verify(mut config: Config) -> i32 {
+    // Full verification at open already covers the per-segment checksums;
+    // Index::verify below re-checks via the loaded snapshot so a clean exit
+    // means both the open path and the resident segments agree.
+    config.verify_on_open = true;
+    let index = match Index::open(config.clone()) {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("st verify: {e}");
+            return 2;
+        }
+    };
+    let result = index.verify();
+    drop(index);
+    match result {
+        Ok(()) => {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            if let Err(err) = writeln!(out, "index OK: {}", config.index_dir.display()) {
+                return handle_output(err);
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("st verify: {e}");
+            2
+        }
+    }
+}
+
 pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,

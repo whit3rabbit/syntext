@@ -36,7 +36,7 @@ fn round_trip_with_docs_and_grams() {
 
     let dict_path = dir.path().join(&meta.dict_filename);
     let post_path = dir.path().join(&meta.post_filename);
-    let seg = MmapSegment::open_split(&dict_path, &post_path).unwrap();
+    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full).unwrap();
     assert_eq!(seg.doc_count, 2);
 
     let d0 = seg.get_doc(0).unwrap();
@@ -65,7 +65,7 @@ fn duplicate_postings_are_deduplicated() {
 
     let dict_path = dir.path().join(&meta.dict_filename);
     let post_path = dir.path().join(&meta.post_filename);
-    let seg = MmapSegment::open_split(&dict_path, &post_path).unwrap();
+    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full).unwrap();
     assert_eq!(seg.gram_cardinality(0xAAAA), Some(2));
 }
 
@@ -220,6 +220,7 @@ fn v3_round_trip_lookup_gram() {
     let seg = MmapSegment::open_split(
         &dir.path().join(&meta.dict_filename),
         &dir.path().join(&meta.post_filename),
+        PostVerify::Full,
     )
     .unwrap();
 
@@ -247,6 +248,7 @@ fn v3_round_trip_get_doc() {
     let seg = MmapSegment::open_split(
         &dir.path().join(&meta.dict_filename),
         &dir.path().join(&meta.post_filename),
+        PostVerify::Full,
     )
     .unwrap();
 
@@ -309,14 +311,86 @@ fn open_split_rejects_corrupt_post_file() {
     post_bytes[0] = b'X'; // corrupt magic byte
     std::fs::write(&post_path, &post_bytes).unwrap();
 
-    let result = MmapSegment::open_split(
+    // The magic check is structural: both verification modes must reject it.
+    for verify in [PostVerify::Structural, PostVerify::Full] {
+        let result = MmapSegment::open_split(
+            &dir.path().join(&meta.dict_filename),
+            &dir.path().join(&meta.post_filename),
+            verify,
+        );
+        assert!(
+            result.is_err(),
+            "open_split must reject corrupt .post magic ({verify:?})"
+        );
+    }
+}
+
+#[test]
+fn structural_open_tolerates_corrupt_postings_byte_without_panic() {
+    // Flip one byte in the middle of the postings data. Structural mode must
+    // open the segment, and gram lookups must degrade gracefully (missing
+    // candidates or None), never panic. Full mode must reject the file, and
+    // verify_postings must detect the corruption post-open.
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut writer = SegmentWriter::new();
+    writer.add_document(0, Path::new("src/a.rs"), 0xABCD, 100);
+    writer.add_gram_posting(0x1111, 0);
+    writer.add_gram_posting(0x2222, 0);
+    let meta = writer.write_to_dir(dir.path()).unwrap();
+
+    let post_path = dir.path().join(&meta.post_filename);
+    let mut post_bytes = std::fs::read(&post_path).unwrap();
+    let mid = post_bytes.len() / 2;
+    post_bytes[mid] ^= 0xFF;
+    std::fs::write(&post_path, &post_bytes).unwrap();
+
+    let dict_path = dir.path().join(&meta.dict_filename);
+
+    assert!(
+        MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full).is_err(),
+        "Full verification must reject a flipped postings byte"
+    );
+
+    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Structural).unwrap();
+    // Bounds-checked parsing: lookups may return None or a wrong-but-safe
+    // posting list; the call itself must not panic.
+    let _ = seg.lookup_gram(0x1111);
+    let _ = seg.lookup_gram(0x2222);
+    assert!(
+        seg.verify_postings().is_err(),
+        "verify_postings must detect the flipped byte"
+    );
+}
+
+#[test]
+fn verify_postings_passes_on_clean_segment() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut writer = SegmentWriter::new();
+    writer.add_document(0, Path::new("src/a.rs"), 0x1234, 100);
+    writer.add_gram_posting(0xAAAA, 0);
+    let meta = writer.write_to_dir(dir.path()).unwrap();
+
+    let seg = MmapSegment::open_split(
         &dir.path().join(&meta.dict_filename),
         &dir.path().join(&meta.post_filename),
-    );
-    assert!(
-        result.is_err(),
-        "open_split must reject corrupt .post magic"
-    );
+        PostVerify::Structural,
+    )
+    .unwrap();
+    assert!(seg.verify_postings().is_ok());
+}
+
+#[test]
+fn segment_meta_records_post_len() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut writer = SegmentWriter::new();
+    writer.add_document(0, Path::new("src/a.rs"), 0x1234, 100);
+    writer.add_gram_posting(0xAAAA, 0);
+    let meta = writer.write_to_dir(dir.path()).unwrap();
+
+    let on_disk = std::fs::metadata(dir.path().join(&meta.post_filename))
+        .unwrap()
+        .len();
+    assert_eq!(meta.post_len, on_disk);
 }
 
 #[test]

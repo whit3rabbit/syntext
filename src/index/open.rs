@@ -10,7 +10,7 @@ use roaring::RoaringBitmap;
 use super::{snapshot, Index, MAX_TOTAL_DOCS};
 use crate::index::manifest::Manifest;
 use crate::index::overlay::{OverlayView, PendingEdits};
-use crate::index::segment::MmapSegment;
+use crate::index::segment::{MmapSegment, PostVerify};
 use crate::index::snapshot::BaseSegments;
 use crate::path::PathIndex;
 use crate::{Config, IndexError};
@@ -103,7 +103,24 @@ impl Index {
                 }
                 let dict_path = config.index_dir.join(&seg_ref.dict_filename);
                 let post_path = config.index_dir.join(&seg_ref.post_filename);
-                MmapSegment::open_split(&dict_path, &post_path)?
+                // O(1) truncation/extension detection: compare the on-disk
+                // .post length against the length recorded at write time.
+                // Manifests predating post_len skip this check (None).
+                if let Some(expected_len) = seg_ref.post_len {
+                    let actual_len = std::fs::metadata(&post_path)?.len();
+                    if actual_len != expected_len {
+                        return Err(IndexError::CorruptIndex(format!(
+                            "post file {} length changed: expected {}, got {}",
+                            seg_ref.post_filename, expected_len, actual_len
+                        )));
+                    }
+                }
+                let verify = if config.verify_on_open {
+                    PostVerify::Full
+                } else {
+                    PostVerify::Structural
+                };
+                MmapSegment::open_split(&dict_path, &post_path, verify)?
             } else {
                 // v2: single combined .seg file. Accept `dict_filename` as a
                 // compatibility fallback for older transitional manifests.

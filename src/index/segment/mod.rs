@@ -69,12 +69,16 @@ pub struct SegmentMeta {
     pub doc_count: u32,
     /// Number of distinct gram hashes in the dictionary.
     pub gram_count: u32,
+    /// Byte length of the `.post` file as written. 0 for v2 segments.
+    /// Recorded in the manifest for O(1) truncation detection at open time.
+    pub post_len: u64,
 }
 
 mod segment_writer;
 pub use segment_writer::SegmentWriter;
 
 mod open;
+pub use open::PostVerify;
 mod reader;
 
 // ---------------------------------------------------------------------------

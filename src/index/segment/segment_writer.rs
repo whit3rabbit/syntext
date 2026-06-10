@@ -100,6 +100,7 @@ impl SegmentWriter {
             post_filename,
             doc_count,
             gram_count,
+            post_len: post_bytes.len() as u64,
         })
     }
 
@@ -137,6 +138,7 @@ impl SegmentWriter {
             post_filename,
             doc_count,
             gram_count,
+            post_len: post_bytes.len() as u64,
         })
     }
 

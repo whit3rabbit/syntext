@@ -38,10 +38,19 @@ pub struct SegmentRef {
     pub doc_count: u32,
     /// Number of distinct n-gram hashes stored in this segment's dictionary.
     pub gram_count: u32,
+    /// Byte length of the `.post` file as written. `None` for manifests that
+    /// predate this field; the open-time length check is skipped then.
+    #[serde(default)]
+    pub post_len: Option<u64>,
 }
 
 impl From<SegmentMeta> for SegmentRef {
     fn from(m: SegmentMeta) -> Self {
+        let post_len = if m.post_filename.is_empty() {
+            None
+        } else {
+            Some(m.post_len)
+        };
         SegmentRef {
             segment_id: m.segment_id.to_string(),
             base_doc_id: None,
@@ -50,6 +59,7 @@ impl From<SegmentMeta> for SegmentRef {
             post_filename: m.post_filename,
             doc_count: m.doc_count,
             gram_count: m.gram_count,
+            post_len,
         }
     }
 }

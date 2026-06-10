@@ -69,6 +69,24 @@ pub struct Config {
     /// Permissive modes allow SIGBUS DoS via concurrent ftruncate on mmap'd
     /// segment files. Default: true.
     pub strict_permissions: bool,
+    /// Fully checksum each segment's `.post` file at `Index::open` time.
+    /// Default: false (O(1) structural checks only).
+    ///
+    /// The full pass costs O(total postings bytes) of I/O per open and only
+    /// detects at-rest corruption present at open time; it is not a
+    /// query-time integrity control (postings are re-read from disk per
+    /// query), and postings parsing is bounds-checked, so corruption can
+    /// cause missing results or `CorruptIndex` errors but never memory
+    /// unsafety or fabricated match content. The `.dict` side is always
+    /// fully verified. Enable via this flag, `SYNTEXT_VERIFY_ON_OPEN=1`, or
+    /// run `st verify` for an on-demand full check.
+    pub verify_on_open: bool,
+    /// Force re-measurement of the index-vs-scan crossover threshold during
+    /// `Index::build`, even when a prior manifest already carries a
+    /// calibrated value. Default: false (reuse the prior value; it is
+    /// hardware-dependent, not content-dependent). Set after moving the
+    /// index to different hardware or storage. CLI: `st index --recalibrate`.
+    pub recalibrate: bool,
 }
 
 impl Default for Config {
@@ -80,6 +98,8 @@ impl Default for Config {
             repo_root: PathBuf::from("."),
             verbose: false,
             strict_permissions: true,
+            verify_on_open: false,
+            recalibrate: false,
         }
     }
 }
