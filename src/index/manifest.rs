@@ -143,7 +143,13 @@ impl Manifest {
     /// allocations from a crafted manifest with inflated `doc_count` values.
     pub fn load(index_dir: &Path) -> Result<Self, IndexError> {
         let path = index_dir.join(Self::FILENAME);
-        let meta = std::fs::metadata(&path)?;
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(IndexError::IndexNotFound(index_dir.to_path_buf()));
+            }
+            Err(e) => return Err(e.into()),
+        };
         if meta.len() > Self::MAX_MANIFEST_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

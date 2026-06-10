@@ -7,6 +7,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Component, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "fs2")]
 use fs2::FileExt;
@@ -20,7 +21,7 @@ use crate::index::segment::SegmentWriter;
 #[cfg(feature = "ignore")]
 use crate::index::walk::enumerate_files;
 use crate::index::walk::is_binary;
-use crate::index::walk::{split_batches, FileRecord};
+use crate::index::walk::{split_batches, FileRecord, WalkSkips};
 use crate::tokenizer::build_all;
 use crate::{Config, IndexError};
 
@@ -47,8 +48,8 @@ pub struct ExternalFileRecord {
 /// `Index` by delegating to `Index::open()` after writing all segments.
 #[cfg(feature = "ignore")]
 pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
-    let file_list = enumerate_files(&config)?;
-    build_index_from_file_list(config, file_list, BATCH_SIZE_BYTES)
+    let (file_list, walk_skips) = enumerate_files(&config)?;
+    build_index_from_file_list(config, file_list, walk_skips, BATCH_SIZE_BYTES)
 }
 
 #[cfg(all(test, feature = "ignore"))]
@@ -56,8 +57,8 @@ pub(super) fn build_index_with_batch_size(
     config: Config,
     batch_size_bytes: u64,
 ) -> Result<super::Index, IndexError> {
-    let file_list = enumerate_files(&config)?;
-    build_index_from_file_list(config, file_list, batch_size_bytes)
+    let (file_list, walk_skips) = enumerate_files(&config)?;
+    build_index_from_file_list(config, file_list, walk_skips, batch_size_bytes)
 }
 
 /// Full build from a caller-supplied file list.
@@ -68,6 +69,7 @@ pub(super) fn build_index_from_external_records(
     build_index_from_file_list(
         config,
         normalize_external_records(records)?,
+        WalkSkips::default(),
         BATCH_SIZE_BYTES,
     )
 }
@@ -99,6 +101,7 @@ fn normalize_external_records(
 fn build_index_from_file_list(
     config: Config,
     file_list: Vec<FileRecord>,
+    walk_skips: WalkSkips,
     batch_size_bytes: u64,
 ) -> Result<super::Index, IndexError> {
     fs::create_dir_all(&config.index_dir)?;
@@ -152,6 +155,11 @@ fn build_index_from_file_list(
     // equals the file's doc_id (and stable file_id for the symbol index).
     let mut indexed_files: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(total_candidate);
     let mut next_doc_id: u32 = 0;
+    // Skip accounting for the end-of-build summary. Atomics because map_fn
+    // runs under rayon; Relaxed is enough for counters read only after the
+    // parallel section completes.
+    let skipped_binary = AtomicUsize::new(0);
+    let skipped_unreadable = AtomicUsize::new(0);
 
     for batch in &batches {
         // Security: checked_add guards against u32 overflow in the doc_id
@@ -159,6 +167,8 @@ fn build_index_from_file_list(
         // Parallel: read file content and extract grams.
         // results[i] is None if file i was binary or could not be read.
         let verbose = config.verbose;
+        let skipped_binary = &skipped_binary;
+        let skipped_unreadable = &skipped_unreadable;
         let map_fn = |(abs_path, _, _): &(PathBuf, PathBuf, u64)| -> Option<(u64, Vec<u64>)> {
             // Security: close the TOCTOU window between enumerate_files()'s
             // symlink resolution (symlink_metadata + canonicalize) and this
@@ -170,6 +180,7 @@ fn build_index_from_file_list(
                     if verbose {
                         eprintln!("syntext: skipping {}: stat: {e}", abs_path.display());
                     }
+                    skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
             };
@@ -179,11 +190,13 @@ fn build_index_from_file_list(
                     if verbose {
                         eprintln!("syntext: skipping {}: open: {e}", abs_path.display());
                     }
+                    skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
             };
             #[cfg(any(unix, windows))]
             if !super::verify_fd_matches_stat(&file, &pre_meta) {
+                skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
             #[cfg(not(any(unix, windows)))]
@@ -193,10 +206,12 @@ fn build_index_from_file_list(
                 if verbose {
                     eprintln!("syntext: skipping {}: read: {e}", abs_path.display());
                 }
+                skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
             let content = crate::index::normalize_encoding(&raw, config.verbose);
             if is_binary(&content) {
+                skipped_binary.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
             let hash = xxh64(content.as_ref(), 0);
@@ -298,9 +313,14 @@ fn build_index_from_file_list(
 
     if config.verbose {
         eprintln!(
-            "syntext: indexed {} files into {} segment(s)",
-            total_indexed,
-            manifest.segments.len()
+            "{}",
+            super::helpers::format_build_summary(
+                total_indexed,
+                manifest.segments.len(),
+                skipped_binary.load(Ordering::Relaxed),
+                skipped_unreadable.load(Ordering::Relaxed),
+                walk_skips.too_large,
+            )
         );
     }
 

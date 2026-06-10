@@ -1194,3 +1194,42 @@ fn rebuild_reuses_prior_calibrated_threshold_unless_recalibrate() {
         "recalibrated threshold {third} must be in [0.01, 0.50]"
     );
 }
+
+#[test]
+fn build_summary_omits_skips_when_none() {
+    assert_eq!(
+        crate::index::helpers::format_build_summary(10, 1, 0, 0, 0),
+        "syntext: indexed 10 files into 1 segment(s)"
+    );
+}
+
+#[test]
+fn build_summary_breaks_down_skips_by_reason() {
+    assert_eq!(
+        crate::index::helpers::format_build_summary(3802, 1, 240, 20, 3),
+        "syntext: indexed 3802 files into 1 segment(s) \
+         (skipped 263: 240 binary, 20 unreadable, 3 too large)"
+    );
+    assert_eq!(
+        crate::index::helpers::format_build_summary(5, 2, 0, 0, 1),
+        "syntext: indexed 5 files into 2 segment(s) (skipped 1: 1 too large)"
+    );
+}
+
+#[test]
+fn open_missing_index_dir_reports_index_not_found() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let parent = tempfile::TempDir::new().unwrap();
+    let config = Config {
+        repo_root: repo.path().to_path_buf(),
+        index_dir: parent.path().join("no-such-index"),
+        ..Config::default()
+    };
+    match Index::open(config) {
+        Ok(_) => panic!("open must fail when the index dir does not exist"),
+        Err(IndexError::IndexNotFound(p)) => {
+            assert_eq!(p, parent.path().join("no-such-index"));
+        }
+        Err(other) => panic!("expected IndexNotFound, got: {other}"),
+    }
+}

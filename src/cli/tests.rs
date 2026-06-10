@@ -1168,3 +1168,19 @@ fn cli_parses_verify_subcommand() {
     let cli = Cli::try_parse_from(["st", "verify"]).expect("parse failed");
     assert!(matches!(cli.command, Some(ManageCommand::Verify)));
 }
+
+#[test]
+fn cmd_search_missing_index_exits_2() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let missing = tempfile::TempDir::new().unwrap();
+    let config = Config {
+        repo_root: repo.path().to_path_buf(),
+        index_dir: missing.path().join("no-such-index"),
+        ..Config::default()
+    };
+    let args = super::search::SearchArgs {
+        pattern: "foo".to_string(),
+        ..super::search::SearchArgs::default()
+    };
+    assert_eq!(super::search::cmd_search(config, &args), 2);
+}

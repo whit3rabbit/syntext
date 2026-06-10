@@ -19,7 +19,7 @@ fn enumerate_files_skips_symlinked_directories() {
         ..Config::default()
     };
 
-    let files = enumerate_files(&config).unwrap();
+    let (files, _) = enumerate_files(&config).unwrap();
     assert_eq!(
         files.iter().map(|(_, rel, _)| rel).collect::<Vec<_>>(),
         vec![&PathBuf::from("real/nested.rs")],
@@ -53,7 +53,7 @@ fn collect_symlink_entry_rejects_canonical_symlink() {
         ..crate::Config::default()
     };
 
-    let files = enumerate_files(&config).unwrap();
+    let (files, _) = enumerate_files(&config).unwrap();
     // Neither link_a nor link_b should appear in results (both lead outside repo).
     let found: Vec<_> = files
         .iter()
@@ -85,7 +85,7 @@ fn enumerate_files_skips_symlink_outside_repo() {
         ..Config::default()
     };
 
-    let files = enumerate_files(&config).unwrap();
+    let (files, _) = enumerate_files(&config).unwrap();
     assert!(
         !files.iter().any(|(_, rel, _)| rel == "escape.rs"),
         "out-of-repo symlink targets must be skipped"
@@ -109,7 +109,7 @@ fn enumerate_files_deduplicates_multiple_symlinks_to_same_file() {
         ..Config::default()
     };
 
-    let files = enumerate_files(&config).unwrap();
+    let (files, _) = enumerate_files(&config).unwrap();
     let symlinked_files: Vec<_> = files
         .iter()
         .filter(|(_, rel, _)| rel.to_str().unwrap_or("").starts_with("alias"))
@@ -150,7 +150,7 @@ fn enumerate_files_real_file_wins_over_symlink_alias() {
         ..Config::default()
     };
 
-    let files = enumerate_files(&config).unwrap();
+    let (files, _) = enumerate_files(&config).unwrap();
 
     // Only one entry should exist (the real file).
     assert_eq!(
@@ -163,5 +163,31 @@ fn enumerate_files_real_file_wins_over_symlink_alias() {
         files[0].1,
         std::path::PathBuf::from("real.rs"),
         "the surviving entry must be the real file, not the symlink"
+    );
+}
+
+#[test]
+fn enumerate_files_counts_too_large_skips() {
+    use crate::Config;
+
+    let repo = tempfile::TempDir::new().unwrap();
+    std::fs::write(repo.path().join("small.rs"), b"fn ok() {}\n").unwrap();
+    std::fs::write(repo.path().join("big.rs"), vec![b'a'; 64]).unwrap();
+
+    let config = Config {
+        repo_root: repo.path().to_path_buf(),
+        max_file_size: 32,
+        ..Config::default()
+    };
+
+    let (files, skips) = super::enumerate_files(&config).unwrap();
+    assert_eq!(skips.too_large, 1, "one file exceeds the 32-byte cap");
+    assert_eq!(
+        files
+            .iter()
+            .map(|(_, rel, _)| rel)
+            .collect::<Vec<_>>(),
+        vec![&std::path::PathBuf::from("small.rs")],
+        "oversized file must be excluded from the candidate list"
     );
 }

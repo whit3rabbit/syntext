@@ -20,7 +20,15 @@ impl Index {
     /// and rebuilds the path index from segment doc tables.
     pub fn open(config: Config) -> Result<Self, IndexError> {
         // Shared lock: multiple readers are fine, but blocks an active build.
-        let dir_lock = super::helpers::open_dir_lock_file(&config.index_dir)?;
+        // A missing index directory surfaces here (the lock file cannot be
+        // created), before Manifest::load gets a chance to report it.
+        let dir_lock = match super::helpers::open_dir_lock_file(&config.index_dir) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(IndexError::IndexNotFound(config.index_dir.clone()));
+            }
+            Err(e) => return Err(e.into()),
+        };
         dir_lock
             .try_lock_shared()
             .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;

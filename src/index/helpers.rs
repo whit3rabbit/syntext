@@ -101,3 +101,34 @@ pub(super) fn base_doc_id_limit(snapshot: &IndexSnapshot) -> Result<u32, IndexEr
     }
     Ok(max_limit)
 }
+
+/// Render the end-of-build summary line printed by `st index` when verbose.
+///
+/// Includes a skip breakdown when any files were excluded, so the gap between
+/// "candidate files" and "indexed files" is visible without per-file logs
+/// (useful when reconciling index counts against `git ls-files` or rg).
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn format_build_summary(
+    indexed: u32,
+    segments: usize,
+    binary: usize,
+    unreadable: usize,
+    too_large: usize,
+) -> String {
+    let mut summary = format!("syntext: indexed {indexed} files into {segments} segment(s)");
+    let skipped = binary + unreadable + too_large;
+    if skipped > 0 {
+        let mut parts: Vec<String> = Vec::new();
+        if binary > 0 {
+            parts.push(format!("{binary} binary"));
+        }
+        if unreadable > 0 {
+            parts.push(format!("{unreadable} unreadable"));
+        }
+        if too_large > 0 {
+            parts.push(format!("{too_large} too large"));
+        }
+        summary.push_str(&format!(" (skipped {skipped}: {})", parts.join(", ")));
+    }
+    summary
+}

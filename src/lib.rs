@@ -158,9 +158,13 @@ pub struct IndexStats {
 /// Errors returned by index operations.
 #[derive(Debug)]
 #[must_use]
+#[non_exhaustive]
 pub enum IndexError {
     /// I/O error (file not found, permission denied, etc.)
     Io(std::io::Error),
+    /// No index exists at the given index directory. Build one first
+    /// (`Index::build`, or `st index` from the CLI).
+    IndexNotFound(PathBuf),
     /// Invalid regex pattern.
     InvalidPattern(String),
     /// Index is corrupt and needs rebuilding.
@@ -203,6 +207,13 @@ impl std::fmt::Display for IndexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IndexError::Io(e) => write!(f, "I/O error: {e}"),
+            IndexError::IndexNotFound(p) => {
+                write!(
+                    f,
+                    "no index found at {}: run `st index` to build one",
+                    p.display()
+                )
+            }
             IndexError::InvalidPattern(p) => write!(f, "invalid pattern: {p}"),
             IndexError::CorruptIndex(msg) => write!(f, "corrupt index: {msg}"),
             IndexError::PathOutsideRepo(p) => {

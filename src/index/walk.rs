@@ -17,10 +17,20 @@ use crate::{Config, IndexError};
 /// A record of a scanned file pending indexing: `(absolute_path, relative_path, size_bytes)`.
 pub type FileRecord = (PathBuf, PathBuf, u64);
 
+/// Files excluded during repository walking, by reason.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WalkSkips {
+    /// Files larger than `Config::max_file_size`.
+    pub too_large: usize,
+}
+
 /// Walk the repository collecting indexable files. Respects `.gitignore`.
+/// Also returns counts of files excluded by the walk (currently only the
+/// size cap), so build summaries can explain indexed-vs-tracked gaps.
 #[cfg(feature = "ignore")]
-pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
+pub fn enumerate_files(config: &Config) -> Result<(Vec<FileRecord>, WalkSkips), IndexError> {
     let mut files: Vec<FileRecord> = Vec::new();
+    let mut skips = WalkSkips::default();
     let canonical_root = fs::canonicalize(&config.repo_root)?;
     // Track canonical paths so that symlinks to already-indexed files are
     // skipped.  Regular files are processed first (pass 1) so that a real
@@ -67,6 +77,7 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
             &config.repo_root,
             config.max_file_size,
             &mut files,
+            &mut skips,
         );
     }
 
@@ -76,17 +87,16 @@ pub fn enumerate_files(config: &Config) -> Result<Vec<FileRecord>, IndexError> {
     for symlink_path in symlink_paths {
         collect_symlink_entry(
             &symlink_path,
-            &config.repo_root,
+            config,
             &canonical_root,
-            config.max_file_size,
             &mut files,
+            &mut skips,
             &mut seen_canonical,
-            config.verbose,
         );
     }
 
     files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-    Ok(files)
+    Ok((files, skips))
 }
 
 #[cfg(feature = "ignore")]
@@ -96,12 +106,14 @@ fn push_file_record(
     repo_root: &Path,
     max_file_size: u64,
     files: &mut Vec<FileRecord>,
+    skips: &mut WalkSkips,
 ) {
     let size = match read_path.metadata() {
         Ok(m) => m.len(),
         Err(_) => return,
     };
     if size > max_file_size {
+        skips.too_large += 1;
         return;
     }
     let rel = match display_path.strip_prefix(repo_root) {
@@ -144,13 +156,14 @@ fn log_symlink_skip(verbose: bool, symlink_path: &Path, reason: std::fmt::Argume
 #[cfg(feature = "ignore")]
 fn collect_symlink_entry(
     symlink_path: &Path,
-    repo_root: &Path,
+    config: &Config,
     canonical_root: &Path,
-    max_file_size: u64,
     files: &mut Vec<FileRecord>,
+    skips: &mut WalkSkips,
     seen_canonical: &mut HashSet<PathBuf>,
-    verbose: bool,
 ) {
+    let repo_root = config.repo_root.as_path();
+    let verbose = config.verbose;
     let target = match fs::read_link(symlink_path) {
         Ok(target) => target,
         Err(e) => {
@@ -232,8 +245,9 @@ fn collect_symlink_entry(
             canonical_target,
             symlink_path,
             repo_root,
-            max_file_size,
+            config.max_file_size,
             files,
+            skips,
         );
     }
 }

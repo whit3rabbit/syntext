@@ -264,3 +264,20 @@ fn manifest_rejects_non_uuid_segment_id() {
         "error should mention UUID: {err_msg}"
     );
 }
+
+#[test]
+fn load_missing_manifest_reports_index_not_found() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let err = match Manifest::load(dir.path()) {
+        Ok(_) => panic!("load must fail when manifest.json is absent"),
+        Err(e) => e,
+    };
+    match &err {
+        IndexError::IndexNotFound(p) => assert_eq!(p, dir.path()),
+        other => panic!("expected IndexNotFound, got: {other}"),
+    }
+    let msg = err.to_string();
+    assert!(msg.contains("no index found"), "message: {msg}");
+    assert!(msg.contains("st index"), "message: {msg}");
+}
