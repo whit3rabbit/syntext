@@ -1350,3 +1350,73 @@ fn pcre2_warns_but_searches_normally() {
         "expected match output despite pcre2 flag"
     );
 }
+
+fn tool_available(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn fallback_to_ripgrep_when_index_missing() {
+    if !tool_available("rg") {
+        eprintln!("skipping fallback_to_ripgrep_when_index_missing: rg not in PATH");
+        return;
+    }
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext"); // never created -> IndexNotFound
+    write_text(&repo.path().join("a.rs"), "let FALLBACKNEEDLE = 1;\n");
+
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index)
+        .env("SYNTEXT_FALLBACK_RG", "1")
+        .arg("FALLBACKNEEDLE")
+        .arg(repo.path())
+        .output()
+        .expect("run st");
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr:\n{}",
+        stderr_text(&out)
+    );
+    assert!(
+        stdout_text(&out).contains("FALLBACKNEEDLE"),
+        "expected rg result on stdout:\n{}",
+        stdout_text(&out)
+    );
+    assert!(
+        stderr_text(&out).contains("ripgrep fallback"),
+        "expected fallback notice on stderr:\n{}",
+        stderr_text(&out)
+    );
+}
+
+#[test]
+fn missing_index_without_optin_errors_with_guidance() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext"); // never created -> IndexNotFound
+
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index)
+        .env_remove("SYNTEXT_FALLBACK_RG")
+        .arg("anything")
+        .output()
+        .expect("run st");
+
+    assert_eq!(out.status.code(), Some(2));
+    let err = stderr_text(&out);
+    assert!(err.contains("no index found"), "stderr:\n{err}");
+    assert!(err.contains("SYNTEXT_FALLBACK_RG"), "stderr:\n{err}");
+}

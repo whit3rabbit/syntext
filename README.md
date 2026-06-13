@@ -156,6 +156,37 @@ Notes:
 - Like ripgrep, file names are shown by default when searching a directory, the whole repo, or multiple positional paths.
 - Like ripgrep, line numbers are off by default when stdout is not a TTY. Use `-n` to force them on.
 
+## Fallback to ripgrep/grep (un-indexed search)
+
+By default, searching a path with no index fails with exit code 2 and tells you
+to run `st index`. For agent harnesses that sometimes search outside an indexed
+checkout (e.g. a throwaway clone in `/tmp`), `st` can instead fall back to
+`ripgrep` (preferred) or `grep` so the search still returns results.
+
+It is opt-in. Enable it with the `--fallback` flag or `SYNTEXT_FALLBACK_RG=1`
+(accepts `1`, `true`, `yes`, `on`):
+
+```bash
+SYNTEXT_FALLBACK_RG=1 st "needle" /tmp/some-clone   # env var (set once in harness)
+st --fallback "needle" /tmp/some-clone              # per-invocation flag
+```
+
+Behavior:
+
+- Triggers **only** when the index is missing. A corrupt index or lock conflict
+  still fails loudly so real problems are never masked.
+- `ripgrep` receives your original arguments unchanged (st's CLI is a superset of
+  rg's), so `--json`, `--vimgrep`, context, and filter flags produce exactly the
+  output you would get from rg directly.
+- `grep` is the last resort when `rg` is not on `PATH`. It is best-effort:
+  common match flags are mapped, but output-only modes that grep cannot produce
+  (`--json`, `--vimgrep`, `--heading`, `--column`, `-t/--type`) are dropped.
+- The fallback is slower than the index and prints a one-line notice to stderr
+  (suppressed under `--quiet`); stdout is left clean for parsing.
+
+This is a convenience for un-indexed paths, not a replacement for `st index`:
+build an index for full speed and syntext's coverage guarantees.
+
 ## Agent harness install
 
 `st` can install RTK-style agent harness integrations. Programmatic hooks rewrite

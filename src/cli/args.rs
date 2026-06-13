@@ -427,6 +427,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub verbose: bool,
 
+    /// On a missing index, fall back to ripgrep (or grep) instead of erroring.
+    /// Also enabled by SYNTEXT_FALLBACK_RG=1. Slower and lower-fidelity than the
+    /// index; intended for searching un-indexed paths.
+    #[arg(long = "fallback", global = true)]
+    pub fallback: bool,
+
     /// Management subcommands (index, update, status).
     #[command(subcommand)]
     pub command: Option<ManageCommand>,

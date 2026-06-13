@@ -327,6 +327,7 @@ src/
     scope.rs                  # path-scope filtering: glob matching, --files mode, deduplication
     bench.rs                  # hidden bench-search subcommand (in-process latency)
     git_resolve.rs            # git binary resolution + path safety helpers
+    fallback.rs               # opt-in rg/grep fallback on missing index (--fallback / SYNTEXT_FALLBACK_RG)
     manage.rs                 # index/status/update subcommand handlers
     render/
       mod.rs                  # shared utilities, re-exports, JSON helpers, flat/heading/vimgrep

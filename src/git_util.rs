@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 /// Walk PATH for a file named `filename`, canonicalizing the first match.
 /// Returns `None` if no matching file is found.
 /// Skips directories (e.g. a dir named "git" on PATH) via `is_file()`.
-fn find_in_path(filename: &str) -> Option<PathBuf> {
+///
+/// Shared with the CLI ripgrep/grep fallback (`cli::fallback`) so external-tool
+/// resolution stays consistent with git resolution.
+pub(crate) fn find_in_path(filename: &str) -> Option<PathBuf> {
     let path_var = std::env::var("PATH").ok()?;
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(filename);

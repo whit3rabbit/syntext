@@ -7,6 +7,7 @@ pub mod args;
 mod bench;
 mod commands;
 mod config;
+mod fallback;
 mod manage;
 mod render;
 mod scope;
@@ -158,6 +159,7 @@ pub fn run() -> i32 {
                 max_columns: cli.max_columns,
                 search_stats: cli.search_stats,
                 max_depth: cli.max_depth,
+                fallback: cli.fallback,
             };
             cmd_search(config, &search_args)
         }

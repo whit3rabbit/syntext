@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Opt-in ripgrep/grep fallback for searches against an un-indexed path. Enable
+  with `--fallback` or `SYNTEXT_FALLBACK_RG=1`; `st` then runs `ripgrep`
+  (preferred) or `grep` (last resort) instead of erroring when no index exists.
+  Triggers only on a missing index; a corrupt index or lock conflict still
+  fails. ripgrep receives the original arguments unchanged (identical output);
+  grep is best-effort and drops output-only modes it cannot produce. See README,
+  "Fallback to ripgrep/grep".
+
 ## [1.2.0] - 2026-06-06
 
 ### Added

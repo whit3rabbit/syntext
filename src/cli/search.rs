@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::index::Index;
 use crate::path_util::path_bytes;
-use crate::Config;
+use crate::{Config, IndexError};
 
 // Re-export for render submodules that import via `crate::cli::search::collect_scoped_paths`.
 pub(super) use super::scope::collect_scoped_paths;
@@ -52,6 +52,7 @@ pub(super) struct SearchArgs {
     pub max_columns: Option<usize>,
     pub search_stats: bool,
     pub max_depth: Option<usize>,
+    pub fallback: bool,
 }
 
 impl Default for SearchArgs {
@@ -92,6 +93,7 @@ impl Default for SearchArgs {
             max_columns: None,
             search_stats: false,
             max_depth: None,
+            fallback: false,
         }
     }
 }
@@ -99,6 +101,11 @@ impl Default for SearchArgs {
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
+        // Only a missing index is eligible for fallback; a corrupt index or lock
+        // conflict still fails loudly so we never mask real corruption.
+        Err(IndexError::IndexNotFound(dir)) => {
+            return super::fallback::handle_missing_index(&config, args, &dir);
+        }
         Err(e) => {
             eprintln!("st: {e}");
             return 2;
