@@ -94,6 +94,20 @@ curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh
 
 See `install.sh` at the repo root for platform detection logic (macOS: Homebrew cask first; Linux: `.deb` on Debian/Ubuntu amd64, raw binary otherwise).
 
+## Releasing
+
+When cutting a release, bump the version in all of these together:
+
+- `Cargo.toml` `version` (and regenerate `Cargo.lock` with any cargo command).
+- `install.sh` `SYNTEXT_VERSION` default (and the comment on the line above it).
+  Update it once the tag's release artifacts are published, since the installer
+  downloads `v${SYNTEXT_VERSION}` binaries; pointing it at a version with no
+  published binaries breaks `curl | sh` installs.
+- `CHANGELOG.md`: move `[Unreleased]` to the new `[x.y.z] - YYYY-MM-DD` section.
+
+Then commit (`release: vX.Y.Z`), tag `vX.Y.Z`, and push both the branch and the
+tag. The tag triggers `release.yml` to build and publish binaries.
+
 ## Commands
 
 ```
