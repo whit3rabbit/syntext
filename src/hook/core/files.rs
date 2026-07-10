@@ -62,7 +62,10 @@ pub(crate) fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("tmp");
-    let tmp = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    // Use a random UUID for the temporary file to prevent a TOCTOU (Time-of-Check
+    // to Time-of-Use) symlink attack where an attacker pre-creates a predictable
+    // temporary path leading to arbitrary file overwrite.
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
     fs::write(&tmp, content)?;
     #[cfg(windows)]
     if path.exists() {

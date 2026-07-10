@@ -42,6 +42,10 @@ pub(super) fn resolve_doc(
         return None;
     }
     // Mitigate TOCTOU: stat before open, then verify fd matches the same inode.
+    // NOTE: This prevents final-component symlink swaps. A residual microsecond-scale
+    // TOCTOU window exists where an intermediate directory component could be swapped
+    // between canonicalize and metadata/open, which is acceptable in our single-user
+    // workstation threat model.
     #[cfg(any(unix, windows))]
     let pre_meta = std::fs::metadata(&canonical).ok()?;
     let file = crate::index::open_readonly_nofollow(&canonical).ok()?;
