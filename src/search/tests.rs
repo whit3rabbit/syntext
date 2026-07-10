@@ -16,6 +16,7 @@ fn fallback_path_filter_uses_same_glob_semantics() {
         max_results: None,
         case_insensitive: false,
         verify_pattern: None,
+        skip_line_content: false,
         #[cfg(any(test, feature = "oracle"))]
         force_full_scan: false,
     };

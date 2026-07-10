@@ -175,6 +175,12 @@ pub struct SearchOptions {
     /// wrapping while routing on the unwrapped inner pattern for gram
     /// extraction.
     pub verify_pattern: Option<String>,
+    /// Skip populating `SearchMatch::line_content`, leaving it empty. Set for
+    /// output modes that only need which files matched (`-l`/`-L`), avoiding a
+    /// per-matched-line byte copy in the verifier. Do NOT set for `-c`, which
+    /// re-scans `line_content` to count per-line occurrences. Default `false`
+    /// (populate), so existing callers are unaffected.
+    pub skip_line_content: bool,
     /// For testing/oracle: bypass query routing and force a full scan.
     #[cfg(any(test, feature = "oracle"))]
     pub force_full_scan: bool,

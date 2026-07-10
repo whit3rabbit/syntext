@@ -223,9 +223,14 @@ pub fn search(
             // the boundary-wrapped pattern and memchr would search for its
             // literal bytes (matching nothing).
             QueryRoute::Literal if opts.verify_pattern.is_none() => {
-                verify_literal(verify_pattern, file_path, &content)
+                verify_literal(verify_pattern, file_path, &content, opts.skip_line_content)
             }
-            _ => verify_regex(compiled_re.as_ref().unwrap(), file_path, &content),
+            _ => verify_regex(
+                compiled_re.as_ref().unwrap(),
+                file_path,
+                &content,
+                opts.skip_line_content,
+            ),
         };
         if let Some(_limit) = opts.max_results {
             if !file_matches.is_empty() {

@@ -19,6 +19,19 @@ fn query_latency_bench(c: &mut Criterion) {
         });
     });
 
+    // #7: -l/-L path skips the per-matched-line byte copy. Comparing this to
+    // `literal_common` (which populates line_content) on the same common token
+    // is the before/after for the skip optimization.
+    let skip_opts = syntext::SearchOptions {
+        skip_line_content: true,
+        ..Default::default()
+    };
+    group.bench_function("literal_common_skip_content", |b| {
+        b.iter(|| {
+            black_box(index.search("parse_query", &skip_opts).unwrap().len());
+        });
+    });
+
     group.bench_function("indexed_regex_rare", |b| {
         b.iter(|| {
             black_box(

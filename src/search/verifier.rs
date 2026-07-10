@@ -20,7 +20,15 @@ use crate::SearchMatch;
 ///
 /// Case-sensitive. Returns one `SearchMatch` per matching line.
 /// Binary content (null bytes) causes the file to be skipped entirely.
-pub fn verify_literal(pattern: &str, path: &Path, content: &[u8]) -> Vec<SearchMatch> {
+///
+/// When `skip_line_content` is true, `line_content` is left empty (no per-line
+/// byte copy) for callers that only need which files/lines matched (`-l`/`-L`).
+pub fn verify_literal(
+    pattern: &str,
+    path: &Path,
+    content: &[u8],
+    skip_line_content: bool,
+) -> Vec<SearchMatch> {
     if is_binary(content) {
         return Vec::new(); // skip binary files
     }
@@ -75,7 +83,11 @@ pub fn verify_literal(pattern: &str, path: &Path, content: &[u8]) -> Vec<SearchM
         matches.push(SearchMatch {
             path: path.to_path_buf(),
             line_number: current_line_num,
-            line_content: content[line_start..line_content_end].to_vec(),
+            line_content: if skip_line_content {
+                Vec::new()
+            } else {
+                content[line_start..line_content_end].to_vec()
+            },
             byte_offset: match_start as u64,
             submatch_start: match_start - line_start,
             submatch_end: (match_start + pattern.len()) - line_start,
@@ -91,7 +103,15 @@ pub fn verify_literal(pattern: &str, path: &Path, content: &[u8]) -> Vec<SearchM
 ///
 /// Returns one `SearchMatch` per matching line.
 /// Binary content (null bytes) causes the file to be skipped entirely.
-pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch> {
+///
+/// When `skip_line_content` is true, `line_content` is left empty (see
+/// [`verify_literal`]).
+pub fn verify_regex(
+    re: &Regex,
+    path: &Path,
+    content: &[u8],
+    skip_line_content: bool,
+) -> Vec<SearchMatch> {
     if is_binary(content) {
         return Vec::new(); // skip binary files
     }
@@ -149,7 +169,11 @@ pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch>
         matches.push(SearchMatch {
             path: path.to_path_buf(),
             line_number: current_line_num,
-            line_content: content[line_start..line_content_end].to_vec(),
+            line_content: if skip_line_content {
+                Vec::new()
+            } else {
+                content[line_start..line_content_end].to_vec()
+            },
             byte_offset: match_start as u64,
             submatch_start: match_start - line_start,
             submatch_end: match_end - line_start,
@@ -167,7 +191,7 @@ mod tests {
 
     #[test]
     fn literal_reports_match_start_offset() {
-        let matches = verify_literal("needle", Path::new("file.txt"), b"prefix needle suffix\n");
+        let matches = verify_literal("needle", Path::new("file.txt"), b"prefix needle suffix\n", false);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].byte_offset, 7);
         assert_eq!(matches[0].submatch_start, 7);
@@ -177,7 +201,7 @@ mod tests {
     #[test]
     fn regex_reports_match_start_offset() {
         let re = Regex::new("needle").unwrap();
-        let matches = verify_regex(&re, Path::new("file.txt"), b"prefix needle suffix\n");
+        let matches = verify_regex(&re, Path::new("file.txt"), b"prefix needle suffix\n", false);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].byte_offset, 7);
         assert_eq!(matches[0].submatch_start, 7);
@@ -186,7 +210,7 @@ mod tests {
 
     #[test]
     fn crlf_offsets_include_line_break_bytes_before_match() {
-        let matches = verify_literal("needle", Path::new("file.txt"), b"one\r\ntwo needle\r\n");
+        let matches = verify_literal("needle", Path::new("file.txt"), b"one\r\ntwo needle\r\n", false);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line_number, 2);
         assert_eq!(matches[0].byte_offset, 9);
@@ -207,7 +231,7 @@ mod tests {
         content.extend_from_slice(b"cc needle\n"); // line 502
         content.extend_from_slice(b"dd needle ee\n"); // line 503
 
-        let matches = verify_literal("needle", Path::new("f"), &content);
+        let matches = verify_literal("needle", Path::new("f"), &content, false);
         assert_eq!(matches.len(), 3, "one match reported per line");
         assert_eq!(matches[0].line_number, 501);
         assert_eq!(matches[0].line_content, b"aa needle bb needle");
@@ -222,16 +246,35 @@ mod tests {
     fn regex_line_numbers_correct_with_gaps() {
         let re = Regex::new("needle").unwrap();
         let content = b"a\nb\nc needle\nd\ne needle\n";
-        let matches = verify_regex(&re, Path::new("f"), content);
+        let matches = verify_regex(&re, Path::new("f"), content, false);
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].line_number, 3);
         assert_eq!(matches[1].line_number, 5);
     }
 
     #[test]
+    fn skip_line_content_leaves_content_empty_but_keeps_offsets() {
+        // -l/-L path: line_content is skipped, but line numbers and match
+        // offsets stay correct.
+        let lit = verify_literal("needle", Path::new("f"), b"a\nx needle y\n", true);
+        assert_eq!(lit.len(), 1);
+        assert!(lit[0].line_content.is_empty(), "content skipped");
+        assert_eq!(lit[0].line_number, 2);
+        assert_eq!(lit[0].submatch_start, 2);
+        assert_eq!(lit[0].submatch_end, 8);
+
+        let re = Regex::new("needle").unwrap();
+        let rgx = verify_regex(&re, Path::new("f"), b"a\nx needle y\n", true);
+        assert_eq!(rgx.len(), 1);
+        assert!(rgx[0].line_content.is_empty());
+        assert_eq!(rgx[0].line_number, 2);
+        assert_eq!(rgx[0].submatch_start, 2);
+    }
+
+    #[test]
     fn regex_matches_invalid_utf8_line_bytes() {
         let re = Regex::new(r"(?-u)\xFF").unwrap();
-        let matches = verify_regex(&re, Path::new("file.bin"), b"prefix\xFFsuffix\n");
+        let matches = verify_regex(&re, Path::new("file.bin"), b"prefix\xFFsuffix\n", false);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line_content, b"prefix\xFFsuffix");
         assert_eq!(matches[0].submatch_start, 6);

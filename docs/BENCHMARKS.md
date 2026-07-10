@@ -248,6 +248,24 @@ reflects reduced tokenization work; the gain grows with overlay size.
 The `full_build_300_files` benchmark exercises the initial segment build path,
 which is unaffected by the overlay change.
 
+### Skip line_content for -l/-L (#7, 2026-07-10)
+
+The verifier now leaves `SearchMatch::line_content` empty when
+`SearchOptions::skip_line_content` is set, avoiding a per-matched-line byte copy
+for output modes that only need which files/lines matched (`-l`/`-L`). `-c` is
+excluded (it re-scans `line_content` to count per-line occurrences).
+
+`cargo bench --bench query_latency`, same common token `parse_query` on the
+300-file synthetic corpus:
+
+| Benchmark | Populate (default) | Skip (`-l`/`-L`) |
+|---|---|---|
+| `literal_common` / `literal_common_skip_content` | ~4.51 ms | ~4.44 ms (~1.5% faster) |
+
+Modest here because a common token routes to full scan, so the eliminated line
+copies are a small fraction of the I/O-dominated total. The saving scales with
+the number of matched lines skipped.
+
 ### COW posting lists (Arc-shared gram_index, 2026-07-10)
 
 `OverlayView.gram_index` changed from `HashMap<u64, Vec<u32>>` to

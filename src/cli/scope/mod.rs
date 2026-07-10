@@ -168,6 +168,9 @@ pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> 
         max_results: None,
         path_filter,
         verify_pattern: None,
+        // -l/-L only need which files matched, never the line bytes. -c is
+        // excluded: count re-scans line_content for per-line occurrences.
+        skip_line_content: args.files_with_matches || args.files_without_match,
         #[cfg(any(test, feature = "oracle"))]
         force_full_scan: false,
     }
