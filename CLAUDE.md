@@ -382,6 +382,13 @@ src/
     search.rs                 # search arg parsing, query execution, result dispatch
 ```
 
+## Deferred Work
+
+Asked to pick up a deferred/known-follow-up item (e.g. perf-review items #11,
+#13, #15, or the cross-struct path interner)? See [`docs/DEFERRED.md`](docs/DEFERRED.md)
+first -- it records the gating "why" for each. Do not implement blind; re-confirm
+the concern still holds against current code.
+
 ## Spec Location
 
 All design documents are in `docs/`. When in doubt about a design decision, check `docs/ARCHITECTURE.md` first -- it covers every major subsystem with Decision / Rationale / Alternatives Considered.
