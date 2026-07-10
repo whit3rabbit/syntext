@@ -11,9 +11,10 @@ use crate::search::lines::for_each_line;
 use crate::Config;
 
 use super::{
-    compile_output_regex, json_data, json_elapsed, json_stats, read_repo_file_bytes,
-    write_formatted_line, write_json_line,
+    compile_output_regex, json_data, json_elapsed, json_stats, read_matched_file,
+    repo_canonical_root, write_formatted_line, write_json_line, ColorStyles,
 };
+use super::color::write_styled;
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
 pub(in crate::cli) fn render_invert_match(
@@ -30,10 +31,39 @@ pub(in crate::cli) fn render_invert_match(
         }
     };
 
+    // Bounded auto-update: keep the invert scan's scoped-path listing
+    // consistent with a normal search, so a freshly created file is included
+    // instead of only showing up after a manual `st update`. See
+    // `catchup::run_bounded_auto_update` for the full error-handling contract.
+    // Same notice/quiet gating as `cmd_search`: still-stale-after-update spawns
+    // the detached async catch-up (after the scan below has finished writing
+    // its own output, so the extra process never delays or reorders it),
+    // regardless of whether the stderr notice itself was suppressed by
+    // `--quiet`.
+    let needs_async_catchup =
+        crate::cli::catchup::run_bounded_auto_update(index, config, args.quiet);
+
+    let result = render_invert_match_scan(index, config, args, &re, total_start);
+
+    if needs_async_catchup {
+        crate::cli::catchup::maybe_spawn_async_catchup(config);
+    }
+
+    result
+}
+
+fn render_invert_match_scan(
+    index: &Index,
+    config: &Config,
+    args: &SearchArgs,
+    re: &regex::bytes::Regex,
+    total_start: Instant,
+) -> io::Result<i32> {
     let files = collect_scoped_paths(index, config, args);
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
+    let styles = ColorStyles::default();
     let mut found_any = false;
     let mut files_without_selected = Vec::new();
     let mut total_bytes_searched = 0usize;
@@ -43,14 +73,15 @@ pub(in crate::cli) fn render_invert_match(
     let mut searches_with_match = 0usize;
     let mut counts: BTreeMap<PathBuf, usize> = BTreeMap::new();
     let mut matched_files = Vec::new();
+    let canonical_root = repo_canonical_root(config);
     for rel_path in &files {
         let file_start = Instant::now();
         let mut selected_in_file = 0usize;
         let mut file_selected = Vec::new();
 
-        let raw_bytes = match read_repo_file_bytes(config, rel_path) {
-            Ok(b) => b,
-            Err(_) => continue,
+        let Some(raw_bytes) = read_matched_file(config, &canonical_root, rel_path, args.quiet)
+        else {
+            continue;
         };
         total_bytes_searched += raw_bytes.len();
         let file_bytes = crate::index::normalize_encoding(&raw_bytes, config.verbose);
@@ -73,12 +104,17 @@ pub(in crate::cli) fn render_invert_match(
                 } else if !args.files_with_matches && !args.files_without_match && !args.count {
                     let _ = write_formatted_line(
                         &mut out,
-                        args.no_filename,
-                        args.no_line_number,
+                        super::FormatOpts {
+                            no_path: args.no_filename,
+                            no_num: args.no_line_number,
+                            null: args.null,
+                            color: args.color,
+                        },
                         rel_path.as_path(),
                         line_num as usize,
                         b':',
                         line,
+                        &[],
                     );
                 }
             }
@@ -142,23 +178,26 @@ pub(in crate::cli) fn render_invert_match(
         }
     }
 
+    let sep = if args.null { b'\0' } else { b'\n' };
     if args.files_with_matches {
         for path in matched_files {
-            out.write_all(path_bytes(&path).as_ref())?;
-            out.write_all(b"\n")?;
+            write_styled(&mut out, args.color, styles.path, path_bytes(&path).as_ref())?;
+            out.write_all(&[sep])?;
         }
     } else if args.files_without_match {
         for path in &files_without_selected {
-            out.write_all(path_bytes(path).as_ref())?;
-            out.write_all(b"\n")?;
+            write_styled(&mut out, args.color, styles.path, path_bytes(path).as_ref())?;
+            out.write_all(&[sep])?;
         }
     } else if args.count {
         for (path, count) in counts {
             if args.no_filename {
                 writeln!(out, "{count}")?;
             } else {
-                out.write_all(path_bytes(&path).as_ref())?;
-                writeln!(out, ":{count}")?;
+                write_styled(&mut out, args.color, styles.path, path_bytes(&path).as_ref())?;
+                let count_sep = if args.null { b'\0' } else { b':' };
+                out.write_all(&[count_sep])?;
+                writeln!(out, "{count}")?;
             }
         }
     } else if args.json {

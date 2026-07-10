@@ -7,7 +7,11 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
-use super::{group_matches_by_path, read_repo_file_bytes, write_formatted_line};
+use super::{
+    compile_output_regex, group_matches_by_path, match_spans, read_matched_file,
+    repo_canonical_root, write_formatted_line, ColorStyles,
+};
+use super::color::write_styled;
 use crate::cli::search::SearchArgs;
 
 /// Print matches with surrounding context lines to stdout.
@@ -41,16 +45,26 @@ pub(in crate::cli) fn render_with_context_to(
     let grouped_heading = args.heading && (by_file.len() > 1 || !args.no_filename);
     let suppress_path_prefix = args.heading;
 
+    let canonical_root = repo_canonical_root(config);
+    // Only needed to compute match spans for highlighting; uncompiled when color
+    // is off so non-colored context output pays no regex cost.
+    let re = args
+        .color
+        .then(|| compile_output_regex(args))
+        .transpose()?;
+    let styles = ColorStyles::default();
     let mut first_file = true;
     for (rel_path, match_lines) in &by_file {
-        let raw_content = match read_repo_file_bytes(config, rel_path) {
-            Ok(b) => b,
-            Err(_) => continue,
+        let Some(raw_content) = read_matched_file(config, &canonical_root, rel_path, args.quiet)
+        else {
+            continue;
         };
         let file_content = crate::index::normalize_encoding(&raw_content, config.verbose);
-        let mut file_lines: Vec<Vec<u8>> = Vec::new();
-        for_each_line(file_content.as_ref(), |_, _, line| {
-            file_lines.push(line.to_vec())
+        // Keep the line-start byte offset alongside each line so -b/--byte-offset
+        // can print it (json.rs keeps the same (line_start, line) pair).
+        let mut file_lines: Vec<(usize, Vec<u8>)> = Vec::new();
+        for_each_line(file_content.as_ref(), |_, line_start, line| {
+            file_lines.push((line_start, line.to_vec()))
         });
 
         // Set of 0-based line indices that are direct matches.
@@ -78,8 +92,12 @@ pub(in crate::cli) fn render_with_context_to(
             }
         }
         if grouped_heading && !args.no_filename {
-            out.write_all(path_bytes(rel_path).as_ref())?;
-            out.write_all(b"\n")?;
+            write_styled(out, args.color, styles.path, path_bytes(rel_path).as_ref())?;
+            if args.null {
+                out.write_all(b"\0")?;
+            } else {
+                out.write_all(b"\n")?;
+            }
         }
         first_file = false;
 
@@ -93,18 +111,35 @@ pub(in crate::cli) fn render_with_context_to(
             }
 
             let line_num = idx + 1;
-            let content = file_lines.get(idx).map(Vec::as_slice).unwrap_or_default();
+            let (line_start, content) = file_lines
+                .get(idx)
+                .map(|(s, l)| (*s, l.as_slice()))
+                .unwrap_or((0, &[][..]));
             let is_match = match_set.contains(&idx);
             let sep = if is_match { b':' } else { b'-' };
 
+            if args.byte_offset {
+                // Line-start offset prefix, matching render_flat_to/rg.
+                write!(out, "{line_start}:")?;
+            }
+            let spans = if is_match {
+                match_spans(re.as_ref(), content)
+            } else {
+                Vec::new()
+            };
             write_formatted_line(
                 out,
-                suppress_path_prefix || args.no_filename,
-                args.no_line_number,
+                super::FormatOpts {
+                    no_path: suppress_path_prefix || args.no_filename,
+                    no_num: args.no_line_number,
+                    null: args.null,
+                    color: args.color,
+                },
                 rel_path,
                 line_num,
                 sep,
                 content,
+                &spans,
             )?;
 
             prev = Some(idx);

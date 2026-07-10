@@ -1,14 +1,34 @@
 //! Management subcommand handlers: index, status, update.
 
-use std::collections::HashSet;
 use std::io::{self, Write};
-use std::path::PathBuf;
 
+use crate::index::freshness::{self, UpdateLimits};
 use crate::index::Index;
-use crate::path_util::path_from_bytes;
-use crate::Config;
+use crate::{Config, IndexError};
 
-use crate::git_util::{is_safe_git_path, resolve_git_binary};
+/// Detect how many files the index is behind the working tree, bounded by
+/// `config.auto_update_budget_ms`. Read-only: unlike `update_from_git`, this
+/// never applies changes to the overlay.
+///
+/// Returns a lower-bound count and `None` on any detection failure (no git
+/// binary, non-git directory, or a spawn error) so callers can report
+/// `files_behind` as unknown/0 without erroring the command. When the time
+/// budget is exhausted mid-detection, the returned count is a partial
+/// (lower-bound) estimate, matching `UpdateOutcome::BudgetExceeded` semantics.
+fn detect_files_behind(index: &Index, config: &Config) -> Option<usize> {
+    let git = crate::git_util::resolve_git_binary();
+    if !git.is_file() {
+        return None;
+    }
+    match freshness::detect_changed_files(
+        &index.canonical_root,
+        &git,
+        Some(config.auto_update_budget_ms),
+    ) {
+        Ok(change_set) => Some(change_set.budget_exceeded.unwrap_or(change_set.paths.len())),
+        Err(_) => None,
+    }
+}
 
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
     // Index::build always rebuilds; --force is accepted for rg/ug compat.
@@ -52,6 +72,9 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
     };
 
     let s = index.stats();
+    // Bounded by config.auto_update_budget_ms; None means detection failed
+    // (no git binary, non-git directory) and is reported as unknown/null.
+    let files_behind = detect_files_behind(&index, &config);
     if json {
         // Use serde_json to avoid malformed output when index_dir contains
         // characters that need JSON escaping (quotes, backslashes, etc.).
@@ -60,6 +83,7 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
             "segments": s.total_segments,
             "grams": s.total_grams,
             "index_dir": config.index_dir.display().to_string(),
+            "files_behind": files_behind,
         });
         let stdout = io::stdout();
         let mut out = stdout.lock();
@@ -69,10 +93,15 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
     } else {
         let stdout = io::stdout();
         let mut out = stdout.lock();
+        let files_behind_display = match files_behind {
+            Some(n) => n.to_string(),
+            None => "unknown".to_string(),
+        };
         if let Err(err) = writeln!(out, "Index:     {}", config.index_dir.display())
             .and_then(|_| writeln!(out, "Documents: {}", s.total_documents))
             .and_then(|_| writeln!(out, "Segments:  {}", s.total_segments))
             .and_then(|_| writeln!(out, "Grams:     {}", s.total_grams))
+            .and_then(|_| writeln!(out, "Behind:    {files_behind_display}"))
         {
             return handle_output(err);
         }
@@ -119,180 +148,98 @@ pub(super) fn cmd_verify(mut config: Config) -> i32 {
 pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
+        // A missing index is expected when `st update` runs from a git hook
+        // (e.g. post-checkout) before the repo has ever been indexed. Under
+        // --quiet (the documented hook-safe mode), exit 0 with no stderr so
+        // hooks don't spam or fail; otherwise report loudly with exit 2.
+        Err(IndexError::IndexNotFound(_)) if quiet => {
+            return 0;
+        }
         Err(e) => {
             eprintln!("st update: {e}");
             return 2;
         }
     };
 
-    // Security audit (command injection): no user-controlled data is interpolated
-    // as shell arguments. `resolve_git_binary()` resolves the git path via PATH
-    // with canonicalize (see its doc comment). `canonical_root` below is
-    // canonicalized before passing to `git -C`. All other arguments are static
-    // string literals. The only injection surface would be `--repo-root`, which
-    // is documented as trusted input.
-    let git = resolve_git_binary();
-
-    // The fallback path (/usr/bin/git on Unix) may not exist; verify before spawning.
-    if !git.is_file() {
-        eprintln!(
-            "st update: git not found (looked for {}); install git to detect changed files",
-            git.display()
-        );
-        drop(index);
-        return 2;
-    }
-
-    let mut changed: HashSet<PathBuf> = HashSet::new();
-
-    // Security: canonicalize repo_root before passing it to `git -C`.
-    //
-    // `git -C <path>` changes into the given directory before running. If
-    // <path> points to an attacker-controlled directory (e.g. --repo-root
-    // sourced from an untrusted environment variable or container bind-mount),
-    // git will execute hooks in that directory's .git/config (core.hooksPath,
-    // post-checkout, etc.) with the invoking user's privileges. Canonicalize
-    // resolves symlinks and produces an absolute path, eliminating relative-path
-    // tricks and final-component symlink redirections.
-    //
-    // Note: this does not prevent a user who deliberately passes a malicious
-    // path as --repo-root from triggering git hooks in that directory;
-    // --repo-root is trusted input and must not be sourced from untrusted data
-    // (e.g. artifact paths from untrusted CI jobs, user-supplied config).
-    let canonical_root = match config.repo_root.canonicalize() {
-        Ok(p) => p,
+    // A moved HEAD (commit, checkout, merge, rebase/rewrite -- exactly the
+    // events post-commit/post-checkout/post-merge/post-rewrite hooks fire
+    // on) leaves the working tree clean and matching the new HEAD, so none
+    // of `update_from_git`'s three git commands (diff HEAD, diff --cached,
+    // ls-files --others) see anything: they only detect *uncommitted* drift.
+    // Check base_commit staleness first and do a full rebuild when it
+    // fired, so a hook-triggered `st update` actually picks up newly
+    // committed content instead of silently no-op'ing.
+    match index.rebuild_if_stale() {
+        Ok(Some(stats)) => {
+            if !quiet {
+                let stdout = io::stdout();
+                let mut out = stdout.lock();
+                if let Err(err) = writeln!(
+                    out,
+                    "st: rebuilt index ({} document(s), HEAD changed)",
+                    stats.total_documents
+                ) {
+                    return handle_output(err);
+                }
+            }
+            drop(index);
+            return 0;
+        }
+        Ok(None) => {}
         Err(e) => {
-            eprintln!(
-                "st update: invalid repo root \'{}\': {e}",
-                config.repo_root.display()
-            );
+            eprintln!("st update: {e}");
+            drop(index);
             return 2;
         }
+    }
+
+    // CLI update has no limits: process all changed files with no time budget.
+    let limits = UpdateLimits {
+        max_files: None,
+        budget_ms: None,
     };
 
-    // Parse NUL-terminated git output into changed paths.
-    //
-    // Using -z / -z causes git to use NUL instead of newline as the record
-    // separator, which is the only safe choice: filenames on Linux/macOS can
-    // contain literal newline bytes. Splitting on '\n' would produce two tokens
-    // from such a name, treating the spurious second token as a changed path
-    // and yielding exit code 1 on every update, masking real errors.
-    let parse_nul_paths = |bytes: &[u8]| -> Vec<PathBuf> {
-        bytes
-            .split(|&b| b == 0)
-            .map(path_from_bytes)
-            .filter(|path| is_safe_git_path(path))
-            .collect()
-    };
-
-    // Detect changed files via git diff against HEAD.
-    // This fails on repos with no commits, which is fine -- we fall through
-    // to untracked file detection below.
-    if let Ok(diff_output) = std::process::Command::new(&git)
-        .arg("-C")
-        .arg(&canonical_root)
-        .args(["diff", "-z", "--name-only", "HEAD"])
-        .output()
-    {
-        if diff_output.status.success() {
-            changed.extend(parse_nul_paths(&diff_output.stdout));
-        }
-    }
-
-    // Pick up staged changes (covers initial commit scenario where HEAD
-    // doesn't exist yet).
-    if let Ok(staged_output) = std::process::Command::new(&git)
-        .arg("-C")
-        .arg(&canonical_root)
-        .args(["diff", "-z", "--name-only", "--cached"])
-        .output()
-    {
-        if staged_output.status.success() {
-            changed.extend(parse_nul_paths(&staged_output.stdout));
-        }
-    }
-
-    // Pick up new untracked files that git-diff doesn't report.
-    if let Ok(ut_output) = std::process::Command::new(&git)
-        .arg("-C")
-        .arg(&canonical_root)
-        .args(["ls-files", "-z", "--others", "--exclude-standard"])
-        .output()
-    {
-        if ut_output.status.success() {
-            changed.extend(parse_nul_paths(&ut_output.stdout));
-        }
-    }
-
-    if changed.is_empty() {
-        if !quiet {
-            let stdout = io::stdout();
-            let mut out = stdout.lock();
-            if let Err(err) = writeln!(out, "st: no changes detected") {
-                return handle_output(err);
-            }
-        }
-        return 0;
-    }
-
-    let mut count = 0;
-    let mut notify_errors = 0usize;
-    for path in &changed {
-        // Join with canonical_root (not config.repo_root) so symlinked
-        // repo roots don't produce paths outside the resolved tree.
-        let abs = canonical_root.join(path);
-        if abs.exists() {
-            // Canonicalize and verify the resolved path is still under
-            // canonical_root. A compromised git binary could emit paths
-            // that exploit OS-specific resolution (e.g. symlinks inside
-            // the repo, Windows junctions) to escape the repo boundary.
-            match abs.canonicalize() {
-                Ok(resolved) if resolved.starts_with(&canonical_root) => {
-                    if let Err(e) = index.notify_change(&resolved) {
-                        eprintln!("st update: {}: {e}", path.display());
-                        notify_errors += 1;
-                    } else {
-                        count += 1;
-                    }
-                }
-                Ok(resolved) => {
-                    eprintln!(
-                        "st update: {}: resolves outside repo root ({})",
-                        path.display(),
-                        resolved.display()
-                    );
-                    notify_errors += 1;
-                }
-                Err(e) => {
-                    eprintln!("st update: {}: {e}", path.display());
-                    notify_errors += 1;
+    match index.update_from_git(limits) {
+        Ok(crate::index::freshness::UpdateOutcome::Updated { files, skipped, .. }) => {
+            if !quiet {
+                let stdout = io::stdout();
+                let mut out = stdout.lock();
+                if let Err(err) = writeln!(out, "st: updated {} file(s)", files) {
+                    return handle_output(err);
                 }
             }
-        } else if let Err(e) = index.notify_delete(&abs) {
-            eprintln!("st update: {}: {e}", path.display());
-            notify_errors += 1;
-        } else {
-            count += 1;
+            // Surface partial updates: files git reported as changed but that
+            // could not be applied (escaped the repo, broken symlink, notify
+            // error). Exit 1 (matching the pre-rewrite contract) so scripts can
+            // detect a partial update. Run `st update --verbose` (Config.verbose)
+            // for per-file skip reasons.
+            if skipped > 0 {
+                eprintln!("st update: {skipped} file(s) skipped (run with verbose for details)");
+            }
+            drop(index);
+            if skipped > 0 {
+                1
+            } else {
+                0
+            }
         }
-    }
-
-    if let Err(e) = index.commit_batch() {
-        eprintln!("st update: commit failed: {e}");
-        return 2;
-    }
-
-    if !quiet {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        if let Err(err) = writeln!(out, "st: updated {} file(s)", count) {
-            return handle_output(err);
+        Ok(_) => {
+            // NoChanges, BudgetExceeded, TooManyFiles — none apply to CLI
+            // update (no budget, no max_files). Treat as no-changes.
+            if !quiet {
+                let stdout = io::stdout();
+                let mut out = stdout.lock();
+                if let Err(err) = writeln!(out, "st: no changes detected") {
+                    return handle_output(err);
+                }
+            }
+            0
         }
-    }
-    if notify_errors > 0 {
-        1
-    } else {
-        drop(index);
-        0
+        Err(e) => {
+            eprintln!("st update: {e}");
+            drop(index);
+            2
+        }
     }
 }
 

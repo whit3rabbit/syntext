@@ -1,21 +1,22 @@
 //! Count-matches renderer: prints exact per-file match counts.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::path_util::path_bytes;
-use crate::search::lines::for_each_line;
 use crate::Config;
 
-use super::{compile_output_regex, read_repo_file_bytes};
+use super::{compile_output_regex, ColorStyles};
+use super::color::write_styled;
 use crate::cli::search::SearchArgs;
 
 pub(in crate::cli) fn render_count_matches(
-    config: &Config,
+    _config: &Config,
     matches: &[crate::SearchMatch],
     args: &SearchArgs,
 ) -> io::Result<i32> {
+    let styles = ColorStyles::default();
     let re = match compile_output_regex(args) {
         Ok(r) => r,
         Err(e) => {
@@ -24,33 +25,31 @@ pub(in crate::cli) fn render_count_matches(
         }
     };
 
-    let mut per_file: BTreeSet<PathBuf> = BTreeSet::new();
+    // Count matches (rg counts submatches, so >1 per line is possible) from the
+    // in-memory result set, not by re-reading files at render time. This keeps
+    // the counts consistent with the search snapshot and honors -m/--max-count
+    // truncation already applied to `matches` in run_search. BTreeMap preserves
+    // the same sorted-by-path output order the previous BTreeSet gave.
+    let mut counts: BTreeMap<&PathBuf, usize> = BTreeMap::new();
     for m in matches {
-        per_file.insert(m.path.clone());
+        let n = re.find_iter(&m.line_content).count();
+        *counts.entry(&m.path).or_insert(0) += n;
     }
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut found_any = false;
-    for path in &per_file {
-        let raw_bytes = match read_repo_file_bytes(config, path) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let file_bytes = crate::index::normalize_encoding(&raw_bytes, config.verbose);
-
-        let mut count = 0usize;
-        for_each_line(file_bytes.as_ref(), |_, _, line| {
-            count += re.find_iter(line).count();
-        });
-        if count == 0 {
+    for (path, count) in &counts {
+        // A matched line can still yield zero submatches under an output regex
+        // (e.g. -w/-x boundary wrapping); skip those so we never print `path:0`.
+        if *count == 0 {
             continue;
         }
         found_any = true;
         if args.no_filename {
             writeln!(out, "{count}")?;
         } else {
-            out.write_all(path_bytes(path).as_ref())?;
+            write_styled(&mut out, args.color, styles.path, path_bytes(path).as_ref())?;
             writeln!(out, ":{count}")?;
         }
     }

@@ -22,7 +22,8 @@ pub struct InitArgs {
     #[command(flatten)]
     pub scope: AgentScope,
 
-    /// Agent integration name.
+    /// Agent integration name (claude, cursor, copilot, gemini, opencode,
+    /// openclaw, codex, cline, windsurf, kilocode, antigravity, githooks).
     #[arg(long, value_name = "AGENT")]
     pub agent: Option<String>,
 
@@ -69,6 +70,19 @@ pub struct InitArgs {
     /// Install the Google Antigravity rules integration.
     #[arg(long)]
     pub antigravity: bool,
+
+    /// Also install the git hooks integration (post-commit/post-checkout/
+    /// post-merge/post-rewrite auto-update; project scope only).
+    #[arg(long)]
+    pub githooks: bool,
+
+    /// Enable `core.fsmonitor` for this repository (`git config
+    /// core.fsmonitor true`), which makes bounded auto-update-on-search
+    /// freshness checks near-instant. Never set without this flag: enabling
+    /// fsmonitor starts a background daemon, so it requires explicit,
+    /// opt-in consent.
+    #[arg(long)]
+    pub fsmonitor: bool,
 }
 
 /// Agent integration subcommands.
@@ -76,21 +90,24 @@ pub struct InitArgs {
 pub enum AgentCommand {
     /// Install an agent integration.
     Install {
-        /// Agent integration name.
+        /// Agent integration name (claude, cursor, copilot, gemini, opencode,
+        /// openclaw, codex, cline, windsurf, kilocode, antigravity, githooks).
         agent: String,
         #[command(flatten)]
         scope: AgentScope,
     },
     /// Uninstall an agent integration.
     Uninstall {
-        /// Agent integration name.
+        /// Agent integration name (claude, cursor, copilot, gemini, opencode,
+        /// openclaw, codex, cline, windsurf, kilocode, antigravity, githooks).
         agent: String,
         #[command(flatten)]
         scope: AgentScope,
     },
     /// Show agent integration status.
     Show {
-        /// Agent integration name.
+        /// Agent integration name (claude, cursor, copilot, gemini, opencode,
+        /// openclaw, codex, cline, windsurf, kilocode, antigravity, githooks).
         agent: String,
         #[command(flatten)]
         scope: AgentScope,

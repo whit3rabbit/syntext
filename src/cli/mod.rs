@@ -3,27 +3,33 @@
 //! Uses clap derive for argument parsing. Output format is grep-compatible
 //! by default, with `--json` for machine-readable output.
 
+/// Command-line argument structures and CLI specifications.
 pub mod args;
 mod bench;
+mod catchup;
 mod commands;
 mod config;
 mod fallback;
+mod init;
 mod manage;
+mod post_filter;
 mod render;
 mod scope;
 mod search;
+mod search_args;
+#[cfg(feature = "symbols")]
+mod sym;
 
 use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::hook::vendors::{AgentAction, InstallScope};
 pub use args::{Cli, ManageCommand};
 use bench::cmd_bench_search;
-use commands::{AgentCommand, AgentScope, InitArgs};
+use init::{cmd_agent, cmd_init};
+use config::resolve_config;
 #[cfg(test)]
 use config::{clamp_max_file_size, overlaps_sensitive_prefix, MAX_FILE_SIZE_CEILING};
-use config::resolve_config;
 use manage::{cmd_index, cmd_status, cmd_type_list, cmd_update, cmd_verify};
 use scope::cmd_files;
 use search::{cmd_search, SearchArgs};
@@ -43,7 +49,7 @@ pub fn run() -> i32 {
     }
 
     let mut config = resolve_config(&cli);
-    config.verbose = cli.verbose || cli.debug;
+    config.verbose = cli.verbose || cli.compat.debug;
 
     match cli.command {
         Some(ManageCommand::Index {
@@ -80,53 +86,144 @@ pub fn run() -> i32 {
             // first positional to `pattern` (it doesn't know it's a path).
             // Shift that positional into `paths` so `st -e "pat" dir` works
             // like ripgrep.  Multiple -e values are OR-combined with `|`.
+            //
+            // -F (fixed strings) interaction with multiple -e: each pattern
+            // must be escaped INDIVIDUALLY before joining. Escaping the joined
+            // `(?:a)|(?:b)` would search for that literal string instead of
+            // `a` OR `b`. For multi-e under -F we escape each alternative and
+            // clear `fixed_strings` on the resulting SearchArgs, because the
+            // combined string is already a valid regex and re-escaping in
+            // `build_effective_pattern` would corrupt it. For a single -e (or
+            // no -e) under -F, `fixed_strings` stays set so
+            // `build_effective_pattern` escapes it (preserving the shared
+            // -w/-x wrapping path).
             let globs = cli.combined_globs();
-            let (pattern, paths) = if !cli.regexp.is_empty() {
+            // True when multiple -e patterns under -F have already been escaped
+            // and joined into `pattern` below; used to suppress the second
+            // escaping pass in `build_effective_pattern`.
+            let multi_e_fixed = cli.regexp.len() > 1 && cli.fixed_strings;
+            let (pattern, paths): (String, Vec<PathBuf>) = if !cli.regexp.is_empty() {
                 let mut p = cli.paths;
                 if let Some(pos) = cli.pattern {
                     p.insert(0, PathBuf::from(pos));
                 }
-                let combined = if cli.regexp.len() == 1 {
-                    cli.regexp.into_iter().next().unwrap()
+                if cli.regexp.len() == 1 {
+                    // Single -e: leave raw; build_effective_pattern handles -F escape.
+                    (cli.regexp.into_iter().next().unwrap(), p)
+                } else if cli.fixed_strings {
+                    // Multiple -e under -F: escape each alternative before joining.
+                    let combined = cli
+                        .regexp
+                        .iter()
+                        .map(|r| format!("(?:{})", regex::escape(r)))
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    (combined, p)
                 } else {
-                    cli.regexp
+                    let combined = cli
+                        .regexp
                         .iter()
                         .map(|r| format!("(?:{r})"))
                         .collect::<Vec<_>>()
-                        .join("|")
-                };
-                (combined, p)
+                        .join("|");
+                    (combined, p)
+                }
             } else {
+                // --sym/--refs name their target directly, so no content pattern
+                // is required when either is set (any given pattern is ignored).
+                #[cfg(feature = "symbols")]
+                let name_only = cli.sym.is_some() || cli.refs.is_some();
+                #[cfg(not(feature = "symbols"))]
+                let name_only = false;
                 match cli.pattern {
                     Some(pat) => (pat, cli.paths),
                     None => {
-                        eprintln!("st: a pattern is required (try `st --help`)");
-                        return 2;
+                        if name_only {
+                            (String::new(), cli.paths)
+                        } else {
+                            eprintln!("st: a pattern is required (try `st --help`)");
+                            return 2;
+                        }
                     }
                 }
             };
+            // `fixed_strings` was already applied above for the multi-e case:
+            // clear it so build_effective_pattern does not re-escape the regex.
+            let fixed_strings = cli.fixed_strings && !multi_e_fixed;
 
             // --pcre2 is not supported; warn and continue with default engine.
-            if cli.pcre2 {
+            if cli.compat.pcre2 {
                 eprintln!("st: --pcre2 is not supported; using default regex engine");
             }
 
-            // --smart-case: case-insensitive if pattern has no uppercase chars.
+            // Flags that filter the result set but are not yet implemented.
+            // Warn so callers (including agents) know their filter was dropped.
+            if let Some(ref glob) = cli.compat.iglob {
+                eprintln!(
+                    "st: --iglob '{glob}' is not implemented; results may include excluded paths (use -g '!{glob}' for negation)"
+                );
+            }
+            if let Some(ref pf) = cli.compat.pattern_file {
+                eprintln!(
+                    "st: -f/--file '{}' is not implemented; no patterns were read from that file",
+                    pf.display()
+                );
+                // Without a pattern from the file there is nothing to search.
+                // Return 2 (error) so the caller can diagnose the issue rather
+                // than silently returning zero matches.
+                return 2;
+            }
+            if cli.compat.multiline {
+                eprintln!(
+                    "st: --multiline (-U) is not supported; patterns containing \\n will not match across lines"
+                );
+            }
+            if let Some(ref mfs) = cli.compat.max_filesize {
+                eprintln!(
+                    "st: --max-filesize '{mfs}' is not implemented; file-size filtering is skipped"
+                );
+            }
+            if let Some(ref ig) = cli.compat.ignore_file {
+                eprintln!(
+                    "st: --ignore-file '{}' is not implemented; ignore rules from that file are skipped",
+                    ig.display()
+                );
+            }
+
+            // --smart-case: case-insensitive if the pattern has no uppercase
+            // LITERAL characters.
+            //
+            // Compatibility note (ripgrep divergence): we scan every char in
+            // `pattern`, so regex metacharacters that happen to be uppercase
+            // class shorthands — `\S`, `\D`, `\W`, or ranges like `[A-Z]` —
+            // count as "has uppercase" and force case-sensitive mode, even
+            // though they carry no literal casing. ripgrep's smart-case inspects
+            // only the literal characters of the parsed regex HIR, so
+            // `rg -S '\Sfoo'` stays case-insensitive. The practical impact is
+            // narrow (patterns mixing class shorthands with smart-case are
+            // rare), and a faithful fix requires HIR inspection; tracked as a
+            // known compatibility gap rather than silently diverging.
             let ignore_case = if cli.smart_case && !cli.case_sensitive && !cli.ignore_case {
                 !pattern.chars().any(|c| c.is_uppercase())
             } else {
                 cli.ignore_case
             };
 
-            // --pretty is an alias for --heading --line-number (color is no-op).
+            // --pretty implies --heading --line-number --color=always. The color
+            // half is resolved here (auto = tty-gated otherwise); an explicit
+            // `--color=never` still wins, so `--pretty --color=never` is plain.
             let heading = cli.heading || cli.pretty;
             let line_number = cli.line_number > 0 || cli.pretty;
+            let color = render::resolve_color(
+                render::ColorWhen::parse(cli.color.as_deref()),
+                cli.pretty,
+            );
 
             let ctx = cli.context.unwrap_or(0);
             let search_args = SearchArgs {
                 pattern,
                 paths,
-                fixed_strings: cli.fixed_strings,
+                fixed_strings,
                 ignore_case,
                 word_regexp: cli.word_regexp,
                 line_regexp: cli.line_regexp,
@@ -142,6 +239,7 @@ pub fn run() -> i32 {
                 only_matching: cli.only_matching,
                 json: cli.json,
                 heading,
+                color,
                 no_line_number: cli.no_line_number > 0,
                 no_filename: cli.no_filename,
                 after_context: cli.after_context.unwrap_or(ctx),
@@ -160,97 +258,27 @@ pub fn run() -> i32 {
                 search_stats: cli.search_stats,
                 max_depth: cli.max_depth,
                 fallback: cli.fallback,
+                // The --sym/--sym-kind flags only exist when the symbols feature
+                // is built; without it these stay None so no content pattern is
+                // ever rerouted to symbol search.
+                #[cfg(feature = "symbols")]
+                sym: cli.sym,
+                #[cfg(not(feature = "symbols"))]
+                sym: None,
+                #[cfg(feature = "symbols")]
+                sym_kind: cli.sym_kind,
+                #[cfg(not(feature = "symbols"))]
+                sym_kind: None,
+                #[cfg(feature = "symbols")]
+                refs: cli.refs,
+                #[cfg(not(feature = "symbols"))]
+                refs: None,
             };
             cmd_search(config, &search_args)
         }
     }
 }
 
-fn cmd_init(args: &InitArgs) -> i32 {
-    let agent = match resolve_init_agent(args) {
-        Ok(agent) => agent,
-        Err(err) => {
-            eprintln!("{err}");
-            return 2;
-        }
-    };
-    let scope = resolve_init_scope(args, &agent);
-    crate::hook::vendors::cmd_agent(AgentAction::Install, &agent, scope)
-}
-
-fn resolve_init_agent(args: &InitArgs) -> Result<String, String> {
-    let selected = [
-        ("claude", args.claude),
-        ("cursor", args.cursor),
-        ("copilot", args.copilot),
-        ("gemini", args.gemini),
-        ("opencode", args.opencode),
-        ("openclaw", args.openclaw),
-        ("codex", args.codex),
-        ("cline", args.cline),
-        ("windsurf", args.windsurf),
-        ("kilocode", args.kilocode),
-        ("antigravity", args.antigravity),
-    ]
-    .into_iter()
-    .filter_map(|(name, enabled)| enabled.then_some(name))
-    .collect::<Vec<_>>();
-
-    match (args.agent.as_deref(), selected.as_slice()) {
-        (Some(_), [_first, ..]) => {
-            Err("st: choose either --agent or one agent shortcut flag, not both".to_string())
-        }
-        (Some(agent), []) => Ok(agent.to_string()),
-        (None, []) => Ok("claude".to_string()),
-        (None, [agent]) => Ok((*agent).to_string()),
-        (None, [..]) => Err("st: choose only one agent shortcut flag".to_string()),
-    }
-}
-
-fn resolve_init_scope(args: &InitArgs, agent: &str) -> InstallScope {
-    if args.scope.global && agent == "copilot" {
-        return InstallScope::Project;
-    }
-    if args.scope.global {
-        InstallScope::Global
-    } else {
-        InstallScope::Project
-    }
-}
-
-fn cmd_agent(command: &AgentCommand) -> i32 {
-    match command {
-        AgentCommand::Install { agent, scope } => {
-            let Some(scope) = resolve_agent_scope(scope) else {
-                return 2;
-            };
-            crate::hook::vendors::cmd_agent(AgentAction::Install, agent, scope)
-        }
-        AgentCommand::Uninstall { agent, scope } => {
-            let Some(scope) = resolve_agent_scope(scope) else {
-                return 2;
-            };
-            crate::hook::vendors::cmd_agent(AgentAction::Uninstall, agent, scope)
-        }
-        AgentCommand::Show { agent, scope } => {
-            let Some(scope) = resolve_agent_scope(scope) else {
-                return 2;
-            };
-            crate::hook::vendors::cmd_agent(AgentAction::Show, agent, scope)
-        }
-    }
-}
-
-fn resolve_agent_scope(scope: &AgentScope) -> Option<InstallScope> {
-    match (scope.global, scope.project) {
-        (true, false) => Some(InstallScope::Global),
-        (false, true) => Some(InstallScope::Project),
-        _ => {
-            eprintln!("st: choose exactly one of --global or --project");
-            None
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests;

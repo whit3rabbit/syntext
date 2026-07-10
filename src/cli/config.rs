@@ -44,6 +44,19 @@ pub(super) fn resolve_config(cli: &Cli) -> Config {
         Some("1") | Some("true")
     );
 
+    // --no-update or SYNTEXT_NO_AUTO_UPDATE=1 disables auto-update-on-search.
+    let auto_update = !cli.no_update
+        && !matches!(
+            std::env::var("SYNTEXT_NO_AUTO_UPDATE").ok().as_deref(),
+            Some("1") | Some("true")
+        );
+
+    // SYNTEXT_NO_ASYNC_UPDATE=1 disables the detached `st update --quiet`
+    // catch-up spawned after search results print when the index is known
+    // stale beyond the search-time budget. Default: enabled.
+    let auto_update_async_catchup =
+        resolve_auto_update_async_catchup(std::env::var("SYNTEXT_NO_ASYNC_UPDATE").ok().as_deref());
+
     Config {
         max_file_size,
         max_segments: 10,
@@ -53,6 +66,16 @@ pub(super) fn resolve_config(cli: &Cli) -> Config {
         strict_permissions: true,
         verify_on_open,
         recalibrate: false,
+        auto_update,
+        auto_update_max_files: std::env::var("SYNTEXT_AUTO_UPDATE_MAX_FILES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(200),
+        auto_update_budget_ms: std::env::var("SYNTEXT_AUTO_UPDATE_BUDGET_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(150),
+        auto_update_async_catchup,
     }
 }
 
@@ -80,8 +103,19 @@ pub(super) fn clamp_max_file_size(raw: Option<u64>) -> u64 {
     raw.unwrap_or(10 * 1024 * 1024).min(MAX_FILE_SIZE_CEILING)
 }
 
+/// Determine whether the async catch-up update (a detached `st update
+/// --quiet` spawned after stale search results print) is enabled, given the
+/// raw `SYNTEXT_NO_ASYNC_UPDATE` environment value.
+///
+/// Extracted so tests can exercise both branches without mutating the
+/// process environment via `set_var`/`remove_var`, which is racy under the
+/// parallel test harness (see the doc comment on `clamp_max_file_size`).
+pub(super) fn resolve_auto_update_async_catchup(raw: Option<&str>) -> bool {
+    !matches!(raw, Some("1") | Some("true"))
+}
+
 /// Walk up from CWD looking for a `.git` directory.
-fn detect_repo_root() -> Option<PathBuf> {
+pub(super) fn detect_repo_root() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     loop {
         if dir.join(".git").exists() {
@@ -202,4 +236,68 @@ pub(super) fn overlaps_sensitive_prefix<'a>(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_config;
+    use crate::cli::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn auto_update_enabled_by_default() {
+        let cli = Cli::try_parse_from(["st", "pattern"]).expect("parse failed");
+        let config = resolve_config(&cli);
+        assert!(config.auto_update, "auto_update should be true by default");
+    }
+
+    #[test]
+    fn no_update_flag_disables_auto_update() {
+        let cli = Cli::try_parse_from(["st", "--no-update", "pattern"]).expect("parse failed");
+        let config = resolve_config(&cli);
+        assert!(
+            !config.auto_update,
+            "--no-update should set auto_update=false"
+        );
+    }
+
+    #[test]
+    fn auto_update_defaults_are_sensible() {
+        let cli = Cli::try_parse_from(["st", "pattern"]).expect("parse failed");
+        let config = resolve_config(&cli);
+        assert!(config.auto_update_max_files > 0);
+        assert!(config.auto_update_budget_ms > 0);
+    }
+
+    #[test]
+    fn async_catchup_enabled_by_default() {
+        use super::resolve_auto_update_async_catchup;
+        assert!(resolve_auto_update_async_catchup(None));
+    }
+
+    #[test]
+    fn async_catchup_disabled_by_env() {
+        use super::resolve_auto_update_async_catchup;
+        assert!(!resolve_auto_update_async_catchup(Some("1")));
+        assert!(!resolve_auto_update_async_catchup(Some("true")));
+    }
+
+    #[test]
+    fn async_catchup_enabled_for_unrecognized_values() {
+        use super::resolve_auto_update_async_catchup;
+        assert!(resolve_auto_update_async_catchup(Some("0")));
+        assert!(resolve_auto_update_async_catchup(Some("")));
+    }
+
+    #[test]
+    fn config_honors_no_async_update_env_absent() {
+        // Sanity check: resolve_config wires resolve_auto_update_async_catchup
+        // through to Config, defaulting to enabled when the env var is unset
+        // in this test process.
+        if std::env::var("SYNTEXT_NO_ASYNC_UPDATE").is_err() {
+            let cli = Cli::try_parse_from(["st", "pattern"]).expect("parse failed");
+            let config = resolve_config(&cli);
+            assert!(config.auto_update_async_catchup);
+        }
+    }
 }

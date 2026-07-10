@@ -8,6 +8,9 @@ use clap::Parser;
 
 pub use super::commands::ManageCommand;
 
+mod compat;
+pub use compat::CompatibilityArgs;
+
 /// Fast code search with index acceleration. ripgrep-style interface.
 ///
 /// Use `st index` to build the index first, then `st <pattern>` to search.
@@ -47,11 +50,32 @@ pub struct Cli {
     #[arg(short = 'x', long = "line-regexp", overrides_with = "word_regexp")]
     pub line_regexp: bool,
 
-    /// Invert matching: print lines that do NOT match the pattern within candidate files.
-    /// Unlike grep -v and rg -v, this only examines files identified by the index as containing
-    /// the pattern; non-candidate files are not searched (v1 limitation).
+    /// Invert matching: print lines that do NOT match the pattern.
+    /// Scans every file in scope (like grep -v and rg -v), not just index
+    /// candidates, so files containing no match still contribute their lines.
     #[arg(short = 'v', long = "invert-match")]
     pub invert_match: bool,
+
+    /// Look up a symbol by name (prefix match) via the symbol index instead of
+    /// searching file contents. Replaces the old `sym:`/`def:`/`ref:` pattern
+    /// prefixes so those strings can be searched literally again.
+    #[cfg(feature = "symbols")]
+    #[arg(long = "sym", value_name = "NAME")]
+    pub sym: Option<String>,
+
+    /// Restrict `--sym` (or `--refs`) to a symbol kind (function, method, class,
+    /// struct, enum, trait, interface, const, type). Ignored without a name flag.
+    #[cfg(feature = "symbols")]
+    #[arg(long = "sym-kind", value_name = "KIND")]
+    pub sym_kind: Option<String>,
+
+    /// Find references to NAME: resolve NAME via the symbol index, then search
+    /// for word-boundary, case-sensitive occurrences across the corpus. Not
+    /// scope-aware (matches shadowed identifiers, strings, comments). Requires
+    /// the symbols feature.
+    #[cfg(feature = "symbols")]
+    #[arg(long = "refs", value_name = "NAME")]
+    pub refs: Option<String>,
 
     /// Specify pattern explicitly (avoids subcommand name conflicts).
     /// Can be given multiple times; patterns are combined with OR (|).
@@ -232,11 +256,17 @@ pub struct Cli {
     pub files: bool,
 
     // --- Display ---
-    /// Control color output (accepted for rg compatibility, currently no-op).
-    #[arg(long = "color", value_name = "WHEN", default_value = None)]
+    /// Color output: always, never, or auto (default: auto, color only on a TTY).
+    #[arg(
+        long = "color",
+        value_name = "WHEN",
+        default_value = None,
+        value_parser = ["always", "never", "auto", "ansi"]
+    )]
     pub color: Option<String>,
 
-    /// Custom color specifications (rg compatibility, no-op).
+    /// Custom color specs (rg compatibility): accepted but not yet honored;
+    /// fixed defaults (match/path/line) are used.
     #[arg(long = "colors", value_name = "SPEC", action = clap::ArgAction::Append)]
     pub colors: Vec<String>,
 
@@ -256,163 +286,13 @@ pub struct Cli {
     #[arg(long = "stats")]
     pub search_stats: bool,
 
-    // --- File discovery (mostly no-ops for indexed search) ---
-    /// Search hidden files and directories (already default for indexed search).
-    #[arg(long = "hidden")]
-    pub hidden: bool,
-
-    /// Don't respect ignore files (no-op for indexed search).
-    #[arg(long = "no-ignore")]
-    pub no_ignore: bool,
-
-    /// Don't respect VCS ignore files (no-op for indexed search).
-    #[arg(long = "no-ignore-vcs")]
-    pub no_ignore_vcs: bool,
-
-    /// Don't respect ignore files from parent directories (no-op).
-    #[arg(long = "no-ignore-parent")]
-    pub no_ignore_parent: bool,
-
-    /// Additional ignore file path (no-op for indexed search).
-    #[arg(long = "ignore-file", value_name = "PATH")]
-    pub ignore_file: Option<PathBuf>,
-
-    /// Follow symbolic links (no-op for indexed search).
-    #[arg(short = 'L', long = "follow")]
-    pub follow: bool,
-
     /// Limit directory traversal depth.
     #[arg(short = 'd', long = "max-depth", value_name = "NUM")]
     pub max_depth: Option<usize>,
 
-    /// Reduce filtering: -u hidden, -uu no-ignore, -uuu binary (no-op).
-    #[arg(short = 'u', long = "unrestricted", action = clap::ArgAction::Count)]
-    pub unrestricted: u8,
-
-    /// Don't cross filesystem boundaries (no-op).
-    #[arg(long = "one-file-system")]
-    pub one_file_system: bool,
-
-    // --- Sorting ---
-    /// Sort results by criterion: path, modified, accessed, created, none.
-    #[arg(long = "sort", value_name = "SORTBY")]
-    pub sort: Option<String>,
-
-    /// Sort results in reverse order.
-    #[arg(long = "sortr", value_name = "SORTBY")]
-    pub sortr: Option<String>,
-
-    // --- Binary/encoding ---
-    /// Search binary files as if they were text (no-op for indexed search).
-    #[arg(short = 'a', long = "text")]
-    pub text: bool,
-
-    /// Search binary files (no-op for indexed search).
-    #[arg(long = "binary")]
-    pub binary: bool,
-
-    /// Ignore files larger than NUM+SUFFIX (no-op for indexed search).
-    #[arg(long = "max-filesize", value_name = "NUM+SUFFIX")]
-    pub max_filesize: Option<String>,
-
-    /// Specify text encoding (no-op).
-    #[arg(short = 'E', long = "encoding", value_name = "ENCODING")]
-    pub encoding: Option<String>,
-
-    /// Treat CRLF as line terminator (no-op).
-    #[arg(long)]
-    pub crlf: bool,
-
-    /// Use NUL as line terminator (no-op).
-    #[arg(long = "null-data")]
-    pub null_data: bool,
-
-    // --- Regex engine ---
-    /// Use PCRE2 regex engine (not supported, warns).
-    #[arg(short = 'P', long = "pcre2")]
-    pub pcre2: bool,
-
-    /// Enable multiline matching (no-op).
-    #[arg(short = 'U', long = "multiline")]
-    pub multiline: bool,
-
-    /// Make dot match newlines in multiline mode (no-op).
-    #[arg(long = "multiline-dotall")]
-    pub multiline_dotall: bool,
-
-    /// Choose regex engine (no-op).
-    #[arg(long = "engine", value_name = "ENGINE")]
-    pub engine: Option<String>,
-
-    /// Set DFA size limit (no-op).
-    #[arg(long = "dfa-size-limit", value_name = "NUM")]
-    pub dfa_size_limit: Option<String>,
-
-    /// Set regex compilation size limit (no-op).
-    #[arg(long = "regex-size-limit", value_name = "NUM")]
-    pub regex_size_limit: Option<String>,
-
-    // --- Pattern source ---
-    /// Read patterns from file (no-op).
-    #[arg(short = 'f', long = "file", value_name = "PATTERNFILE")]
-    pub pattern_file: Option<PathBuf>,
-
-    // --- Type management ---
-    /// Add a custom file type definition (no-op).
-    #[arg(long = "type-add", value_name = "TYPESPEC", action = clap::ArgAction::Append)]
-    pub type_add: Vec<String>,
-
-    /// Clear file type definitions (no-op).
-    #[arg(long = "type-clear", value_name = "TYPE", action = clap::ArgAction::Append)]
-    pub type_clear: Vec<String>,
-
-    /// Case-insensitive glob (no-op).
-    #[arg(long = "iglob", value_name = "GLOB")]
-    pub iglob: Option<String>,
-
-    // --- Performance (no-ops) ---
-    /// Number of threads (no-op).
-    #[arg(short = 'j', long = "threads", value_name = "NUM")]
-    pub threads: Option<usize>,
-
-    /// Use memory maps (no-op).
-    #[arg(long)]
-    pub mmap: bool,
-
-    /// Disable memory maps (no-op).
-    #[arg(long = "no-mmap")]
-    pub no_mmap: bool,
-
-    // --- Preprocessing (no-ops) ---
-    /// Preprocess files with command (no-op).
-    #[arg(long = "pre", value_name = "COMMAND")]
-    pub pre: Option<String>,
-
-    /// Only preprocess files matching glob (no-op).
-    #[arg(long = "pre-glob", value_name = "GLOB")]
-    pub pre_glob: Option<String>,
-
-    // --- Compressed files ---
-    /// Search in compressed files (no-op).
-    #[arg(short = 'z', long = "search-zip")]
-    pub search_zip: bool,
-
-    // --- Diagnostics ---
-    /// Show debug messages (alias for --verbose).
-    #[arg(long)]
-    pub debug: bool,
-
-    /// Show trace messages (no-op).
-    #[arg(long)]
-    pub trace: bool,
-
-    /// Suppress error messages (no-op).
-    #[arg(long = "no-messages")]
-    pub no_messages: bool,
-
-    /// Ignore configuration files (no-op).
-    #[arg(long = "no-config")]
-    pub no_config: bool,
+    /// No-op or compatibility options to mirror ripgrep interface.
+    #[command(flatten)]
+    pub compat: CompatibilityArgs,
 
     // --- Index configuration ---
     /// Override index directory (default: .syntext/ at repo root).
@@ -432,6 +312,11 @@ pub struct Cli {
     /// index; intended for searching un-indexed paths.
     #[arg(long = "fallback", global = true)]
     pub fallback: bool,
+
+    /// Skip auto-update of the index before searching. Also disabled by
+    /// SYNTEXT_NO_AUTO_UPDATE=1.
+    #[arg(long = "no-update", global = true)]
+    pub no_update: bool,
 
     /// Management subcommands (index, update, status).
     #[command(subcommand)]

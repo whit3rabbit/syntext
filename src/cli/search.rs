@@ -1,6 +1,6 @@
 //! Search argument parsing, query execution, and result rendering.
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -10,93 +10,13 @@ use crate::{Config, IndexError};
 
 // Re-export for render submodules that import via `crate::cli::search::collect_scoped_paths`.
 pub(super) use super::scope::collect_scoped_paths;
+use super::post_filter::apply_post_filters;
+use super::render::build_effective_pattern;
 use super::scope::{
-    explicit_path_specs, matches_any_explicit_path, matches_optional_glob, path_depth,
-    search_options, shows_filename_by_default, sort_and_dedup_matches, truncate_matches_per_file,
+    explicit_path_specs, search_options, sort_and_dedup_matches,
 };
 
-#[derive(Clone)]
-pub(super) struct SearchArgs {
-    pub pattern: String,
-    pub paths: Vec<PathBuf>,
-    pub fixed_strings: bool,
-    pub ignore_case: bool,
-    pub word_regexp: bool,
-    pub line_regexp: bool,
-    pub line_number: bool,
-    pub with_filename: bool,
-    pub invert_match: bool,
-    pub files_with_matches: bool,
-    pub files_without_match: bool,
-    pub count: bool,
-    pub count_matches: bool,
-    pub max_count: Option<usize>,
-    pub quiet: bool,
-    pub only_matching: bool,
-    pub json: bool,
-    pub heading: bool,
-    pub no_line_number: bool,
-    pub no_filename: bool,
-    pub after_context: usize,
-    pub before_context: usize,
-    pub file_types: Vec<String>,
-    pub type_nots: Vec<String>,
-    pub globs: Vec<String>,
-    pub column: bool,
-    pub vimgrep: bool,
-    pub replace: Option<String>,
-    pub null: bool,
-    pub context_separator: String,
-    pub byte_offset: bool,
-    pub trim: bool,
-    pub max_columns: Option<usize>,
-    pub search_stats: bool,
-    pub max_depth: Option<usize>,
-    pub fallback: bool,
-}
-
-impl Default for SearchArgs {
-    fn default() -> Self {
-        Self {
-            pattern: String::new(),
-            paths: Vec::new(),
-            fixed_strings: false,
-            ignore_case: false,
-            word_regexp: false,
-            line_regexp: false,
-            line_number: false,
-            with_filename: false,
-            invert_match: false,
-            files_with_matches: false,
-            files_without_match: false,
-            count: false,
-            count_matches: false,
-            max_count: None,
-            quiet: false,
-            only_matching: false,
-            json: false,
-            heading: false,
-            no_line_number: false,
-            no_filename: false,
-            after_context: 0,
-            before_context: 0,
-            file_types: Vec::new(),
-            type_nots: Vec::new(),
-            globs: Vec::new(),
-            column: false,
-            vimgrep: false,
-            replace: None,
-            null: false,
-            context_separator: "--".to_string(),
-            byte_offset: false,
-            trim: false,
-            max_columns: None,
-            search_stats: false,
-            max_depth: None,
-            fallback: false,
-        }
-    }
-}
+pub(super) use super::search_args::SearchArgs;
 
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let index = match Index::open(config.clone()) {
@@ -111,18 +31,56 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             return 2;
         }
     };
-    let output_args = args.with_effective_output_defaults(&config);
+
+    // Bounded auto-update: run git change detection before searching so the
+    // index is as fresh as possible within a latency budget, and emit the
+    // staleness notice on stderr when still behind. See
+    // `catchup::run_bounded_auto_update` for the full error-handling
+    // contract (a failed or skipped update can only ever leave the index
+    // stale, never change the search's own exit code).
+    let needs_async_catchup = super::catchup::run_bounded_auto_update(&index, &config, args.quiet);
+
+    let exit_code = run_and_render(&index, &config, args);
+
+    // Spawn the async catch-up only after results have been printed, so the
+    // extra process never delays or reorders the search's own stdout/stderr.
+    if needs_async_catchup {
+        super::catchup::maybe_spawn_async_catchup(&config);
+    }
+
+    exit_code
+}
+
+fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
+    let output_args = args.with_effective_output_defaults(config);
+
+    #[cfg(feature = "symbols")]
+    if args.sym.is_some() || args.refs.is_some() {
+        // --sym and --refs are mutually exclusive; --sym-kind needs a name.
+        if let Some(code) = super::sym::reject_sym_refs_conflicts(&output_args) {
+            return code;
+        }
+    }
+    #[cfg(feature = "symbols")]
+    if args.sym.is_some() {
+        // --sym is a pure lookup: grep-style output modifiers do not apply.
+        // (--refs produces content matches, so it skips this check.)
+        if let Some(code) = super::sym::reject_incompatible_symbol_flags(&output_args) {
+            return code;
+        }
+    }
+
     let search_start = Instant::now();
 
     if output_args.invert_match {
         return handle_output_code(super::render::render_invert_match(
-            &index,
-            &config,
+            index,
+            config,
             &output_args,
         ));
     }
 
-    let results = match run_search(&index, &config, args) {
+    let results = match run_search(index, config, args) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("st: {e}");
@@ -142,7 +100,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     }
 
     if results.is_empty() && output_args.json {
-        if let Err(err) = super::render::render_json(&index, &config, &results, &output_args) {
+        if let Err(err) = super::render::render_json(index, config, &results, &output_args) {
             return handle_output(err);
         }
         return 1;
@@ -182,7 +140,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         let matched: std::collections::BTreeSet<_> =
             results.iter().map(|m| m.path.clone()).collect();
         let mut found_any = false;
-        for path in collect_scoped_paths(&index, &config, &output_args) {
+        for path in collect_scoped_paths(index, config, &output_args) {
             if matched.contains(&path) {
                 continue;
             }
@@ -199,7 +157,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
 
     if output_args.count_matches || (output_args.count && output_args.only_matching) {
         return handle_output_code(super::render::render_count_matches(
-            &config,
+            config,
             &results,
             &output_args,
         ));
@@ -217,8 +175,10 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
             let result = if output_args.no_filename {
                 writeln!(out, "{n}")
             } else {
+                let count_sep = if output_args.null { b'\0' } else { b':' };
                 out.write_all(path_bytes(path).as_ref())
-                    .and_then(|_| writeln!(out, ":{n}"))
+                    .and_then(|_| out.write_all(&[count_sep]))
+                    .and_then(|_| writeln!(out, "{n}"))
             };
             if let Err(err) = result {
                 return handle_output(err);
@@ -230,55 +190,30 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     let has_context = output_args.after_context > 0 || output_args.before_context > 0;
 
     let render = if output_args.json {
-        super::render::render_json(&index, &config, &results, &output_args)
+        super::render::render_json(index, config, &results, &output_args)
     } else if output_args.vimgrep {
-        super::render::render_vimgrep(&config, &results, &output_args)
+        super::render::render_vimgrep(config, &results, &output_args)
     } else if output_args.only_matching {
-        super::render::render_only_matching(&config, &results, &output_args)
+        super::render::render_only_matching(config, &results, &output_args)
     } else if has_context {
-        super::render::render_with_context(&config, &results, &output_args)
+        super::render::render_with_context(config, &results, &output_args)
     } else if output_args.heading {
         super::render::render_heading(&results, &output_args)
     } else {
         super::render::render_flat(&results, &output_args)
     };
 
-    if let Err(err) = render {
-        return handle_output(err);
-    }
+    if let Err(err) = render { return handle_output(err); }
 
     0
 }
 
 fn handle_output_code(result: io::Result<i32>) -> i32 {
-    match result {
-        Ok(code) => code,
-        Err(err) => handle_output(err),
-    }
+    result.unwrap_or_else(handle_output)
 }
 
 fn handle_output(err: io::Error) -> i32 {
-    if err.kind() == io::ErrorKind::BrokenPipe {
-        0
-    } else {
-        eprintln!("st: {err}");
-        2
-    }
-}
-
-pub(super) fn build_effective_pattern(args: &SearchArgs) -> String {
-    let pat = if args.fixed_strings {
-        regex::escape(&args.pattern)
-    } else {
-        args.pattern.clone()
-    };
-    if args.line_regexp {
-        format!("^(?:{pat})$")
-    } else if args.word_regexp {
-        format!(r"\b{pat}\b")
-    } else {
-        pat
-    }
+    if err.kind() == io::ErrorKind::BrokenPipe { 0 } else { eprintln!("st: {err}"); 2 }
 }
 
 pub(super) fn run_search(
@@ -286,54 +221,44 @@ pub(super) fn run_search(
     config: &Config,
     args: &SearchArgs,
 ) -> Result<Vec<crate::SearchMatch>, crate::IndexError> {
-    let effective_pattern = build_effective_pattern(args);
+    // Explicit symbol lookup (--sym). Bypasses content routing entirely; the flag
+    // only exists when the symbols feature is built.
+    #[cfg(feature = "symbols")]
+    if let Some(name) = &args.sym {
+        return index.search_symbols(name, args.sym_kind.as_deref());
+    }
+    // Find-references (--refs): resolve the name via the symbol index, then run
+    // a word-boundary case-sensitive content search. Results are real content
+    // matches, so the same -t/-g/--max-depth/-m post-filtering applies.
+    #[cfg(feature = "symbols")]
+    if let Some(name) = &args.refs {
+        let explicit_specs = explicit_path_specs(&config.repo_root, &args.paths);
+        let results = index.search_references(name, args.sym_kind.as_deref())?;
+        return Ok(apply_post_filters(results, args, &explicit_specs));
+    }
+    let (routing_pattern, verify_pattern) = build_effective_pattern(args);
     let explicit_specs = explicit_path_specs(&config.repo_root, &args.paths);
-    let mut results = if explicit_specs.is_empty() {
-        index.search(&effective_pattern, &search_options(args, None))?
+    let make_opts = |path_filter: Option<String>| {
+        let mut opts = search_options(args, path_filter);
+        opts.verify_pattern = verify_pattern.clone();
+        if args.count || args.files_with_matches || args.files_without_match {
+            assert!(
+                opts.max_results.is_none(),
+                "max_results must be None in count/files-with-matches/files-without-match modes to avoid truncation bugs"
+            );
+        }
+        opts
+    };
+    let results = if explicit_specs.is_empty() {
+        index.search(&routing_pattern, &make_opts(None))?
     } else {
         let mut merged = Vec::new();
         for spec in &explicit_specs {
-            merged.extend(index.search(
-                &effective_pattern,
-                &search_options(args, Some(spec.path_filter())),
-            )?);
+            merged.extend(index.search(&routing_pattern, &make_opts(Some(spec.path_filter())))?);
         }
         sort_and_dedup_matches(merged)
     };
-    if !explicit_specs.is_empty()
-        || !args.file_types.is_empty()
-        || !args.type_nots.is_empty()
-        || !args.globs.is_empty()
-    {
-        results.retain(|m| {
-            matches_any_explicit_path(&m.path, &explicit_specs)
-                && matches_optional_glob(&m.path, &args.file_types, &args.type_nots, &args.globs)
-        });
-    }
-    if let Some(depth) = args.max_depth {
-        results.retain(|m| path_depth(&m.path) <= depth);
-    }
-    if let Some(limit) = args.max_count {
-        results = truncate_matches_per_file(results, limit);
-    }
-    Ok(results)
+    Ok(apply_post_filters(results, args, &explicit_specs))
 }
 
-impl SearchArgs {
-    fn with_effective_output_defaults(&self, config: &Config) -> Self {
-        let mut effective = self.clone();
-        let stdout_is_tty = io::stdout().is_terminal();
 
-        if !self.line_number && !self.no_line_number {
-            effective.no_line_number = !stdout_is_tty;
-        }
-
-        if self.with_filename {
-            effective.no_filename = false;
-        } else if !self.no_filename {
-            effective.no_filename = !shows_filename_by_default(config, &self.paths);
-        }
-
-        effective
-    }
-}

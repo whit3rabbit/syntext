@@ -3,8 +3,10 @@
 // for Rust < 1.74 compatibility (Windows CI constraint).
 #![allow(clippy::io_other_error)]
 
+mod color;
 mod context;
 mod count;
+mod flat;
 mod invert;
 mod json;
 mod only_matching;
@@ -17,6 +19,9 @@ pub(super) use count::render_count_matches;
 pub(super) use invert::render_invert_match;
 pub(super) use json::render_json;
 pub(super) use only_matching::render_only_matching;
+// Color decision + fixed styles, resolved in `cli/mod.rs` and consumed by the
+// renderers and `write_formatted_line` below.
+pub(in crate::cli) use color::{resolve_color, ColorStyles, ColorWhen};
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,7 +30,7 @@ use std::time::Duration;
 use crate::path_util::path_bytes;
 use crate::Config;
 
-use super::search::{build_effective_pattern, SearchArgs};
+use super::search::SearchArgs;
 use crate::search::REGEX_SIZE_LIMIT;
 
 pub(in crate::cli) fn group_matches_by_path(
@@ -41,30 +46,62 @@ pub(in crate::cli) fn group_matches_by_path(
     by_file
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::cli) struct FormatOpts {
+    pub no_path: bool,
+    pub no_num: bool,
+    pub null: bool,
+    /// Emit ANSI color for path/line-number/match text. When false, output is
+    /// byte-identical to the uncolored path (spans are ignored).
+    pub color: bool,
+}
+
+/// Sorted, non-overlapping match byte spans into `content`, for highlighting.
+/// Returns an empty vec when `re` is `None` (no regex was compiled).
+pub(in crate::cli) fn match_spans(
+    re: Option<&regex::bytes::Regex>,
+    content: &[u8],
+) -> Vec<(usize, usize)> {
+    match re {
+        Some(r) => r
+            .find_iter(content)
+            .map(|m| (m.start(), m.end()))
+            .filter(|(s, e)| s < e)
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
 pub(in crate::cli) fn write_formatted_line(
     out: &mut dyn Write,
-    no_path: bool,
-    no_num: bool,
+    opts: FormatOpts,
     path: &Path,
     line_num: usize,
     sep: u8,
     content: &[u8],
+    spans: &[(usize, usize)],
 ) -> io::Result<()> {
-    match (no_path, no_num) {
-        (true, true) => out.write_all(content)?,
+    let styles = ColorStyles::default();
+    match (opts.no_path, opts.no_num) {
+        (true, true) => color::write_highlighted(out, opts.color, styles, content, spans)?,
         (true, false) => {
-            write!(out, "{line_num}{}", sep as char)?;
-            out.write_all(content)?;
+            color::write_styled_num(out, opts.color, styles.line, line_num)?;
+            write!(out, "{}", sep as char)?;
+            color::write_highlighted(out, opts.color, styles, content, spans)?;
         }
         (false, true) => {
-            out.write_all(&path_bytes(path))?;
-            out.write_all(&[sep])?;
-            out.write_all(content)?;
+            color::write_styled(out, opts.color, styles.path, &path_bytes(path))?;
+            let path_sep = if opts.null { b'\0' } else { sep };
+            out.write_all(&[path_sep])?;
+            color::write_highlighted(out, opts.color, styles, content, spans)?;
         }
         (false, false) => {
-            out.write_all(&path_bytes(path))?;
-            write!(out, "{}{line_num}{}", sep as char, sep as char)?;
-            out.write_all(content)?;
+            color::write_styled(out, opts.color, styles.path, &path_bytes(path))?;
+            let path_sep = if opts.null { b'\0' } else { sep };
+            out.write_all(&[path_sep])?;
+            color::write_styled_num(out, opts.color, styles.line, line_num)?;
+            write!(out, "{}", sep as char)?;
+            color::write_highlighted(out, opts.color, styles, content, spans)?;
         }
     }
     out.write_all(b"\n")
@@ -157,15 +194,67 @@ pub(in crate::cli) fn write_json_line(out: &mut dyn Write, line: &str) -> io::Re
     Ok(line.len() + 1)
 }
 
+/// Canonicalized repo root, computed once per render call (not per file) to
+/// avoid a `realpath` syscall on every matched file. Falls back to the
+/// non-canonical root if resolution fails; per-file canonicalize + O_NOFOLLOW
+/// + fd/stat verification still guard each read.
+pub(in crate::cli) fn repo_canonical_root(config: &Config) -> PathBuf {
+    config
+        .repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| config.repo_root.clone())
+}
+
+/// Read a matched file's bytes for re-rendering. Returns `None` when the file
+/// is unreadable: silently for `NotFound` (file deleted between match and
+/// render, normal in agent workflows), with a stderr warning otherwise so a
+/// file that grew past `max_file_size` or failed verification is not silently
+/// dropped from `--count`/`--json`/context/only-matching/invert output.
+pub(in crate::cli) fn read_matched_file(
+    config: &Config,
+    canonical_root: &Path,
+    rel_path: &Path,
+    quiet: bool,
+) -> Option<Vec<u8>> {
+    match read_repo_file_bytes(config, canonical_root, rel_path) {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => {
+            if !quiet {
+                eprintln!(
+                    "st: matched file unreadable, omitted from output: {}: {e}",
+                    rel_path.display()
+                );
+            }
+            None
+        }
+    }
+}
+
 pub(in crate::cli) fn read_repo_file_bytes(
     config: &Config,
+    canonical_root: &Path,
     rel_path: &Path,
 ) -> io::Result<Vec<u8>> {
     let abs_path = config.repo_root.join(rel_path);
 
+    // Verify containment under the repo root, matching the hardened open path
+    // in search/resolver.rs::resolve_doc. Without this, a symlink swap between
+    // index time and render time could redirect the second read outside the
+    // repo (information disclosure). `canonical_root` is computed once per
+    // render call by the caller. A NotFound (file vanished between match and
+    // render) surfaces as a normal io::Error to the caller.
+    let canonical = abs_path.canonicalize()?;
+    if !canonical.starts_with(canonical_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "resolved path escapes repo root",
+        ));
+    }
+
     #[cfg(any(unix, windows))]
-    let pre_open_meta = std::fs::metadata(&abs_path)?;
-    let mut file = crate::index::open_readonly_nofollow(&abs_path)?;
+    let pre_open_meta = std::fs::metadata(&canonical)?;
+    let file = crate::index::open_readonly_nofollow(&canonical)?;
     #[cfg(any(unix, windows))]
     if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
         return Err(io::Error::new(
@@ -174,14 +263,60 @@ pub(in crate::cli) fn read_repo_file_bytes(
         ));
     }
 
+    // Bound the read at config.max_file_size (+1 sentinel) so a file that grew
+    // to gigabytes between index time and render time cannot trigger an
+    // unbounded read_to_end allocation. saturating_add guards against
+    // max_file_size == u64::MAX (would otherwise wrap to 0 and read nothing).
+    // ErrorKind::Other (not FileTooLarge, which needs Rust 1.83) keeps the
+    // documented <1.74 MSRV; callers distinguish "grew" from "vanished" via
+    // read_matched_file rather than by error kind.
+    let mut reader = file.take(config.max_file_size.saturating_add(1));
     let mut raw_content = Vec::new();
-    file.read_to_end(&mut raw_content)?;
+    reader.read_to_end(&mut raw_content)?;
+    if raw_content.len() as u64 > config.max_file_size {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "file grew beyond max_file_size since index time",
+        ));
+    }
     Ok(raw_content)
 }
 
+/// Build the `(routing_pattern, verify_pattern)` pair for a search.
+///
+/// - `routing_pattern`: the raw pattern used for gram extraction.
+/// - `verify_pattern`: when `-w` or `-x` is set, the boundary-wrapped
+///   pattern for verification; otherwise `None`.
+///
+/// Separating these prevents the wrapped regex from being routed through
+/// the HIR walker, which would reject boundary-hugging grams and force
+/// every `-w`/`-x` query into a full scan.
+pub(in crate::cli) fn build_effective_pattern(args: &SearchArgs) -> (String, Option<String>) {
+    let pat = if args.fixed_strings {
+        regex::escape(&args.pattern)
+    } else {
+        args.pattern.clone()
+    };
+    if args.line_regexp {
+        let wrapped = format!("^(?:{pat})$");
+        (pat, Some(wrapped))
+    } else if args.word_regexp {
+        // Group pat so a multi-`-e` alternation like `(?:a)|(?:b)` anchors on
+        // both sides of every alternative. Without the inner group, `\b` would
+        // bind only the first/last alternative (`\b(?:a)|(?:b)\b`).
+        let wrapped = format!(r"\b(?:{pat})\b");
+        (pat, Some(wrapped))
+    } else {
+        (pat, None)
+    }
+}
+
 pub(in crate::cli) fn compile_output_regex(args: &SearchArgs) -> io::Result<regex::bytes::Regex> {
-    regex::bytes::RegexBuilder::new(&build_effective_pattern(args))
+    let (routing, verify) = build_effective_pattern(args);
+    let pattern = verify.as_deref().unwrap_or(&routing);
+    regex::bytes::RegexBuilder::new(pattern)
         .case_insensitive(args.ignore_case)
+        .multi_line(true)
         .size_limit(REGEX_SIZE_LIMIT)
         .dfa_size_limit(REGEX_SIZE_LIMIT)
         .build()
@@ -206,168 +341,9 @@ pub(super) fn format_match_json(m: &crate::SearchMatch) -> String {
     )
 }
 
-pub(super) fn render_flat(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
-    render_flat_to(matches, args, &mut io::stdout().lock())
-}
-
-pub(in crate::cli) fn render_flat_to(
-    matches: &[crate::SearchMatch],
-    args: &SearchArgs,
-    out: &mut dyn Write,
-) -> io::Result<()> {
-    let re = if args.replace.is_some() || args.column {
-        Some(compile_output_regex(args)?)
-    } else {
-        None
-    };
-    for m in matches {
-        let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
-        let Some(line) = apply_output_modifiers(&raw, args) else {
-            continue;
-        };
-        if args.byte_offset {
-            write!(out, "{}:", m.byte_offset)?;
-        }
-        if args.column && !args.no_filename && !args.no_line_number {
-            out.write_all(&path_bytes(&m.path))?;
-            write!(out, ":{}:{}:", m.line_number, m.submatch_start + 1)?;
-            out.write_all(&line)?;
-            out.write_all(b"\n")?;
-        } else {
-            write_formatted_line(
-                out,
-                args.no_filename,
-                args.no_line_number,
-                &m.path,
-                m.line_number as usize,
-                b':',
-                &line,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
-    render_heading_to(matches, args, &mut io::stdout().lock())
-}
-
-pub(in crate::cli) fn render_heading_to(
-    matches: &[crate::SearchMatch],
-    args: &SearchArgs,
-    out: &mut dyn Write,
-) -> io::Result<()> {
-    let re = if args.replace.is_some() {
-        Some(compile_output_regex(args)?)
-    } else {
-        None
-    };
-    let mut current_path: Option<PathBuf> = None;
-    for m in matches {
-        if current_path.as_ref() != Some(&m.path) {
-            if current_path.is_some() {
-                writeln!(out)?;
-            }
-            out.write_all(path_bytes(&m.path).as_ref())?;
-            out.write_all(b"\n")?;
-            current_path = Some(m.path.clone());
-        }
-        let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
-        let Some(line) = apply_output_modifiers(&raw, args) else {
-            continue;
-        };
-        if args.byte_offset {
-            write!(out, "{}:", m.byte_offset)?;
-        }
-        if args.no_line_number {
-            out.write_all(&line)?;
-            out.write_all(b"\n")?;
-        } else if args.column {
-            write!(out, "{}:{}:", m.line_number, m.submatch_start + 1)?;
-            out.write_all(&line)?;
-            out.write_all(b"\n")?;
-        } else {
-            write!(out, "{}:", m.line_number)?;
-            out.write_all(&line)?;
-            out.write_all(b"\n")?;
-        }
-    }
-    Ok(())
-}
-
-/// Emit one output line per match in path:line:column:content format.
-pub(super) fn render_vimgrep(
-    _config: &Config,
-    matches: &[crate::SearchMatch],
-    args: &SearchArgs,
-) -> io::Result<()> {
-    render_vimgrep_to(matches, args, &mut io::stdout().lock())
-}
-
-pub(in crate::cli) fn render_vimgrep_to(
-    matches: &[crate::SearchMatch],
-    args: &SearchArgs,
-    out: &mut dyn Write,
-) -> io::Result<()> {
-    let re = compile_output_regex(args)?;
-    for m in matches {
-        let raw = apply_replace(
-            args.replace.as_ref().map(|_| &re),
-            args.replace.as_deref(),
-            &m.line_content,
-        );
-        let Some(line) = apply_output_modifiers(&raw, args) else {
-            continue;
-        };
-        for hit in re.find_iter(&m.line_content) {
-            if hit.start() == hit.end() {
-                continue;
-            }
-            let col = hit.start() + 1; // 1-based
-            if args.byte_offset {
-                write!(out, "{}:", m.byte_offset)?;
-            }
-            out.write_all(&path_bytes(&m.path))?;
-            write!(out, ":{}:{col}:", m.line_number)?;
-            out.write_all(&line)?;
-            out.write_all(b"\n")?;
-        }
-    }
-    Ok(())
-}
-
-/// Apply --replace to line content, returning the original slice if no replacement is needed.
-fn apply_replace<'a>(
-    re: Option<&regex::bytes::Regex>,
-    replacement: Option<&str>,
-    line: &'a [u8],
-) -> std::borrow::Cow<'a, [u8]> {
-    match (re, replacement) {
-        (Some(re), Some(repl)) => {
-            std::borrow::Cow::Owned(re.replace_all(line, repl.as_bytes()).into_owned())
-        }
-        _ => std::borrow::Cow::Borrowed(line),
-    }
-}
-
-/// Apply --trim and --max-columns to a line. Returns None if the line should be skipped.
-fn apply_output_modifiers<'a>(
-    line: &'a [u8],
-    args: &SearchArgs,
-) -> Option<std::borrow::Cow<'a, [u8]>> {
-    let trimmed: &[u8] = if args.trim {
-        let start = line
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .unwrap_or(line.len());
-        &line[start..]
-    } else {
-        line
-    };
-    if let Some(max) = args.max_columns {
-        if trimmed.len() > max {
-            return None;
-        }
-    }
-    Some(std::borrow::Cow::Borrowed(trimmed))
-}
+// Flat, heading, and vimgrep renderers live in `flat.rs` to keep this file
+// under the 400-line quality gate; re-exported so callers keep using
+// `render::render_flat` etc.
+pub(in crate::cli) use flat::{render_flat, render_heading, render_vimgrep};
+#[cfg(test)]
+pub(in crate::cli) use flat::{render_flat_to, render_heading_to, render_vimgrep_to};

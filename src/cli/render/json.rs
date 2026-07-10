@@ -10,7 +10,8 @@ use crate::Config;
 
 use super::{
     compile_output_regex, group_matches_by_path, json_data, json_elapsed, json_line_message,
-    json_stats, json_submatches, read_repo_file_bytes, write_json_line,
+    json_stats, json_submatches, read_matched_file, read_repo_file_bytes, repo_canonical_root,
+    write_json_line,
 };
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
@@ -36,10 +37,11 @@ pub(in crate::cli) fn render_json(
     let scoped_paths = collect_scoped_paths(index, config, args);
     let total_searches = scoped_paths.len();
     let searches_with_match = by_file.len();
+    let canonical_root = repo_canonical_root(config);
 
     for (path, match_lines) in &by_file {
         let file_start = Instant::now();
-        let Ok(raw_content) = read_repo_file_bytes(config, path) else {
+        let Some(raw_content) = read_matched_file(config, &canonical_root, path, args.quiet) else {
             continue;
         };
         total_bytes_searched += raw_content.len();
@@ -118,7 +120,7 @@ pub(in crate::cli) fn render_json(
         if by_file.contains_key(&path) {
             continue;
         }
-        if let Ok(raw_content) = read_repo_file_bytes(config, &path) {
+        if let Ok(raw_content) = read_repo_file_bytes(config, &canonical_root, &path) {
             total_bytes_searched += raw_content.len();
         }
     }

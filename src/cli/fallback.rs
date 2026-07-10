@@ -34,7 +34,9 @@ pub(super) fn handle_missing_index(_config: &Config, args: &SearchArgs, index_di
         // Opt-in is off: keep the actionable error, but advertise both remedies.
         eprintln!("st: no index found at {dir}");
         eprintln!("st:   build one with `st index` (run inside the repo you want to search), or");
-        eprintln!("st:   set SYNTEXT_FALLBACK_RG=1 (or pass --fallback) to search with ripgrep/grep");
+        eprintln!(
+            "st:   set SYNTEXT_FALLBACK_RG=1 (or pass --fallback) to search with ripgrep/grep"
+        );
         return 2;
     }
 
@@ -72,7 +74,10 @@ fn fallback_enabled(args: &SearchArgs) -> bool {
         return true;
     }
     match std::env::var("SYNTEXT_FALLBACK_RG") {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         Err(_) => false,
     }
 }
@@ -270,20 +275,13 @@ mod tests {
 
     #[test]
     fn filter_strips_value_flags_eq_form() {
-        let got = filter_st_args(osv(&[
-            "st",
-            "--repo-root=/tmp/r",
-            "--index=/tmp/i",
-            "foo",
-        ]));
+        let got = filter_st_args(osv(&["st", "--repo-root=/tmp/r", "--index=/tmp/i", "foo"]));
         assert_eq!(to_strings(got), vec!["foo"]);
     }
 
     #[test]
     fn filter_preserves_rg_shared_flags() {
-        let got = filter_st_args(osv(&[
-            "st", "-i", "--json", "-A", "2", "-e", "foo", "src",
-        ]));
+        let got = filter_st_args(osv(&["st", "-i", "--json", "-A", "2", "-e", "foo", "src"]));
         assert_eq!(
             to_strings(got),
             vec!["-i", "--json", "-A", "2", "-e", "foo", "src"]
