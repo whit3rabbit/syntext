@@ -271,6 +271,10 @@ impl Manifest {
                 known.insert(s.post_filename.as_str());
             }
         }
+        // The delete-set sidecar is generation-named (`deletes-<uuid>.idx`);
+        // only the one referenced by this manifest is live. Any other is a
+        // stale generation left by a prior delta and must be swept.
+        let live_deletes: Option<&str> = self.overlay_deletes_file.as_deref();
         for entry in std::fs::read_dir(index_dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -282,6 +286,12 @@ impl Manifest {
                 if let Err(e) = std::fs::remove_file(entry.path()) {
                     eprintln!("syntext: gc: could not remove {}: {e}", name_str);
                 }
+            }
+            let is_stale_deletes = name_str.starts_with("deletes-")
+                && name_str.ends_with(".idx")
+                && live_deletes != Some(name_str.as_ref());
+            if is_stale_deletes {
+                let _ = std::fs::remove_file(entry.path());
             }
             if name_str.ends_with(".tmp") {
                 let _ = std::fs::remove_file(entry.path());

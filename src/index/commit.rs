@@ -100,7 +100,7 @@ impl Index {
         old_snap: &IndexSnapshot,
         take: &mut TakeResult,
     ) -> Result<(), IndexError> {
-        // Total base doc count for overlay doc_id assignment.
+        // Total base doc count for the overlay ratio capacity check.
         let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
         let base_doc_id_limit = helpers::base_doc_id_limit(old_snap)?;
 

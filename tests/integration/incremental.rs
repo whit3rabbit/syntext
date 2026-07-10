@@ -1006,3 +1006,257 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bug 11: durable delta-segment updates on committed changes.
+//
+// The core proof is CROSS-PROCESS durability: a HEAD move applied via
+// `rebuild_if_stale` must survive dropping the `Index` and reopening a fresh
+// one (the in-memory overlay does not survive a reopen, so anything visible
+// after reopen came off disk). These tests also guard the duplicate-match
+// regression that the persistent delete-set exists to prevent.
+// ---------------------------------------------------------------------------
+
+/// A git repo + built index, with the paths needed to reopen a fresh `Index`.
+struct DeltaFixture {
+    repo: tempfile::TempDir,
+    index_dir: tempfile::TempDir,
+    index: Index,
+}
+
+impl DeltaFixture {
+    fn config(&self) -> Config {
+        Config {
+            index_dir: self.index_dir.path().to_path_buf(),
+            repo_root: self.repo.path().to_path_buf(),
+            ..Config::default()
+        }
+    }
+
+    fn git(&self, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(self.repo.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    }
+
+    /// Drop the current handle and open a brand-new one from disk. Proves the
+    /// change is durable across processes, not just in this process's overlay.
+    fn reopen(self) -> (tempfile::TempDir, tempfile::TempDir, Index) {
+        let config = self.config();
+        let DeltaFixture {
+            repo, index_dir, index,
+        } = self;
+        drop(index);
+        let reopened = Index::open(config).expect("reopen");
+        (repo, index_dir, reopened)
+    }
+}
+
+fn delta_setup() -> DeltaFixture {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(
+        repo.path().join("src/main.rs"),
+        "fn old_alpha_marker() { let shared_token = 1; }\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).expect("build");
+    DeltaFixture { repo, index_dir, index }
+}
+
+/// A committed MODIFY is durable across processes, old content is gone, and the
+/// modified file yields exactly one match (no stale-base + delta duplicate).
+#[test]
+fn committed_modify_visible_cross_process() {
+    let fx = delta_setup();
+    // New content keeps `shared_token` but swaps the fn marker.
+    fs::write(
+        fx.repo.path().join("src/main.rs"),
+        "fn new_beta_marker() { let shared_token = 2; }\n",
+    )
+    .unwrap();
+    fx.git(&["commit", "-am", "modify", "--no-gpg-sign"]);
+
+    let stats = fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+    assert!(stats.is_some(), "HEAD moved, so an update must have run");
+
+    let (_repo, _index_dir, index) = fx.reopen();
+    assert_eq!(search(&index, "new_beta_marker").len(), 1, "new content found once");
+    assert!(search(&index, "old_alpha_marker").is_empty(), "old content gone");
+    // shared_token is in the live file exactly once; the stale base doc must be
+    // hidden by the persistent delete-set or it would match a second time.
+    assert_eq!(
+        search(&index, "shared_token").len(),
+        1,
+        "modified file must yield exactly one match, not a stale-base duplicate"
+    );
+    drop(index);
+}
+
+/// A committed ADD is durable across processes.
+#[test]
+fn committed_add_visible_cross_process() {
+    let fx = delta_setup();
+    fs::write(
+        fx.repo.path().join("src/added.rs"),
+        "fn brand_new_marker() {}\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-m", "add", "--no-gpg-sign"]);
+
+    fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+    let (_repo, _index_dir, index) = fx.reopen();
+    assert_eq!(search(&index, "brand_new_marker").len(), 1, "added file found");
+    assert_eq!(search(&index, "old_alpha_marker").len(), 1, "original still found");
+    drop(index);
+}
+
+/// A committed DELETE is durable across processes.
+#[test]
+fn committed_delete_gone_cross_process() {
+    let fx = delta_setup();
+    // Add a second file so the repo is non-empty after the delete.
+    fs::write(fx.repo.path().join("src/keep.rs"), "fn keep_marker() {}\n").unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-m", "add keep", "--no-gpg-sign"]);
+    fx.index.rebuild_if_stale().expect("rebuild after add");
+
+    fs::remove_file(fx.repo.path().join("src/main.rs")).unwrap();
+    fx.git(&["commit", "-am", "delete main", "--no-gpg-sign"]);
+    fx.index.rebuild_if_stale().expect("rebuild after delete");
+
+    let (_repo, _index_dir, index) = fx.reopen();
+    assert!(
+        search(&index, "old_alpha_marker").is_empty(),
+        "deleted file's content must be gone across processes"
+    );
+    assert_eq!(search(&index, "keep_marker").len(), 1, "kept file still found");
+    drop(index);
+}
+
+/// A corrupt deletes sidecar makes `open()` FAIL CLOSED rather than silently
+/// starting with an empty delete-set (which would resurrect stale base docs).
+#[test]
+fn corrupt_deletes_idx_fails_closed() {
+    let fx = delta_setup();
+    fs::write(
+        fx.repo.path().join("src/main.rs"),
+        "fn new_beta_marker() { let shared_token = 2; }\n",
+    )
+    .unwrap();
+    fx.git(&["commit", "-am", "modify", "--no-gpg-sign"]);
+    fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+
+    let config = fx.config();
+    let index_dir = fx.index_dir.path().to_path_buf();
+    drop(fx.index);
+
+    // Find the generation-named deletes sidecar and corrupt its body.
+    let deletes = std::fs::read_dir(&index_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n.starts_with("deletes-") && n.ends_with(".idx"))
+        .expect("a modify delta must have written a deletes sidecar");
+    let path = index_dir.join(&deletes);
+    let mut bytes = std::fs::read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    std::fs::write(&path, &bytes).unwrap();
+
+    assert!(
+        Index::open(config).is_err(),
+        "a corrupt deletes sidecar must fail open, not start empty"
+    );
+    let _ = fx.repo;
+}
+
+/// A modify goes through the delta path (appends a segment + writes a deletes
+/// sidecar), not a full rebuild (which would collapse back to one segment).
+#[test]
+fn delta_appends_segment_not_full_rebuild() {
+    use syntext::index::manifest::Manifest;
+    let fx = delta_setup();
+    let before = Manifest::load(fx.index_dir.path()).unwrap();
+    assert_eq!(before.segments.len(), 1, "one file -> one base segment");
+
+    fs::write(
+        fx.repo.path().join("src/main.rs"),
+        "fn new_beta_marker() { let shared_token = 2; }\n",
+    )
+    .unwrap();
+    fx.git(&["commit", "-am", "modify", "--no-gpg-sign"]);
+    fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+
+    let after = Manifest::load(fx.index_dir.path()).unwrap();
+    assert_eq!(after.segments.len(), 2, "delta appended a segment");
+    assert!(
+        after.overlay_deletes_file.is_some(),
+        "a modify must persist a delete-set sidecar"
+    );
+    drop(fx.index);
+}
+
+/// Repeated deltas past the segment cap trigger compaction, which physically
+/// drops superseded docs and clears the delete-set sidecar.
+#[test]
+fn many_deltas_trigger_compaction_reset() {
+    use syntext::index::manifest::Manifest;
+    let fx = delta_setup();
+    let cap = fx.config().max_segments; // default 10
+
+    for i in 0..(cap + 3) {
+        fs::write(
+            fx.repo.path().join("src/main.rs"),
+            format!("fn gen_marker_{i}() {{ let shared_token = {i}; }}\n"),
+        )
+        .unwrap();
+        fx.git(&["commit", "-am", &format!("gen {i}"), "--no-gpg-sign"]);
+        fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+    }
+
+    let manifest = Manifest::load(fx.index_dir.path()).unwrap();
+    assert!(
+        manifest.segments.len() <= cap,
+        "segment count {} must stay bounded by max_segments {cap}",
+        manifest.segments.len()
+    );
+
+    // Latest content is correct and de-duplicated after compaction.
+    let (_repo, _index_dir, index) = fx.reopen();
+    let last = cap + 2;
+    assert_eq!(search(&index, &format!("gen_marker_{last}")).len(), 1, "latest found once");
+    assert!(search(&index, "gen_marker_0").is_empty(), "earliest superseded content gone");
+    assert_eq!(
+        search(&index, "shared_token").len(),
+        1,
+        "exactly one live doc for the repeatedly-modified file"
+    );
+    drop(index);
+}

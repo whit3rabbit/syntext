@@ -264,7 +264,7 @@ fn partial(changed: HashSet<PathBuf>, start: Instant) -> ChangeSet {
 /// is returned (not discarded) so the caller gets a real, non-zero
 /// files-behind estimate. Without a deadline (CLI `st update`),
 /// `wait_with_output` drains concurrently for the same reason.
-fn run_git_bounded(
+pub(super) fn run_git_bounded(
     git: &Path,
     repo_root: &Path,
     args: &[&str],

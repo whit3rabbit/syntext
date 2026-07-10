@@ -30,6 +30,12 @@ pub(crate) use io_util::verify_fd_matches_stat;
 /// Manifest serialization, locking, and generation management.
 pub mod manifest;
 #[cfg(not(target_arch = "wasm32"))]
+mod delta;
+#[cfg(not(target_arch = "wasm32"))]
+mod delta_apply;
+#[cfg(not(target_arch = "wasm32"))]
+mod deletes_idx;
+#[cfg(not(target_arch = "wasm32"))]
 mod open;
 #[cfg(not(target_arch = "wasm32"))]
 mod paths_idx;
@@ -109,8 +115,21 @@ pub struct Index {
 #[cfg(not(target_arch = "wasm32"))]
 impl Index {
     fn install_rebuilt_index(&self, rebuilt: &Index) -> Result<IndexStats, IndexError> {
+        let take = self.pending.take_for_commit();
         self.snapshot.store(rebuilt.snapshot());
-        self.pending.reset();
+
+        // Re-notify any edits that occurred concurrently during the build/compact/delta apply window.
+        for edit in take.drained {
+            match edit.kind {
+                overlay::EditKind::Changed => {
+                    self.pending.notify_change(&edit.path);
+                }
+                overlay::EditKind::Deleted => {
+                    self.pending.notify_delete(&edit.path);
+                }
+            }
+        }
+
         #[cfg(feature = "symbols")]
         if let Some(symbol_index) = &self.symbol_index {
             symbol_index.reopen(&self.config.index_dir.join("symbols.db"))?;
@@ -136,9 +155,13 @@ impl Index {
         let rebuilt = match build_fn(self.config.clone()) {
             Ok(rebuilt) => rebuilt,
             Err(err) => {
-                self._dir_lock
-                    .try_lock_shared()
-                    .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+                if let Err(e) = self._dir_lock.try_lock_shared() {
+                    if self.config.verbose {
+                        eprintln!(
+                            "syntext: warning: failed to re-acquire shared directory lock after build error: {e}"
+                        );
+                    }
+                }
                 return Err(err);
             }
         };
@@ -178,6 +201,15 @@ impl Index {
         for seg in snap.base_segments() {
             seg.verify_integrity()?;
             seg.verify_postings()?;
+        }
+        // Verify deletes sidecar if present in the manifest.
+        let manifest = Manifest::load(&self.config.index_dir)?;
+        if let Some(ref deletes_file) = manifest.overlay_deletes_file {
+            self::deletes_idx::read_deletes_idx(&self.config.index_dir, deletes_file).map_err(|e| {
+                IndexError::CorruptIndex(format!(
+                    "delete-set sidecar {deletes_file} verification failed: {e}"
+                ))
+            })?;
         }
         Ok(())
     }
@@ -291,9 +323,13 @@ impl Index {
         {
             Ok(rebuilt) => rebuilt,
             Err(err) => {
-                self._dir_lock
-                    .try_lock_shared()
-                    .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+                if let Err(e) = self._dir_lock.try_lock_shared() {
+                    if self.config.verbose {
+                        eprintln!(
+                            "syntext: warning: failed to re-acquire shared directory lock after compact error: {e}"
+                        );
+                    }
+                }
                 return Err(err);
             }
         };
@@ -311,13 +347,13 @@ impl Index {
     ///
     /// A full rebuild (not an incremental overlay apply) is deliberate here:
     /// this runs from `cmd_update` / the git hooks in a *separate process*, and
-    /// the overlay is in-memory only (never persisted to disk -- see
-    /// `commit.rs` / `open.rs`). An incremental overlay apply would update just
-    /// this process's snapshot and vanish on exit, so a later `st search`
-    /// process would not see the committed change. Rewriting base segments is
-    /// currently the only way to make a HEAD-move durable across processes.
-    /// Incremental-per-commit updates require overlay-generation persistence
-    /// (a deferred milestone), not a cheaper diff here.
+    /// Rebuilds the index or applies a committed delta if the repository's git HEAD has changed since the last build.
+    ///
+    /// Returns `Some(IndexStats)` if an update was executed, or `None` if the index is already fresh.
+    ///
+    /// Attempts to apply a cheap durable delta first (appending a delta segment and updating
+    /// the persistent delete-set). Falls back to a full rebuild if the delta path cannot safely or
+    /// cheaply handle the change set (e.g. non-ancestor HEAD, over-cap change set, or overlay full).
     pub fn rebuild_if_stale(&self) -> Result<Option<IndexStats>, IndexError> {
         if self.pending.has_uncommitted() {
             self.commit_batch()?;
@@ -327,6 +363,15 @@ impl Index {
         let current_head = helpers::current_repo_head(&self.config.repo_root)?;
         if manifest.base_commit == current_head {
             return Ok(None);
+        }
+
+        // Try a cheap durable delta first (diff base_commit..HEAD, append a delta
+        // segment + persistent delete-set). `try_committed_delta` returns
+        // `Some(stats)` when it applied one and `None` for anything the delta
+        // path cannot safely/cheaply handle. A full rebuild is always correct,
+        // so any "no" is answered by one.
+        if let Some(stats) = self.try_committed_delta(&manifest, current_head.as_deref())? {
+            return Ok(Some(stats));
         }
 
         self.rebuild_with(build::build_index).map(Some)

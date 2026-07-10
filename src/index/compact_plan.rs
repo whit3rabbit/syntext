@@ -118,6 +118,14 @@ pub(super) fn plan(snapshot: &IndexSnapshot, config: &Config) -> Option<Compacti
         overlay_docs as f64 / base_docs as f64 > 0.10
     };
     let segment_limit_exceeded = snapshot.base.segments.len() > config.max_segments.max(1);
+    // ponytail: no delete-ratio trigger here. Durable incremental deltas
+    // (`index::delta`) append a segment for every add/modify commit, so the
+    // segment-count trigger already reclaims superseded base docs on any normal
+    // workload; results stay correct meanwhile via the persisted delete-set.
+    // A pure delete-only-heavy workload that never crosses the segment cap could
+    // accumulate hidden dead docs (space only, never wrong results) until the
+    // next add/modify or full rebuild. Add a delete-ratio trigger here (with a
+    // matching CompactionReason) if that ever shows up as real bloat.
     if !overlay_ratio_exceeded && !segment_limit_exceeded {
         return None;
     }

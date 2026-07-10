@@ -279,10 +279,30 @@ impl Index {
             )));
         }
 
+        // Load the persistent delete-set (base doc_ids superseded/removed by
+        // durable incremental deltas). Unlike paths.idx this is a SOURCE OF
+        // TRUTH, not a cache: a base doc is hidden from search only by
+        // delete_set, and the verifier re-reads live file bytes for base docs,
+        // so a lost delete-set would surface a modified file's stale base doc
+        // AND its new delta doc as duplicate matches. Therefore FAIL CLOSED:
+        // if the manifest names a deletes sidecar and it will not load, refuse
+        // to open rather than silently start empty. `None` means a fresh build
+        // or post-compaction index with no deletes, where empty is correct.
+        let delete_set = match &manifest.overlay_deletes_file {
+            None => RoaringBitmap::new(),
+            Some(name) => super::deletes_idx::read_deletes_idx(&config.index_dir, name).map_err(
+                |e| {
+                    IndexError::CorruptIndex(format!(
+                        "delete-set sidecar {name} unreadable ({e}); run `st index` to rebuild"
+                    ))
+                },
+            )?,
+        };
+
         let snapshot = Arc::new(snapshot::new_snapshot(
             base,
             OverlayView::empty(),
-            RoaringBitmap::new(),
+            delete_set,
             path_index,
             HashMap::new(),
             scan_threshold,

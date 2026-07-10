@@ -26,6 +26,7 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
     - **Forward-slash path normalization**: All paths stored in segments must use forward slashes (`/`). Use `path_util::normalize_to_forward_slashes()` at ingestion boundaries. Byte-level matching in `path/filter.rs` and `path/mod.rs` splits on `b'/'` only.
     - **Illegal filename characters in tests**: Windows forbids `\`, `<`, `>`, `"`, `|`, `?`, `*`, and control characters (including `\t`, `\n`) in file/directory names. Gate such tests with `#[cfg(unix)]`.
     - **`Index::build` in a git repo indexes `.git/hooks/*.sample`**, so `base_doc_count` is ~20+, not your fixture file count. Tests that need `OverlayFull` (overlay > 50% of base) must size the change set off `index.stats().total_documents`, not a hardcoded small number.
+    - **Cross-process durability tests**: to prove a change survives across processes (not just this process's overlay), `drop(index)` then `Index::open` a fresh handle and assert against that — the overlay is empty on reopen, so anything still visible came off disk. A real git repo + `git commit` is required to exercise the delta path (`rebuild_if_stale` only fires on `base_commit != HEAD`). Pattern: `committed_*_cross_process` in `tests/integration/incremental.rs`.
 
 ## Dependencies
 
@@ -145,6 +146,7 @@ To ensure search correctness, prevent false-negatives/positives, and maintain ro
 - **CLI Subprocess Differential Test (`oracle_cli`)**: A subprocess-based target executing CLI runs of `st` against `rg` on dynamically generated corpora.
 - **Current Status**: Fully implemented, integrated into the quality gate, and running cleanly. All differential targets pass with zero failures.
 - **proptest randomness**: oracle targets are random per run — one green run is a single sample, NOT proof. Failures persist to `tests/integration/*.proptest-regressions` (deterministic replay next run; check them in). Sweep with `PROPTEST_CASES=1024 cargo test --features oracle <name>` before trusting a change.
+- **`oracle_incremental::test_incremental_differential` has a pre-existing failing seed** (a Tier-A miss on an untracked/`GrowPastLimit` sequence in the *uncommitted-drift* path). It reproduces on a clean baseline, so `git stash` your work and re-run before assuming your change caused it. It never `git commit`s, so it does NOT exercise the committed-HEAD delta path.
 - **`oracle_incremental` gotcha**: it drives a subprocess `st` that auto-updates from git independently; the harness must NOT hold a concurrent in-process `Index` lock during the subprocess search, or the subprocess's `OverlayFull` rebuild is blocked (LockConflict → false-stale Tier-A failure). Release/reopen around the subprocess.
 
 
@@ -295,7 +297,9 @@ All PRs must pass before merge:
 - **Stable file IDs are a long-term choice** for incremental path-index maintenance, even though the first implementation regressed `commit_batch`; compare against `docs/BENCHMARKS.md` before changing course.
 - **File-level documents**, not chunks. Segment format uses u32 IDs that can represent chunk_ids later.
 - **Full reindex at 30% overlay threshold** is the only mechanism that cleans stale doc_ids from base segments. Overlay compaction is not needed (single merged view).
-- **Overlay is in-memory only.** `commit_batch` persists nothing to disk (`open.rs` loads `OverlayView::empty()`); only `build::build_index` and compaction write durable segments. Any cross-process freshness (git hooks, async catch-up -- both run as a separate `st update` process) must full-rebuild, not overlay-apply, or a later `st search` process won't see the change. Incremental-per-commit needs the deferred overlay-generation persistence first.
+- **Overlay is in-memory only.** `commit_batch` persists nothing to disk (`open.rs` loads `OverlayView::empty()`); only `build::build_index` and compaction write durable segments. An in-search overlay-apply is invisible to a later `st search` process, so cross-process freshness comes from the durable delta path below (or a full rebuild), never a bare overlay-apply.
+- **Durable incremental HEAD moves** live in `src/index/delta.rs` + `delta_apply.rs`: a moved HEAD (git hooks / `st update`, i.e. `base_commit != HEAD`) reuses `apply_changed_paths` + `commit_batch` then flushes the overlay to a new delta segment via `SegmentWriter` and persists the base delete-set to a generation-named `deletes-<uuid>.idx` sidecar (recorded in `manifest.overlay_deletes_file`). `rebuild_if_stale` is the seam; it falls back to full rebuild for non-ancestor HEAD (rebase/amend/force-push), oversized diffs, or any delta error. Segment growth is bounded by existing compaction (`max_segments`), which also physically drops deleted docs and clears the sidecar.
+- **`delete_set` is a source of truth, not a cache.** Search hides a base doc ONLY via `snapshot.delete_set` (`resolver.rs`), the verifier re-reads live file bytes, and results are never path-deduped (`search/mod.rs`). So a lost delete-set surfaces a modified file's stale base doc AND its new delta doc as duplicate matches. `deletes_idx` therefore FAILS CLOSED on load error (unlike the fail-open `paths.idx` cache): `open()` returns `CorruptIndex` rather than starting empty when `overlay_deletes_file` is set but unreadable.
 
 ## Project Structure
 
