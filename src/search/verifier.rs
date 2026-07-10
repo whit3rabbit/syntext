@@ -33,11 +33,16 @@ pub fn verify_literal(pattern: &str, path: &Path, content: &[u8]) -> Vec<SearchM
 
     for match_start in finder.find_iter(content) {
         // Locate line boundaries around hits
-        // 1. Line start is the byte after the last '\n' before match_start
-        let prev_newline = memrchr(b'\n', &content[..match_start]);
-        let line_start = match prev_newline {
-            Some(pos) => pos + 1,
-            None => 0,
+        // 1. Line start is the byte after the last '\n' before match_start.
+        //    Bound the backward scan to `last_newline_counted_up_to`, which is
+        //    always 0 or a byte-after-newline (a valid line start) and, because
+        //    matches arrive in increasing offset order, is <= this match's line
+        //    start. Scanning only `[watermark..match_start]` removes the
+        //    O(matches * file_size) full-prefix rescan.
+        let from = last_newline_counted_up_to;
+        let line_start = match memrchr(b'\n', &content[from..match_start]) {
+            Some(pos) => from + pos + 1,
+            None => from,
         };
 
         // If this match is on the same line as the previous match, we skip it
@@ -100,11 +105,14 @@ pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch>
         let match_start = m.start();
         let match_end = m.end();
 
-        // 1. Line start is the byte after the last '\n' before match_start
-        let prev_newline = memrchr(b'\n', &content[..match_start]);
-        let line_start = match prev_newline {
-            Some(pos) => pos + 1,
-            None => 0,
+        // 1. Line start is the byte after the last '\n' before match_start.
+        //    Bounded by the watermark (a valid line start <= this line start,
+        //    matches being in offset order); see verify_literal for the full
+        //    rationale on why this avoids the quadratic full-prefix rescan.
+        let from = last_newline_counted_up_to;
+        let line_start = match memrchr(b'\n', &content[from..match_start]) {
+            Some(pos) => from + pos + 1,
+            None => from,
         };
 
         // 2. Line end is the first '\n' at or after match_start (or end of file)
@@ -183,6 +191,41 @@ mod tests {
         assert_eq!(matches[0].line_number, 2);
         assert_eq!(matches[0].byte_offset, 9);
         assert_eq!(matches[0].line_content, b"two needle");
+    }
+
+    #[test]
+    fn literal_many_matches_across_and_clustered_on_lines() {
+        // Guards the watermark-bounded line-start scan (#9): correct line numbers
+        // and offsets when matches span many lines and cluster late in the file.
+        // Build 500 leading no-match lines, then a run of match lines.
+        let mut content = Vec::new();
+        for _ in 0..500 {
+            content.extend_from_slice(b"nomatch here\n");
+        }
+        // 3 match lines; only the first hit per line is reported.
+        content.extend_from_slice(b"aa needle bb needle\n"); // line 501
+        content.extend_from_slice(b"cc needle\n"); // line 502
+        content.extend_from_slice(b"dd needle ee\n"); // line 503
+
+        let matches = verify_literal("needle", Path::new("f"), &content);
+        assert_eq!(matches.len(), 3, "one match reported per line");
+        assert_eq!(matches[0].line_number, 501);
+        assert_eq!(matches[0].line_content, b"aa needle bb needle");
+        assert_eq!(matches[0].submatch_start, 3);
+        assert_eq!(matches[1].line_number, 502);
+        assert_eq!(matches[1].submatch_start, 3);
+        assert_eq!(matches[2].line_number, 503);
+        assert_eq!(matches[2].submatch_start, 3);
+    }
+
+    #[test]
+    fn regex_line_numbers_correct_with_gaps() {
+        let re = Regex::new("needle").unwrap();
+        let content = b"a\nb\nc needle\nd\ne needle\n";
+        let matches = verify_regex(&re, Path::new("f"), content);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].line_number, 3);
+        assert_eq!(matches[1].line_number, 5);
     }
 
     #[test]

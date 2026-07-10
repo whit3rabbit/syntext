@@ -61,7 +61,11 @@ fn execute_query_bitmap(
     match query {
         GramQuery::And(children) => {
             let mut ordered: Vec<_> = children.iter().collect();
-            ordered.sort_unstable_by_key(|child| query_cardinality_upper_bound(child, snap));
+            // Cache the key: query_cardinality_upper_bound is recursive and sums
+            // over all base segments at each Grams leaf, so recomputing it per
+            // comparison (sort_unstable_by_key) is O(n log n) evaluations of an
+            // expensive function. sort_by_cached_key evaluates it once per child.
+            ordered.sort_by_cached_key(|child| query_cardinality_upper_bound(child, snap));
             let mut iter = ordered.into_iter();
             let Some(first) = iter.next() else {
                 return Ok(snap.all_doc_ids().clone());
@@ -86,7 +90,8 @@ fn execute_query_bitmap(
         }
         GramQuery::Grams(hashes) => {
             let mut ordered = hashes.to_vec();
-            ordered.sort_unstable_by_key(|&hash| gram_cardinality(hash, snap));
+            // gram_cardinality sums over all base segments; cache it per hash.
+            ordered.sort_by_cached_key(|&hash| gram_cardinality(hash, snap));
             let mut iter = ordered.into_iter();
             let Some(first) = iter.next() else {
                 return Ok(snap.all_doc_ids().clone());

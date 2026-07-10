@@ -6,7 +6,7 @@
 //! view handed to a query, combining the base segments with the current overlay
 //! and delete set.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -16,12 +16,71 @@ use crate::index::overlay::OverlayView;
 use crate::index::segment::MmapSegment;
 use crate::path::PathIndex;
 
-/// Hard cap for cached merged posting bitmaps per snapshot.
+/// Byte budget for cached merged posting bitmaps per snapshot.
 ///
-/// When the cache reaches this size and a new gram is inserted, we clear the
-/// whole cache and keep only the newest entry. This is intentionally coarse:
-/// it bounds memory without adding LRU bookkeeping to the search hot path.
-pub(crate) const POSTING_BITMAP_CACHE_MAX_ENTRIES: usize = 1024;
+/// The cache evicts oldest-first (FIFO) once the cumulative serialized size of
+/// stored bitmaps would exceed this budget, rather than clearing wholesale at an
+/// entry count. FIFO avoids the mid-query cliff where a multi-spec or `--refs`
+/// search that re-looks-up the same grams loses the entire cache in one insert;
+/// the byte budget bounds true memory (a count cap let ~1024 dense bitmaps reach
+/// multiple GB, since a single Roaring bitmap can serialize to megabytes).
+pub(crate) const POSTING_BITMAP_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+
+/// Snapshot-local cache of merged posting bitmaps with FIFO byte-bounded
+/// eviction. Sizes are cached alongside each bitmap so eviction never recomputes
+/// `serialized_size()`.
+struct PostingCache {
+    map: HashMap<u64, (Arc<RoaringBitmap>, usize)>,
+    /// Insertion order of live keys, oldest at the front, for FIFO eviction.
+    order: VecDeque<u64>,
+    /// Cumulative serialized size of the bitmaps currently in `map`.
+    bytes: usize,
+}
+
+impl PostingCache {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            bytes: 0,
+        }
+    }
+
+    fn get(&self, key: u64) -> Option<Arc<RoaringBitmap>> {
+        self.map.get(&key).map(|(bm, _)| Arc::clone(bm))
+    }
+
+    /// Insert `bitmap` under `key`, evicting oldest entries FIFO until the
+    /// cumulative serialized size fits `budget`. Always keeps the new entry even
+    /// if it alone exceeds `budget`. Returns the already-stored Arc on duplicate.
+    fn insert_with_budget(
+        &mut self,
+        key: u64,
+        bitmap: Arc<RoaringBitmap>,
+        budget: usize,
+    ) -> Arc<RoaringBitmap> {
+        if let Some((existing, _)) = self.map.get(&key) {
+            return Arc::clone(existing);
+        }
+        let size = bitmap.serialized_size();
+        while self.bytes + size > budget {
+            let Some(old) = self.order.pop_front() else {
+                break; // nothing left to evict; keep the new entry regardless
+            };
+            if let Some((_, old_size)) = self.map.remove(&old) {
+                self.bytes -= old_size;
+            }
+        }
+        self.bytes += size;
+        self.order.push_back(key);
+        self.map.insert(key, (Arc::clone(&bitmap), size));
+        bitmap
+    }
+
+    fn insert(&mut self, key: u64, bitmap: Arc<RoaringBitmap>) -> Arc<RoaringBitmap> {
+        self.insert_with_budget(key, bitmap, POSTING_BITMAP_CACHE_MAX_BYTES)
+    }
+}
 
 /// Shared base segments (Arc-shared across snapshot swaps).
 pub struct BaseSegments {
@@ -86,7 +145,7 @@ pub struct IndexSnapshot {
     /// Cached bitmap of all valid doc IDs. Lazy-initialized on first access.
     all_doc_ids_cache: OnceLock<RoaringBitmap>,
     /// Cached merged posting bitmaps for repeated gram lookups in this snapshot.
-    posting_bitmap_cache: OnceLock<Mutex<HashMap<u64, Arc<RoaringBitmap>>>>,
+    posting_bitmap_cache: OnceLock<Mutex<PostingCache>>,
     /// Memoized glob→bitmap cache for path-scoped queries.
     pub(crate) glob_cache: OnceLock<Mutex<HashMap<String, RoaringBitmap>>>,
     /// Calibrated index-vs-scan crossover fraction. Populated from
@@ -132,9 +191,9 @@ impl IndexSnapshot {
         })
     }
 
-    fn posting_bitmap_cache(&self) -> &Mutex<HashMap<u64, Arc<RoaringBitmap>>> {
+    fn posting_bitmap_cache(&self) -> &Mutex<PostingCache> {
         self.posting_bitmap_cache
-            .get_or_init(|| Mutex::new(HashMap::new()))
+            .get_or_init(|| Mutex::new(PostingCache::new()))
     }
 
     /// # Poison recovery
@@ -147,7 +206,7 @@ impl IndexSnapshot {
             .posting_bitmap_cache()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache.get(&gram_hash).cloned()
+        cache.get(gram_hash)
     }
 
     pub(crate) fn store_posting_bitmap(
@@ -159,13 +218,7 @@ impl IndexSnapshot {
             .posting_bitmap_cache()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !cache.contains_key(&gram_hash) && cache.len() >= POSTING_BITMAP_CACHE_MAX_ENTRIES {
-            cache.clear();
-        }
-        cache
-            .entry(gram_hash)
-            .or_insert_with(|| Arc::clone(&bitmap))
-            .clone()
+        cache.insert(gram_hash, bitmap)
     }
 
     #[cfg(test)]
@@ -202,6 +255,7 @@ impl IndexSnapshot {
                 cache
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .map
                     .len()
             })
             .unwrap_or(0)
@@ -235,5 +289,48 @@ pub fn new_snapshot(
         all_doc_ids_cache: OnceLock::new(),
         posting_bitmap_cache: OnceLock::new(),
         glob_cache: OnceLock::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bitmap(id: u32) -> Arc<RoaringBitmap> {
+        Arc::new(RoaringBitmap::from_iter([id]))
+    }
+
+    #[test]
+    fn posting_cache_evicts_oldest_first_under_byte_budget() {
+        let mut cache = PostingCache::new();
+        // Budget for two single-element bitmaps; the third evicts the oldest.
+        let one = bitmap(0).serialized_size();
+        let budget = one * 2;
+
+        cache.insert_with_budget(0, bitmap(0), budget);
+        cache.insert_with_budget(1, bitmap(1), budget);
+        cache.insert_with_budget(2, bitmap(2), budget);
+
+        assert!(cache.get(0).is_none(), "oldest entry must be evicted");
+        assert!(cache.get(1).is_some(), "recent entry must survive the cliff");
+        assert!(cache.get(2).is_some(), "newest entry must be present");
+        assert!(cache.bytes <= budget, "byte total stays bounded");
+    }
+
+    #[test]
+    fn posting_cache_keeps_new_entry_even_if_alone_over_budget() {
+        let mut cache = PostingCache::new();
+        // Budget smaller than a single entry: still keep the newest.
+        cache.insert_with_budget(7, bitmap(7), 0);
+        assert!(cache.get(7).is_some());
+    }
+
+    #[test]
+    fn posting_cache_dedups_and_returns_existing() {
+        let mut cache = PostingCache::new();
+        let first = cache.insert(3, bitmap(3));
+        let second = cache.insert(3, bitmap(3));
+        assert!(Arc::ptr_eq(&first, &second), "duplicate returns stored Arc");
+        assert_eq!(cache.map.len(), 1);
     }
 }

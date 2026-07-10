@@ -125,6 +125,14 @@ impl PendingEdits {
     /// edits buffered concurrently with the failed commit are applied after
     /// them (preserving the original arrival order relative to each other).
     /// Idempotent if `edits` is empty.
+    ///
+    /// Deduplicates to at most one edit per path (last occurrence wins, matching
+    /// [`take_for_commit`]'s last-wins fold). Without this, repeated commit
+    /// failures (e.g. a persistent `OverlayFull` in a watcher that keeps calling
+    /// `notify_change`) re-prepend the same drained edits every cycle while new
+    /// notifies append, growing the buffer with duplicate `PathBuf`s unboundedly
+    /// until a full rebuild. The commit result is already correct either way
+    /// (`take_for_commit` folds into sets); this bounds memory.
     pub fn requeue_uncommitted(&self, edits: Vec<super::overlay::FileEdit>) {
         if edits.is_empty() {
             return;
@@ -134,7 +142,19 @@ impl PendingEdits {
         // failed commit: `edits` were observed first and must stay first.
         let mut combined = edits;
         combined.append(&mut state.uncommitted);
-        state.uncommitted = combined;
+        // Keep only the last edit per path. Walk in reverse so the last
+        // occurrence is retained, then restore forward order. Order among
+        // distinct paths does not affect correctness (take_for_commit builds
+        // sets), only which kind wins per path, which last-occurrence preserves.
+        let mut seen: HashSet<PathBuf> = HashSet::with_capacity(combined.len());
+        let mut deduped: Vec<super::overlay::FileEdit> = Vec::with_capacity(combined.len());
+        for edit in combined.into_iter().rev() {
+            if seen.insert(edit.path.clone()) {
+                deduped.push(edit);
+            }
+        }
+        deduped.reverse();
+        state.uncommitted = deduped;
     }
 
     /// Clear all accumulated state. Call after a full index rebuild.
@@ -221,6 +241,47 @@ mod tests {
         let result = pe.take_for_commit();
         assert!(result.newly_changed.is_empty());
         assert!(result.newly_deleted.is_empty());
+    }
+
+    #[test]
+    fn requeue_dedups_and_stays_bounded() {
+        let pe = PendingEdits::new();
+
+        // Simulate repeated commit failures: drain, then requeue the same edits
+        // while a new notify arrives each cycle.
+        pe.notify_change(Path::new("a.rs"));
+        for _ in 0..100 {
+            let taken = pe.take_for_commit();
+            pe.notify_change(Path::new("b.rs")); // concurrent arrival
+            pe.requeue_uncommitted(taken.drained);
+        }
+        // Without dedup this would be ~100+ entries; bounded to one per path.
+        assert!(
+            pe.uncommitted_count() <= 2,
+            "requeue must dedup per path, got {}",
+            pe.uncommitted_count()
+        );
+    }
+
+    #[test]
+    fn requeue_last_kind_wins_per_path() {
+        use super::super::overlay::{EditKind, FileEdit};
+        let pe = PendingEdits::new();
+        // Requeue changed-then-deleted for the same path; deleted must win.
+        pe.requeue_uncommitted(vec![
+            FileEdit {
+                path: PathBuf::from("x.rs"),
+                kind: EditKind::Changed,
+            },
+            FileEdit {
+                path: PathBuf::from("x.rs"),
+                kind: EditKind::Deleted,
+            },
+        ]);
+        assert_eq!(pe.uncommitted_count(), 1);
+        let taken = pe.take_for_commit();
+        assert!(taken.newly_deleted.contains(&PathBuf::from("x.rs")));
+        assert!(taken.newly_changed.is_empty());
     }
 
     #[test]
