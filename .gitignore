@@ -59,3 +59,6 @@ _ripline-bench/
 
 .agent-config-mcp.json
 .mcp.json
+.eatahorse-*
+.specify/*
+TODO.md
