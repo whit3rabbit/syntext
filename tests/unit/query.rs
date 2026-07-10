@@ -467,3 +467,9 @@ fn eh0001_case_insensitive_literal_finds_subtoken_reparse() {
     );
     drop(index);
 }
+
+#[test]
+fn route_query_rejects_newlines() {
+    assert_eq!(route_query("foo\nbar", false).unwrap_err(), "literal \\n not allowed".to_string());
+    assert_eq!(route_query("foo\\nbar", false).unwrap_err(), "literal \\n not allowed".to_string());
+}

@@ -95,6 +95,10 @@ pub enum QueryRoute {
 /// path (see `Index::search_symbols`), so `sym:`/`def:`/`ref:` are ordinary
 /// searchable text.
 pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, String> {
+    if pattern.contains('\n') || pattern.contains("\\n") {
+        return Err("literal \\n not allowed".to_string());
+    }
+
     if case_insensitive && is_literal(pattern) {
         // Mirror the case-sensitive `Literal` arm's candidate logic (see
         // search::search). Only the required (interior-anchored) grams are
