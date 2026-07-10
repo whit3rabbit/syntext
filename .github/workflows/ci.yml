@@ -21,8 +21,32 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install ripgrep (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          curl -LO https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep_15.1.0-1_amd64.deb
+          sudo dpkg -i ripgrep_15.1.0-1_amd64.deb
+
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -LO https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-apple-darwin.tar.gz
+          tar -xzf ripgrep-15.1.0-x86_64-apple-darwin.tar.gz
+          echo "$(pwd)/ripgrep-15.1.0-x86_64-apple-darwin" >> $GITHUB_PATH
+
+      - name: Install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -LO https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip
+          unzip ripgrep-15.1.0-x86_64-pc-windows-msvc.zip
+          echo "$(pwd)/ripgrep-15.1.0-x86_64-pc-windows-msvc" >> $GITHUB_PATH
+
       - name: cargo test
         run: cargo test
+
+      - name: cargo test (oracle PR suite)
+        run: cargo test --test oracle_self --test oracle_cli --features oracle
 
       - name: cargo clippy
         run: cargo clippy -- -D warnings

@@ -1,0 +1,80 @@
+name: Nightly Oracle Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # daily at 2:00 AM UTC
+  workflow_dispatch: # allow manual triggers
+
+jobs:
+  nightly:
+    name: Nightly Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install ripgrep (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          curl -LO https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep_15.1.0-1_amd64.deb
+          sudo dpkg -i ripgrep_15.1.0-1_amd64.deb
+
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -LO https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-apple-darwin.tar.gz
+          tar -xzf ripgrep-15.1.0-x86_64-apple-darwin.tar.gz
+          echo "$(pwd)/ripgrep-15.1.0-x86_64-apple-darwin" >> $GITHUB_PATH
+
+      - name: Install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -LO https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip
+          unzip ripgrep-15.1.0-x86_64-pc-windows-msvc.zip
+          echo "$(pwd)/ripgrep-15.1.0-x86_64-pc-windows-msvc" >> $GITHUB_PATH
+
+      - name: Run Nightly Oracle Suite
+        shell: bash
+        run: |
+          # Generate fixed daily seed using Python
+          SEED=$(python3 -c "import hashlib, time; print(hashlib.sha256(time.strftime('%Y%m%d').encode()).hexdigest())")
+          echo "Using rotating daily seed: $SEED"
+          
+          # Run tests with 2000 cases each
+          PROPTEST_CASES=2000 PROPTEST_SEED=$SEED cargo test --test oracle_self --test oracle_cli --test oracle_incremental --test oracle_freshness --features oracle -- --nocapture
+
+      - name: Upload minimized repros on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minimized-repros-${{ matrix.os }}
+          path: tests/oracle/regressions/repro_*.json
+          if-no-files-found: ignore
+
+  bench-open-search-e2e:
+    name: Bench (open+detect+search, 100k files)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo bench --bench open_search_e2e
+        run: cargo bench --bench open_search_e2e -- --sample-size 10
+
+      - name: Upload criterion report
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-search-e2e-criterion-report
+          path: target/criterion/open_search_e2e
+          if-no-files-found: ignore
