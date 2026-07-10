@@ -68,12 +68,16 @@ pub struct OverlayDoc {
 ///
 /// A fresh `OverlayView` is produced on each `commit_batch()`, but unchanged
 /// file content is `Arc`-reused across generations (`OverlayDoc::content`);
-/// only `gram_index` is rebuilt wholesale. Query execution always does two
+/// posting lists are likewise `Arc`-shared so the delta commit path
+/// (`build_incremental_delta`) clones the map as refcount bumps and only
+/// deep-copies the lists it actually mutates. Query execution always does two
 /// lookups: base segments + this single overlay.
 #[derive(Clone)]
 pub struct OverlayView {
-    /// Map from gram hash to sorted overlay doc_ids that contain it.
-    pub gram_index: HashMap<u64, Vec<u32>>,
+    /// Map from gram hash to sorted overlay doc_ids that contain it. Posting
+    /// lists are `Arc`-shared across generations so an unchanged list carried
+    /// through a delta commit costs a refcount bump, not a `Vec` copy.
+    pub gram_index: HashMap<u64, Arc<Vec<u32>>>,
     /// All dirty files with current content.
     pub docs: Vec<OverlayDoc>,
     /// doc_id -> index into `docs` for O(1) lookup.

@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use support::{build_index_for_repo, create_synthetic_git_repo};
+use support::{build_index_for_repo, create_synthetic_git_repo, create_synthetic_repo};
 use syntext::index::freshness::{detect_changed_files, UpdateLimits};
 
 /// Resolve `git` the simple way: `Command::new` already performs a PATH
@@ -106,5 +106,55 @@ fn freshness_bench(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, freshness_bench);
+/// Delta-commit cost against a LARGE overlay. This isolates the per-commit
+/// overlay gram-index cost that the single-file `update_from_git` bench above
+/// does not exercise (there the overlay never exceeds ~1 doc). It seeds a
+/// several-hundred-doc overlay, then times a single-file delta commit. Before
+/// the Arc-shared posting lists change, each such commit deep-cloned every
+/// carried-forward posting list (O(total overlay grams)); after, the map clone
+/// is refcount bumps and only the changed file's lists are copied
+/// (O(changed-file grams)).
+fn overlay_delta_commit_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bench_freshness");
+    group.sample_size(10);
+
+    // 2000-file base -> overlay cap is ~1000 docs; seed 800 new files so the
+    // carried-forward overlay is large but under the enforcement threshold.
+    let repo = create_synthetic_repo(2_000);
+    let (_index_dir, index) = build_index_for_repo(repo.path());
+    for i in 0..800 {
+        let path = repo.path().join(format!("src/rust/overlay_seed_{i:04}.rs"));
+        fs::write(
+            &path,
+            format!("pub fn overlay_seed_{i}(x: usize) -> usize {{ x + {i} }}\n"),
+        )
+        .unwrap();
+        index.notify_change(&path).unwrap();
+    }
+    index.commit_batch().unwrap();
+
+    // Time a single-file delta commit against that large overlay.
+    let target = repo.path().join("src/rust/overlay_seed_0000.rs");
+    let mut toggle = false;
+    group.bench_function("overlay_delta_commit_800_doc_overlay", |b| {
+        b.iter(|| {
+            let content = if toggle {
+                "pub fn overlay_seed_0000_alpha() -> usize { 1 }\n"
+            } else {
+                "pub fn overlay_seed_0000_beta() -> usize { 2 }\n"
+            };
+            toggle = !toggle;
+            fs::write(&target, content).unwrap();
+            index.notify_change(&target).unwrap();
+            // commit_batch mutates the index and does I/O, so it is not elided;
+            // no black_box needed (and it returns unit, which black_box warns on).
+            index.commit_batch().unwrap();
+        });
+    });
+
+    group.finish();
+    drop(index);
+}
+
+criterion_group!(benches, freshness_bench, overlay_delta_commit_bench);
 criterion_main!(benches);

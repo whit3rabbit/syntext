@@ -198,3 +198,36 @@ total data growth. Rate limiting is a v2 consideration.
 Worst case is bounded by `max_file_size` (clamped to 1 GiB in SA-003 round 1).
 Each rayon worker retains at most one buffer; rayon's default thread count is
 bounded by CPU cores.
+
+## Round 3 Findings (2026-07-09)
+
+### SA-009: Predictable Temporary File Vulnerability in write_atomic
+
+**Severity:** High
+**Status:** Fixed
+**File:** `src/hook/core/files.rs`
+
+**Identification:** Predictable temporary file names (`.file_name.tmp.<pid>`) allowed a local attacker to pre-create a symlink pointing to an arbitrary file owned by the user. When `st` wrote to the temporary file, it followed the symlink, leading to arbitrary file overwrite.
+
+**Remediation:** Replaced predictable temporary file names with a random UUID (`.{file_name}.{uuid}.tmp`).
+
+### SA-010: Intermediate-Component TOCTOU in resolve_doc and read_repo_file_bytes
+
+**Severity:** Low (acceptable workstation risk)
+**Status:** Documented residual
+**Files:** `src/search/resolver.rs` (`resolve_doc`), `src/cli/render/mod.rs` (`read_repo_file_bytes`)
+
+**Identification:** Although final-component symlink swaps are prevented by stat-before-open and inode checks (`open_readonly_nofollow`), a tiny TOCTOU window exists where an intermediate directory component could be swapped between path canonicalization and open.
+
+**Remediation:** Documented intermediate-component TOCTOU residual risk. This is acceptable in a single-user workstation threat model.
+
+### SA-011: Permissive Index Directory Creation via Symlink Swapping
+
+**Severity:** Medium
+**Status:** Fixed
+**File:** `src/cli/config.rs` (`validate_index_dir`)
+
+**Identification:** The validation of the `--index-dir` path did not canonicalize directories before verifying against the sensitive system prefix list, making it possible to bypass the check via symlinks.
+
+**Remediation:** Changed `validate_index_dir` to canonicalize the resolved directory prefix using `std::fs::canonicalize` before running sensitive prefix checks.
+

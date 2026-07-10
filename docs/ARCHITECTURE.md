@@ -155,9 +155,19 @@ Agent workflows require "read your writes": if an agent edits a file and searche
 - `commit_batch()` rebuilds a single merged in-memory overlay from all dirty files and atomically swaps it via `ArcSwap`.
 - All subsequent queries see the new state. No partial visibility, no read-path locking.
 
-The overlay is a single merged view, not N stacked generations. Rebuilding from ~100 dirty files takes 5-20ms. On-disk generation files provide crash recovery only; the in-memory view is authoritative during operation.
+The overlay is a single merged view, not N stacked generations. Rebuilding from ~100 dirty files takes 5-20ms. The overlay is in-memory only; `commit_batch()` does not write to disk directly. Cross-process freshness and persistence are achieved via the incremental delta-apply path.
 
 Full reindex triggers at 30% overlay threshold. This is the only mechanism that cleans stale doc IDs from base segments.
+
+### Durable incremental HEAD-move updates via delta segments
+
+To make updates durable across processes without rebuilding the entire index, syntext implements LSM-style delta segments:
+
+- **Delta Apply (`delta.rs` / `delta_apply.rs`)**: When the base commit is behind HEAD (e.g., after git hooks or `st update`), the runner computes the diff between `base_commit` and `HEAD`, applies the changes to the in-memory overlay, and flushes the overlay to a new on-disk delta segment via `SegmentWriter`.
+- **Delete-Set Sidecar (`deletes_idx.rs`)**: Base segment deletions are written to a generation-named `deletes-<uuid>.idx` file. The delete-set sidecar acts as a source of truth rather than a cache. If the delete-set cannot be read on startup, `Index::open` fails closed (returning `CorruptIndex`) to prevent double-matching the modified files.
+- **Compaction Boundary**: The existing compaction mechanism (`max_segments`) bounds segment growth, merges delta segments, drops deleted documents physically, and clears the delete-set sidecar.
+- **Fallback**: If the HEAD move is a non-ancestor (e.g., rebase, amend, force-push), the diff is too large, or any error occurs, the update falls back to a clean full rebuild.
+
 
 ## Design decisions and tradeoffs
 

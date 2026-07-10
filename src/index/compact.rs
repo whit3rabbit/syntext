@@ -249,7 +249,7 @@ pub(super) fn compact_index(
     }
 
     for (&gram_hash, doc_ids) in &snapshot.overlay.gram_index {
-        for &old_global_id in doc_ids {
+        for &old_global_id in doc_ids.iter() {
             let Some(Some(target)) = state.target_map.get(old_global_id as usize) else {
                 continue;
             };

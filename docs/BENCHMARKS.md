@@ -248,6 +248,32 @@ reflects reduced tokenization work; the gain grows with overlay size.
 The `full_build_300_files` benchmark exercises the initial segment build path,
 which is unaffected by the overlay change.
 
+### COW posting lists (Arc-shared gram_index, 2026-07-10)
+
+`OverlayView.gram_index` changed from `HashMap<u64, Vec<u32>>` to
+`HashMap<u64, Arc<Vec<u32>>>`. `build_incremental_delta` previously deep-copied
+every posting `Vec` on the `old_overlay.gram_index.clone()` at the top of each
+commit (O(unique overlay grams) allocations); it now clones a map of refcount
+bumps and deep-copies (`Arc::make_mut`) only the lists a changed/deleted file
+actually touches.
+
+New bench `bench_freshness/overlay_delta_commit_800_doc_overlay` (single-file
+delta commit against an 800-doc overlay), `cargo bench --bench freshness`:
+
+| Benchmark | Before (deep-copy) | After (Arc COW) |
+|---|---|---|
+| `overlay_delta_commit_800_doc_overlay` | ~714 µs | ~723 µs (no significant change, p = 0.10) |
+
+Latency is unchanged: the win is **peak memory**, not time. During the
+ArcSwap window both the old and new snapshot are live; the old code held two
+full copies of every posting list (~2x posting memory transiently), the new
+code shares them until mutated. Commit *latency* stays flat because the delta
+path's sibling per-commit costs are co-dominant and O(overlay-docs), not touched
+here: it still rebuilds the `docs` Vec (a `PathBuf` clone per carried-forward
+doc) and the `doc_id_map` from scratch every commit. Making the delta commit
+truly O(changed) would require mutating the overlay in place instead of
+rebuilding these structures, a larger redesign left as future work.
+
 ---
 
 ### Two-file storage — baseline (before v3 format)

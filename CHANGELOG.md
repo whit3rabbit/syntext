@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Durable incremental HEAD-move updates via LSM-style delta segments when the base commit is behind HEAD.
+- Checksummed delete-set sidecar (`deletes-<uuid>.idx`) for tracking deleted base documents across restarts, designed to fail closed on corruption to prevent duplicate matching.
+- Automatic bounded update-on-search capability with async catch-up updates and staleness warnings.
+- Explicit `globset` and `windows-sys` dependencies.
+- Git-hooks vendor installer/uninstaller supporting automatic post-commit/checkout/merge/rewrite indexing.
+- Custom component-wise raw byte path comparison (`path_util::cmp_path_bytes`) reproducing `Path::cmp` component-wise order exactly without the `Components` iterator overhead.
+- Compaction trigger (`FileIdBloat`) firing when `next_file_id` runs 4x ahead of the live path count to prune path tombstones.
+- Batched query execution for reference searches (`--refs`), matching definitions against alternations to perform a single-pass regex search instead of sequential full scans.
+- Differential testing framework against `ripgrep` (`oracle_self`, `oracle_cli`, `oracle_incremental`).
+- Performance benchmarks for index freshness (`bench_freshness`) and large-repository e2e searches (`open_search_e2e`).
+
+### Changed
+- Refactored CLI arguments (`args/`) and query scopes (`scope/`) into modular sub-modules.
+- Lowered the environment-override `MAX_FILE_SIZE_CEILING` from 1 GiB to 512 MiB.
+- Cached gram and query cardinality calculations in `executor` to avoid $O(n \log n)$ evaluations during intersection sorting.
+- Replaced the overlay posting-bitmap cache clear-all behavior with a FIFO eviction policy under a 256MB byte-budget.
+- Optimized token boundaries and Covering gram extraction.
+- Overlay `gram_index` posting lists are now `Arc`-shared to support zero-copy clones and copy-on-write modifications.
+
+### Fixed
+- Resolved a predictable temporary file name TOCTOU vulnerability in `write_atomic` by using random UUIDs.
+- Canonicalized directory paths before performing sensitive prefix checks in `validate_index_dir`.
+- Structured verifier to count backward line-starts relative to a watermark to remove the quadratic $O(\text{matches} \times \text{file\_size})$ cost.
+- Divert `--files-without-match` before the empty-results short-circuit and respect `-q` flag.
+- Deduplicated `requeue_uncommitted` paths in `PendingEdits` to bound memory growth.
+- Rejected literal and escaped newlines (`\n`, `\x0a`, etc.) in query patterns during routing.
+- Warn on post-delta update errors instead of failing since the HEAD move is already durable.
+- Suppressed confusing "no changes detected" output when a delta segment update successfully runs.
+
 ## [1.4.0] - 2026-06-13
 
 ### Added

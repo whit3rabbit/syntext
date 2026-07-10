@@ -364,7 +364,7 @@ fn delta_gram_index_matches_full_rebuild() {
 
     // Also verify posting list contents (not just keys).
     for (&hash, delta_ids) in &delta.gram_index {
-        let mut d = delta_ids.clone();
+        let mut d = (**delta_ids).clone();
         d.sort_unstable();
         // Map delta doc_ids back to paths, compare against full's doc_ids for same gram.
         // Since doc_ids differ between delta and full (stable vs. reassigned), compare
@@ -403,7 +403,7 @@ fn delta_deletion_removes_grams() {
         .find(|&&h| {
             // Find a gram hash only in a.rs (doc_id=5), not b.rs (doc_id=6).
             let ids = &old.gram_index[&h];
-            ids == &[5]
+            **ids == [5]
         })
         .copied();
 
@@ -436,9 +436,9 @@ fn delta_posting_lists_sorted_after_new_doc() {
     let inc = OverlayView::build_incremental(0, &old, new_files, &newly_changed, &removed).unwrap();
 
     for ids in inc.gram_index.values() {
-        let mut sorted = ids.clone();
+        let mut sorted = (**ids).clone();
         sorted.sort_unstable();
-        assert_eq!(ids, &sorted, "posting list must be sorted");
+        assert_eq!(**ids, sorted, "posting list must be sorted");
     }
 }
 

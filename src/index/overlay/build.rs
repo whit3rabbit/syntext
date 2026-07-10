@@ -7,6 +7,14 @@ use crate::IndexError;
 
 use super::{OverlayDoc, OverlayView};
 
+/// Wrap a freshly-built posting map's `Vec` lists in `Arc` for the overlay's
+/// COW-shared gram index. Used by the full-rebuild paths, which build into a
+/// plain `Vec` map first (no per-push `Arc::make_mut` overhead) and share only
+/// at the end.
+fn wrap_arc(map: HashMap<u64, Vec<u32>>) -> HashMap<u64, Arc<Vec<u32>>> {
+    map.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
+}
+
 impl OverlayView {
     /// Build an overlay from a set of dirty files.
     ///
@@ -59,7 +67,7 @@ impl OverlayView {
             .collect();
 
         Ok(OverlayView {
-            gram_index,
+            gram_index: wrap_arc(gram_index),
             docs,
             doc_id_map,
             next_doc_id: next_id,
@@ -153,7 +161,7 @@ impl OverlayView {
             .collect();
 
         Ok(OverlayView {
-            gram_index,
+            gram_index: wrap_arc(gram_index),
             docs,
             doc_id_map,
             next_doc_id: next_id,
@@ -188,7 +196,10 @@ impl OverlayView {
         newly_changed: &HashSet<PathBuf>,
         removed_paths: &HashSet<PathBuf>,
     ) -> Result<Self, IndexError> {
-        // Clone old gram_index; remove stale entries for changed/deleted files.
+        // Clone old gram_index: with Arc-shared posting lists this is a map of
+        // refcount bumps, not a deep copy of every Vec. Only the lists actually
+        // mutated below are deep-copied, via Arc::make_mut (copy-on-write), so
+        // the per-commit cost is O(changed-file grams), not O(total grams).
         let mut gram_index = old_overlay.gram_index.clone();
         let overlay_docs =
             (old_overlay.docs.len() + new_files.len()).saturating_sub(newly_changed.len());
@@ -197,7 +208,7 @@ impl OverlayView {
             if removed_paths.contains(&old_doc.path) || newly_changed.contains(&old_doc.path) {
                 for &gram_hash in &old_doc.grams {
                     if let Some(list) = gram_index.get_mut(&gram_hash) {
-                        list.retain(|&id| id != old_doc.doc_id);
+                        Arc::make_mut(list).retain(|&id| id != old_doc.doc_id);
                     }
                 }
             }
@@ -220,7 +231,7 @@ impl OverlayView {
 
             let grams = build_all(&content);
             for &gram_hash in &grams {
-                gram_index.entry(gram_hash).or_default().push(doc_id);
+                Arc::make_mut(gram_index.entry(gram_hash).or_default()).push(doc_id);
             }
             docs.push(OverlayDoc {
                 doc_id,
@@ -230,11 +241,15 @@ impl OverlayView {
             });
         }
 
-        // Sorted-order invariant: new doc_ids > all existing, so push() keeps lists sorted.
+        // Sorted-order invariant: new doc_ids > all existing, so push() keeps
+        // lists sorted; the windows check is a read (no Arc::make_mut), so
+        // already-sorted lists carried forward stay Arc-shared. make_mut only
+        // fires on the rare list that is actually out of order.
         for ids in gram_index.values_mut() {
             if ids.windows(2).any(|w| w[0] >= w[1]) {
-                ids.sort_unstable();
-                ids.dedup();
+                let list = Arc::make_mut(ids);
+                list.sort_unstable();
+                list.dedup();
             }
         }
 
