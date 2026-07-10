@@ -4,14 +4,13 @@ use serde_json::{json, Value};
 
 use crate::hook::core::rewrite::rewrite_for_cwd;
 
-use super::{hook_cwd, parse_json, ProtocolOutput};
+use super::{hook_cwd, ProtocolOutput};
 
-pub(crate) fn response_from_str(input: &str, st_program: &str) -> Option<ProtocolOutput> {
-    let input = parse_json(input)?;
-    Some(ProtocolOutput::Json(response(&input, st_program)))
+pub(crate) fn response(input: &Value, st_program: &str) -> Option<ProtocolOutput> {
+    Some(ProtocolOutput::Json(build_response(input, st_program)))
 }
 
-fn response(input: &Value, st_program: &str) -> Value {
+fn build_response(input: &Value, st_program: &str) -> Value {
     if input.get("tool_name").and_then(Value::as_str) != Some("run_shell_command") {
         return json!({ "decision": "allow" });
     }
@@ -53,9 +52,7 @@ mod tests {
             "tool_input": { "command": "rg parse_query src/" },
             "cwd": dir.path()
         });
-        let ProtocolOutput::Json(output) =
-            response_from_str(&input.to_string(), "/tmp/st").unwrap()
-        else {
+        let ProtocolOutput::Json(output) = response(&input, "/tmp/st").unwrap() else {
             panic!("expected JSON output");
         };
         assert_eq!(output["decision"], "allow");
@@ -68,8 +65,7 @@ mod tests {
     #[test]
     fn gemini_passthrough_allows() {
         let input = json!({ "tool_name": "read_file" });
-        let ProtocolOutput::Json(output) = response_from_str(&input.to_string(), "st").unwrap()
-        else {
+        let ProtocolOutput::Json(output) = response(&input, "st").unwrap() else {
             panic!("expected JSON output");
         };
         assert_eq!(output, json!({ "decision": "allow" }));

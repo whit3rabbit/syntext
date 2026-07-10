@@ -235,6 +235,156 @@ fn rules_install_and_uninstall_marker_block() {
 }
 
 #[test]
+fn githooks_install_appends_to_existing_file_and_creates_new_one() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path().join("hooks");
+    fs::create_dir_all(&dir).unwrap();
+
+    // Pre-existing hook with user content and no trailing newline: the
+    // marker block must be appended, not clobber the existing body.
+    let existing_path = dir.join("post-commit");
+    fs::write(&existing_path, "#!/bin/sh\necho user-hook").unwrap();
+
+    let outcome = githooks::install_at(&dir, "/tmp/st").unwrap();
+    assert!(outcome.installed);
+    assert_eq!(outcome.changed.len(), githooks::HOOK_NAMES.len());
+
+    let existing_content = fs::read_to_string(&existing_path).unwrap();
+    assert!(existing_content.starts_with("#!/bin/sh\necho user-hook\n"));
+    assert!(existing_content.contains("syntext-agent:githooks:start"));
+
+    // A hook name with no pre-existing file should be created fresh, with a
+    // `#!/bin/sh` shebang as the first line.
+    let created_path = dir.join("post-checkout");
+    assert!(created_path.exists());
+    let created_content = fs::read_to_string(&created_path).unwrap();
+    assert!(created_content.starts_with("#!/bin/sh\n"));
+    assert!(created_content.contains("syntext-agent:githooks:start"));
+
+    // Both the appended-to and freshly-created hook files must end up
+    // executable, since git refuses to run a non-executable hook.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&existing_path, &created_path] {
+            let mode = fs::metadata(path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "{} should be executable", path.display());
+        }
+    }
+
+    // Every one of the four hook files must contain exactly one marker
+    // block and be executable, regardless of whether it pre-existed or was
+    // created fresh by install.
+    for name in githooks::HOOK_NAMES {
+        let path = dir.join(name);
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content.matches("syntext-agent:githooks:start").count(),
+            1,
+            "{name} should contain exactly one marker start"
+        );
+        assert_eq!(
+            content.matches("syntext-agent:githooks:end").count(),
+            1,
+            "{name} should contain exactly one marker end"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "{name} should be executable");
+        }
+    }
+
+    // Installing again must not duplicate the block, in the returned
+    // outcome and in the on-disk file content.
+    let second = githooks::install_at(&dir, "/tmp/st").unwrap();
+    assert!(second.changed.is_empty());
+    for name in githooks::HOOK_NAMES {
+        let content = fs::read_to_string(dir.join(name)).unwrap();
+        assert_eq!(
+            content.matches("syntext-agent:githooks:start").count(),
+            1,
+            "{name} should still contain exactly one marker start after a second install"
+        );
+    }
+}
+
+#[test]
+fn githooks_uninstall_strips_only_the_block() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path().join("hooks");
+    fs::create_dir_all(&dir).unwrap();
+
+    // Pre-existing hook with user content both above and below where the
+    // block will end up: uninstall must remove only the marker-delimited
+    // block and leave the surrounding user body untouched.
+    let path = dir.join("post-commit");
+    fs::write(&path, "#!/bin/sh\necho before-hook\n").unwrap();
+    githooks::install_at(&dir, "/tmp/st").unwrap();
+    let mut content = fs::read_to_string(&path).unwrap();
+    content.push_str("echo after-hook\n");
+    fs::write(&path, &content).unwrap();
+
+    assert!(githooks::show_at(&dir).unwrap().installed);
+
+    let outcome = githooks::uninstall_at(&dir).unwrap();
+    assert!(outcome.changed.contains(&path));
+    // install_at wrote the block into all four hook names, so uninstall_at
+    // must strip the block from all four, not just post-commit.
+    assert_eq!(outcome.changed.len(), githooks::HOOK_NAMES.len());
+
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(!after.contains("syntext-agent:githooks:start"));
+    assert!(!after.contains("syntext-agent:githooks:end"));
+    assert!(after.contains("echo before-hook"));
+    assert!(after.contains("echo after-hook"));
+    assert!(!githooks::show_at(&dir).unwrap().installed);
+
+    // Every hook file must have the block gone after uninstall.
+    for name in githooks::HOOK_NAMES {
+        let content = fs::read_to_string(dir.join(name)).unwrap();
+        assert!(
+            !content.contains("syntext-agent:githooks:start"),
+            "{name} should no longer contain the marker block"
+        );
+    }
+
+    // A second uninstall (block already gone) is a no-op, not an error.
+    let second = githooks::uninstall_at(&dir).unwrap();
+    assert!(second.changed.is_empty());
+}
+
+#[test]
+fn githooks_block_degrades_to_bare_st_when_resolved_binary_is_moved() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path().join("hooks");
+    fs::create_dir_all(&dir).unwrap();
+
+    // Simulate a resolved `current_st_program()` path that no longer exists
+    // (the binary was moved/renamed after install). The generated block must
+    // still try the resolved path first, then fall back to a bare `st`
+    // lookup on PATH, and must run fire-and-forget so it can never fail the
+    // git operation that triggered the hook.
+    let moved_path = "/tmp/does-not-exist/st";
+    githooks::install_at(&dir, moved_path).unwrap();
+
+    let content = fs::read_to_string(dir.join("post-commit")).unwrap();
+    assert!(
+        content.contains("command -v /tmp/does-not-exist/st"),
+        "block should probe the resolved st path first: {content}"
+    );
+    assert!(
+        content.contains("elif command -v st "),
+        "block should fall back to a bare `st` lookup: {content}"
+    );
+    assert!(
+        content.contains("update --quiet >/dev/null 2>&1 &"),
+        "block should background the update so it never blocks/fails the git op: {content}"
+    );
+}
+
+#[test]
 fn malformed_json_is_refused_without_overwrite() {
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path().join(".cursor/hooks.json");

@@ -9,6 +9,7 @@ mod codex;
 mod copilot;
 mod cursor;
 mod gemini;
+mod githooks;
 mod openclaw;
 mod opencode;
 mod rules;
@@ -16,16 +17,23 @@ mod rules;
 #[cfg(test)]
 mod tests;
 
+/// Target scope for installing/uninstalling agent rules or hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallScope {
+    /// Action applies globally (e.g. user home directory config files).
     Global,
+    /// Action applies locally to the current project directory.
     Project,
 }
 
+/// Action to perform on an agent integration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentAction {
+    /// Install rules or integrations.
     Install,
+    /// Remove existing integrations.
     Uninstall,
+    /// Query and display integration status.
     Show,
 }
 
@@ -42,6 +50,7 @@ enum Agent {
     Windsurf,
     KiloCode,
     Antigravity,
+    GitHooks,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -51,6 +60,9 @@ pub(crate) struct Outcome {
     pub(crate) removed: Vec<PathBuf>,
 }
 
+/// Dispatches an agent setup action (Install, Uninstall, or Show) for a given agent name and scope.
+///
+/// Returns the process exit code (0 for success, non-zero for error).
 pub fn cmd_agent(action: AgentAction, agent: &str, scope: InstallScope) -> i32 {
     let agent = match Agent::parse(agent) {
         Some(agent) => agent,
@@ -103,6 +115,7 @@ fn install(agent: Agent, scope: InstallScope) -> Result<Outcome, String> {
             "antigravity",
             "Syntext Code Search",
         ),
+        Agent::GitHooks => githooks::install(&st),
     }
 }
 
@@ -121,6 +134,7 @@ fn uninstall(agent: Agent, scope: InstallScope) -> Result<Outcome, String> {
         Agent::Antigravity => {
             rules::uninstall(".agents/rules/antigravity-syntext-rules.md", "antigravity")
         }
+        Agent::GitHooks => githooks::uninstall(),
     }
 }
 
@@ -139,6 +153,7 @@ fn show(agent: Agent, scope: InstallScope) -> Result<Outcome, String> {
         Agent::Antigravity => {
             rules::show(".agents/rules/antigravity-syntext-rules.md", "antigravity")
         }
+        Agent::GitHooks => githooks::show(),
     }
 }
 
@@ -148,9 +163,12 @@ fn validate_scope(agent: Agent, scope: InstallScope) -> Result<(), String> {
         Agent::Cursor | Agent::Gemini | Agent::OpenCode | Agent::OpenClaw => {
             scope == InstallScope::Global
         }
-        Agent::Copilot | Agent::Cline | Agent::Windsurf | Agent::KiloCode | Agent::Antigravity => {
-            scope == InstallScope::Project
-        }
+        Agent::Copilot
+        | Agent::Cline
+        | Agent::Windsurf
+        | Agent::KiloCode
+        | Agent::Antigravity
+        | Agent::GitHooks => scope == InstallScope::Project,
     };
     if ok {
         Ok(())
@@ -199,6 +217,7 @@ impl Agent {
             "windsurf" => Some(Self::Windsurf),
             "kilocode" => Some(Self::KiloCode),
             "antigravity" => Some(Self::Antigravity),
+            "githooks" => Some(Self::GitHooks),
             _ => None,
         }
     }
@@ -216,6 +235,7 @@ impl Agent {
             Self::Windsurf => "windsurf",
             Self::KiloCode => "kilocode",
             Self::Antigravity => "antigravity",
+            Self::GitHooks => "githooks",
         }
     }
 
@@ -223,9 +243,12 @@ impl Agent {
         match self {
             Self::Claude | Self::Codex => "global or project",
             Self::Cursor | Self::Gemini | Self::OpenCode | Self::OpenClaw => "global",
-            Self::Copilot | Self::Cline | Self::Windsurf | Self::KiloCode | Self::Antigravity => {
-                "project"
-            }
+            Self::Copilot
+            | Self::Cline
+            | Self::Windsurf
+            | Self::KiloCode
+            | Self::Antigravity
+            | Self::GitHooks => "project",
         }
     }
 }

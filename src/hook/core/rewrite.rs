@@ -30,7 +30,7 @@ pub(crate) fn find_index_root(cwd: &Path) -> Option<PathBuf> {
 
 fn rewrite_shell_command(command: &str, st_program: &str) -> Option<String> {
     let parsed = shell::parse(command).ok()?;
-    if parsed.has_pipe || parsed.has_redirection || parsed.has_expansion {
+    if parsed.has_pipe || parsed.has_redirection || parsed.has_expansion || parsed.has_background {
         return None;
     }
 
@@ -93,7 +93,7 @@ fn render_rewritten_segment(env: &[Word], st_program: &str, args: &[String]) -> 
     pieces.join(" ")
 }
 
-fn rewrite_rg_args(args: &[Word]) -> Option<Vec<String>> {
+pub(crate) fn rewrite_rg_args(args: &[Word]) -> Option<Vec<String>> {
     let mut options = Vec::new();
     let mut positionals = Vec::new();
     let mut has_regexp = false;
@@ -233,7 +233,26 @@ fn parse_rg_short(
                     index + 2
                 });
             }
-            _ => return None,
+            _ => {
+                // Intentionally excluded from the rewrite allowlist.
+                // These flags have st/rg semantic divergences that would
+                // silently corrupt agent results if rewritten:
+                //
+                //   -v / --invert-match  st -v does a full-corpus scan (every
+                //                        file in scope), rg -v is line-level.
+                //                        The result sets differ for files with
+                //                        no matches at all.
+                //   -c / --count         rg -c counts matching lines; st -c
+                //                        behavior diverges on multi-match lines.
+                //   -U / --multiline     not supported by st; patterns with \n
+                //                        simply never match.
+                //   --max-depth          repo-root-relative in st (pre-fix),
+                //                        search-path-relative in rg.
+                //   Any other flag not in the allowlist above is unknown and
+                //   must not be silently forwarded. Return None to abort the
+                //   rewrite and leave the original `rg` command intact.
+                return None;
+            }
         }
         j += 1;
     }
@@ -341,3 +360,8 @@ fn parse_grep_short(
     }
     Some(index + 1)
 }
+
+#[cfg(test)]
+#[path = "rewrite_tests.rs"]
+mod tests;
+

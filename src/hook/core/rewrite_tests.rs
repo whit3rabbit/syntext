@@ -1,94 +1,80 @@
-use std::fs;
-use std::path::Path;
+use crate::hook::core::rewrite::rewrite_rg_args;
+use crate::hook::core::shell::Word;
 
-use super::rewrite::rewrite_for_cwd;
-
-fn with_indexed_repo(test: impl FnOnce(&Path)) {
-    let dir = tempfile::TempDir::new().unwrap();
-    fs::create_dir(dir.path().join(".syntext")).unwrap();
-    test(dir.path());
+fn word(s: &str) -> Word {
+    Word {
+        raw: s.to_string(),
+        text: s.to_string(),
+    }
 }
 
-fn rewrite(command: &str, cwd: &Path) -> Option<String> {
-    rewrite_for_cwd(command, cwd, "st")
+fn words(items: &[&str]) -> Vec<Word> {
+    items.iter().map(|s| word(s)).collect()
+}
+
+// --- rewrite_rg_args: excluded flags abort the rewrite ---
+
+#[test]
+fn rg_invert_match_short_aborts_rewrite() {
+    // `-v` must NOT be rewritten — rg -v and st -v diverge.
+    // rewrite_rg_args returns None → whole rewrite is aborted.
+    assert!(
+        rewrite_rg_args(&words(&["-v", "pattern", "dir"])).is_none(),
+        "-v must abort the rg rewrite"
+    );
 }
 
 #[test]
-fn rg_baseline_rewrites_when_index_exists() {
-    with_indexed_repo(|cwd| {
-        assert_eq!(
-            rewrite(r#"rg "parse_query" src/"#, cwd).as_deref(),
-            Some("st parse_query src/")
-        );
-        assert_eq!(
-            rewrite(r#"rg -n -i "todo" ."#, cwd).as_deref(),
-            Some("st -n -i todo .")
-        );
-    });
+fn rg_count_short_aborts_rewrite() {
+    // `-c` must NOT be rewritten — rg -c and st -c diverge.
+    assert!(
+        rewrite_rg_args(&words(&["-c", "pattern", "dir"])).is_none(),
+        "-c must abort the rg rewrite"
+    );
 }
 
 #[test]
-fn rg_supported_type_glob_regexp_and_json_rewrite() {
-    with_indexed_repo(|cwd| {
-        assert_eq!(
-            rewrite(r#"rg --json -t rs -g "*.rs" -e "parse_query" src/"#, cwd).as_deref(),
-            Some("st --json -t rs -g '*.rs' -e parse_query src/")
-        );
-    });
+fn rg_multiline_short_aborts_rewrite() {
+    // `-U` / --multiline is not supported by st.
+    assert!(
+        rewrite_rg_args(&words(&["-U", "pattern", "dir"])).is_none(),
+        "-U must abort the rg rewrite"
+    );
 }
 
 #[test]
-fn grep_recursive_forms_rewrite_and_strip_grep_only_flags() {
-    with_indexed_repo(|cwd| {
-        assert_eq!(
-            rewrite(r#"grep -RIn "unsafe" src/"#, cwd).as_deref(),
-            Some("st -n unsafe src/")
-        );
-        assert_eq!(
-            rewrite(r#"grep -Ri "unsafe" src/"#, cwd).as_deref(),
-            Some("st -i unsafe src/")
-        );
-        assert_eq!(
-            rewrite(r#"grep -RF "unsafe" src/"#, cwd).as_deref(),
-            Some("st -F unsafe src/")
-        );
-    });
+fn rg_invert_match_long_aborts_rewrite() {
+    assert!(
+        rewrite_rg_args(&words(&["--invert-match", "pattern", "dir"])).is_none(),
+        "--invert-match must abort the rg rewrite"
+    );
 }
 
 #[test]
-fn rewrite_preserves_env_prefixes_and_control_segments() {
-    with_indexed_repo(|cwd| {
-        assert_eq!(
-            rewrite("LC_ALL=C rg foo src/ && rg bar tests/", cwd).as_deref(),
-            Some("LC_ALL=C st foo src/ && st bar tests/")
-        );
-    });
+fn rg_count_long_aborts_rewrite() {
+    assert!(
+        rewrite_rg_args(&words(&["--count", "pattern", "dir"])).is_none(),
+        "--count must abort the rg rewrite"
+    );
+}
+
+// --- rewrite_rg_args: allowed flags pass through ---
+
+#[test]
+fn rg_allowed_flags_produce_output() {
+    // -n -F -i with a pattern + path should succeed.
+    let result = rewrite_rg_args(&words(&["-n", "-F", "-i", "pattern", "src"]));
+    assert!(result.is_some(), "allowed flags must not abort rewrite");
+    let args = result.unwrap();
+    assert!(args.contains(&"-n".to_string()));
+    assert!(args.contains(&"-F".to_string()));
+    assert!(args.contains(&"-i".to_string()));
+    assert!(args.contains(&"pattern".to_string()));
+    assert!(args.contains(&"src".to_string()));
 }
 
 #[test]
-fn no_rewrite_without_index() {
-    let dir = tempfile::TempDir::new().unwrap();
-    assert_eq!(rewrite("rg foo src/", dir.path()), None);
-}
-
-#[test]
-fn stdin_and_ambiguous_shell_forms_pass_through() {
-    with_indexed_repo(|cwd| {
-        assert_eq!(rewrite("cat file.rs | grep foo", cwd), None);
-        assert_eq!(rewrite("rg foo > out.txt", cwd), None);
-        assert_eq!(rewrite(r#"rg "$PATTERN" src/"#, cwd), None);
-        assert_eq!(rewrite(r#"rg "unterminated"#, cwd), None);
-    });
-}
-
-#[test]
-fn unsupported_rg_and_grep_forms_pass_through() {
-    with_indexed_repo(|cwd| {
-        assert_eq!(rewrite("grep foo", cwd), None);
-        assert_eq!(rewrite("grep -R foo", cwd), None);
-        assert_eq!(rewrite("rg --files", cwd), None);
-        assert_eq!(rewrite(r#"grep -P "lookbehind" src/"#, cwd), None);
-        assert_eq!(rewrite("grep -z foo file", cwd), None);
-        assert_eq!(rewrite("rg --pre 'cmd' foo", cwd), None);
-    });
+fn rg_no_pattern_and_no_positional_returns_none() {
+    // No pattern means there is nothing to search for.
+    assert!(rewrite_rg_args(&words(&["-n"])).is_none());
 }

@@ -4,16 +4,14 @@ use serde_json::{json, Value};
 
 use crate::hook::core::rewrite::{find_index_root, rewrite_for_cwd};
 
-use super::{hook_cwd, parse_json, ProtocolOutput};
+use super::{hook_cwd, ProtocolOutput};
 
-pub(crate) fn response_from_str(input: &str, st_program: &str) -> Option<ProtocolOutput> {
-    let input = parse_json(input)?;
-    bash_rewrite_response(&input, st_program).map(ProtocolOutput::Json)
+pub(crate) fn response(input: &Value, st_program: &str) -> Option<ProtocolOutput> {
+    bash_rewrite_response(input, st_program).map(ProtocolOutput::Json)
 }
 
-pub(crate) fn grep_block_response_from_str(input: &str) -> Option<ProtocolOutput> {
-    let input = parse_json(input)?;
-    grep_block_response(&input).map(ProtocolOutput::Json)
+pub(crate) fn grep_block_response(input: &Value) -> Option<ProtocolOutput> {
+    build_grep_block(input).map(ProtocolOutput::Json)
 }
 
 fn bash_rewrite_response(input: &Value, st_program: &str) -> Option<Value> {
@@ -46,7 +44,7 @@ fn bash_rewrite_response(input: &Value, st_program: &str) -> Option<Value> {
     }))
 }
 
-fn grep_block_response(input: &Value) -> Option<Value> {
+fn build_grep_block(input: &Value) -> Option<Value> {
     if input.get("tool_name").and_then(Value::as_str) != Some("Grep") {
         return None;
     }
@@ -89,9 +87,7 @@ mod tests {
             "cwd": dir.path()
         });
 
-        let ProtocolOutput::Json(output) =
-            response_from_str(&input.to_string(), "/tmp/st").unwrap()
-        else {
+        let ProtocolOutput::Json(output) = response(&input, "/tmp/st").unwrap() else {
             panic!("expected JSON output");
         };
         let hook = &output["hookSpecificOutput"];
@@ -112,12 +108,7 @@ mod tests {
             "cwd": dir.path()
         });
 
-        assert_eq!(response_from_str(&input.to_string(), "st"), None);
-    }
-
-    #[test]
-    fn claude_hook_ignores_malformed_json() {
-        assert_eq!(response_from_str("not json", "st"), None);
+        assert_eq!(response(&input, "st"), None);
     }
 
     #[test]
@@ -128,9 +119,7 @@ mod tests {
             "tool_input": { "pattern": "parse_query" },
             "cwd": indexed.path()
         });
-        let ProtocolOutput::Json(output) =
-            grep_block_response_from_str(&input.to_string()).unwrap()
-        else {
+        let ProtocolOutput::Json(output) = grep_block_response(&input).unwrap() else {
             panic!("expected JSON output");
         };
         assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
@@ -141,6 +130,6 @@ mod tests {
             "tool_input": { "pattern": "parse_query" },
             "cwd": plain.path()
         });
-        assert_eq!(grep_block_response_from_str(&input.to_string()), None);
+        assert_eq!(grep_block_response(&input), None);
     }
 }

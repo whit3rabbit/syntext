@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::hook::core::rewrite::rewrite_for_cwd;
 
-use super::{hook_cwd, parse_json, ProtocolOutput};
+use super::{hook_cwd, ProtocolOutput};
 
 enum CopilotFormat {
     VsCode { command: String },
@@ -12,11 +12,10 @@ enum CopilotFormat {
     PassThrough,
 }
 
-pub(crate) fn response_from_str(input: &str, st_program: &str) -> Option<ProtocolOutput> {
-    let input = parse_json(input)?;
-    match detect_format(&input) {
-        CopilotFormat::VsCode { command } => vscode_response(&input, &command, st_program),
-        CopilotFormat::Cli { command } => cli_response(&input, &command, st_program),
+pub(crate) fn response(input: &Value, st_program: &str) -> Option<ProtocolOutput> {
+    match detect_format(input) {
+        CopilotFormat::VsCode { command } => vscode_response(input, &command, st_program),
+        CopilotFormat::Cli { command } => cli_response(input, &command, st_program),
         CopilotFormat::PassThrough => None,
     }
     .map(ProtocolOutput::Json)
@@ -108,9 +107,7 @@ mod tests {
             "tool_input": { "command": "rg parse_query src/", "timeout": 5 },
             "cwd": dir.path()
         });
-        let ProtocolOutput::Json(output) =
-            response_from_str(&input.to_string(), "/tmp/st").unwrap()
-        else {
+        let ProtocolOutput::Json(output) = response(&input, "/tmp/st").unwrap() else {
             panic!("expected JSON output");
         };
         assert_eq!(
@@ -125,9 +122,7 @@ mod tests {
         let dir = indexed_repo();
         let args = serde_json::to_string(&json!({ "command": "rg parse_query src/" })).unwrap();
         let input = json!({ "toolName": "bash", "toolArgs": args, "cwd": dir.path() });
-        let ProtocolOutput::Json(output) =
-            response_from_str(&input.to_string(), "/tmp/st").unwrap()
-        else {
+        let ProtocolOutput::Json(output) = response(&input, "/tmp/st").unwrap() else {
             panic!("expected JSON output");
         };
         assert_eq!(output["permissionDecision"], "deny");
