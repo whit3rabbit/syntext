@@ -135,6 +135,19 @@ impl PathIndex {
         self.path_to_file_id.get(path).copied()
     }
 
+    /// Highest stable file_id allocated so far (equivalently, the count of
+    /// file_ids ever handed out, including tombstoned ones). Grows monotonically
+    /// with delete+recreate churn until a rebuild/compaction renumbers. Used by
+    /// compaction planning to detect stable-id bloat.
+    pub fn next_file_id(&self) -> u32 {
+        self.next_file_id
+    }
+
+    /// Number of currently-live (non-tombstoned) indexed paths.
+    pub fn live_path_count(&self) -> usize {
+        self.path_to_file_id.len()
+    }
+
     /// Return the path for a given file_id, or `None` if out of range.
     pub fn path(&self, file_id: u32) -> Option<&Path> {
         self.file_id_to_path

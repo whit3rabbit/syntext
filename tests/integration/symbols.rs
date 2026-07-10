@@ -103,6 +103,39 @@ fn def_kind_filter_finds_function_definition() {
     drop(idx);
 }
 
+/// `--refs` batches all resolved names into one search and dedups on
+/// (path, line). A line hitting the identifier more than once must collapse to
+/// a single match line, matching the pre-batch per-name loop's behavior.
+#[test]
+fn search_references_dedups_multiple_hits_per_line() {
+    let dir = TempDir::new().unwrap();
+    let cfg = setup(&dir);
+
+    let src = cfg.repo_root.join("refs.rs");
+    fs::write(
+        &src,
+        "fn process(x: u32) -> u32 { x }\n\
+         fn caller() {\n\
+         \x20   let _ = process(1) + process(2);\n\
+         \x20   let _ = process(3);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let idx = Index::build(cfg).expect("build failed");
+
+    let results = idx.search_references("process", None).expect("refs failed");
+    // Distinct match lines: the def (1), the two-occurrence line (3, collapsed
+    // to one), and the single-occurrence line (4). Line 3 must appear once.
+    let lines: Vec<u32> = results.iter().map(|m| m.line_number).collect();
+    assert_eq!(
+        lines,
+        vec![1, 3, 4],
+        "expected one match per line with line 3 deduped, got {lines:?}"
+    );
+    drop(idx);
+}
+
 /// Bug 3 regression: the symbol index must stay correct after incremental
 /// commits, not just full builds. Add + edit + delete flow through commit_batch.
 #[test]

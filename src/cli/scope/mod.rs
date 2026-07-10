@@ -318,9 +318,11 @@ pub(super) use files::cmd_files;
 pub(super) fn sort_and_dedup_matches(
     mut matches: Vec<crate::SearchMatch>,
 ) -> Vec<crate::SearchMatch> {
-    matches.sort_unstable_by(|a, b| {
-        a.path
-            .cmp(&b.path)
+    // Callers concatenate already-sorted per-spec runs, so a stable sort
+    // (timsort) detects and merges those runs in ~O(n log k) rather than
+    // re-sorting from scratch. `cmp_path_bytes` reproduces `Path::cmp` order.
+    matches.sort_by(|a, b| {
+        crate::path_util::cmp_path_bytes(&a.path, &b.path)
             .then_with(|| a.line_number.cmp(&b.line_number))
             .then_with(|| a.byte_offset.cmp(&b.byte_offset))
             .then_with(|| a.submatch_start.cmp(&b.submatch_start))

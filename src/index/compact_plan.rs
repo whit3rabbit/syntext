@@ -7,6 +7,9 @@ use crate::Config;
 pub(super) enum CompactionReason {
     OverlayRatio,
     SegmentLimit,
+    /// Stable file_id high-water mark far exceeds live path count (delete+recreate
+    /// churn in a long-lived process that never crossed the two ratio triggers).
+    FileIdBloat,
     ExplicitRequest,
 }
 
@@ -118,16 +121,31 @@ pub(super) fn plan(snapshot: &IndexSnapshot, config: &Config) -> Option<Compacti
         overlay_docs as f64 / base_docs as f64 > 0.10
     };
     let segment_limit_exceeded = snapshot.base.segments.len() > config.max_segments.max(1);
-    // ponytail: no delete-ratio trigger here. Durable incremental deltas
-    // (`index::delta`) append a segment for every add/modify commit, so the
-    // segment-count trigger already reclaims superseded base docs on any normal
-    // workload; results stay correct meanwhile via the persisted delete-set.
-    // A pure delete-only-heavy workload that never crosses the segment cap could
-    // accumulate hidden dead docs (space only, never wrong results) until the
-    // next add/modify or full rebuild. Add a delete-ratio trigger here (with a
-    // matching CompactionReason) if that ever shows up as real bloat.
-    if !overlay_ratio_exceeded && !segment_limit_exceeded {
+    // Backstop the one growth window the two ratio triggers miss: repeated
+    // delete+recreate of the same path in a long-lived process (base_commit ==
+    // HEAD, so nothing flushes to a delta segment) keeps overlay_docs and the
+    // segment count flat while burning a fresh stable file_id + a tombstone in
+    // PathIndex.file_id_to_path every cycle. Fire when the file_id high-water
+    // mark runs 4x ahead of the live path count. The 4x margin and the 1024
+    // floor keep this from firing before the overlay/segment triggers on normal
+    // add-heavy workloads (there, next_file_id ~ live + overlay_docs, and the
+    // overlay ratio crosses 0.10 long before next reaches 4x live) and from
+    // thrashing tiny repos.
+    let file_id_bloat = {
+        let next = snapshot.path_index.next_file_id() as usize;
+        let live = snapshot.path_index.live_path_count();
+        next > 1024 && next > live.saturating_mul(4)
+    };
+    if !overlay_ratio_exceeded && !segment_limit_exceeded && !file_id_bloat {
         return None;
+    }
+
+    // file_id_bloat with neither ratio trigger firing: run a full renumber
+    // (suffix_start = 0, target = 1). Compaction rebuilds PathIndex from the
+    // live paths it walks, so only a full-suffix compaction is guaranteed to
+    // drop every tombstone and reset next_file_id.
+    if !overlay_ratio_exceeded && !segment_limit_exceeded {
+        return Some(make_plan(snapshot, CompactionReason::FileIdBloat, 0, 1));
     }
 
     let segment_count = snapshot.base.segments.len();

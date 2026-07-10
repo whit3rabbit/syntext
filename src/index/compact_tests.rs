@@ -169,6 +169,65 @@ fn plan_prioritizes_overlay_ratio_trigger() {
 }
 
 #[test]
+fn plan_triggers_full_renumber_on_file_id_bloat() {
+    // A 1-doc, 1-segment base with no overlay and no deletes: neither the
+    // overlay-ratio nor the segment-limit trigger can fire.
+    let (_dir, snapshot, _seg_refs) = build_snapshot(
+        &[vec![(0, "a.rs", 10)]],
+        OverlayView::empty(),
+        RoaringBitmap::new(),
+    );
+
+    // Simulate long-lived delete+recreate churn of the same path: each cycle
+    // tombstones the old stable file_id and hands out a fresh one, so
+    // next_file_id runs far ahead of the (constant) live path count.
+    let mut pi = PathIndex::build(&[PathBuf::from("a.rs")]);
+    for _ in 0..2000 {
+        let mut removed = std::collections::HashSet::new();
+        removed.insert(PathBuf::from("a.rs"));
+        let mut added = std::collections::HashSet::new();
+        added.insert(PathBuf::from("a.rs"));
+        pi = PathIndex::build_incremental(&pi, &removed, &added);
+    }
+    assert!(pi.next_file_id() > 1024, "file_id high-water mark should bloat");
+    assert_eq!(pi.live_path_count(), 1, "live path count stays constant");
+
+    let bloated = new_snapshot(
+        snapshot.base.clone(),
+        OverlayView::empty(),
+        RoaringBitmap::new(),
+        pi,
+        HashMap::new(),
+        0.10,
+    );
+    let config = Config {
+        max_segments: 20,
+        ..Config::default()
+    };
+
+    let bloat_plan = plan(&bloated, &config).expect("file_id bloat should trigger compaction");
+    assert_eq!(bloat_plan.reason, CompactionReason::FileIdBloat);
+    // Full renumber: only a full-suffix compaction rebuilds PathIndex over the
+    // live paths and drops every tombstone.
+    assert_eq!(bloat_plan.suffix_start, 0);
+    assert_eq!(bloat_plan.target_segments, 1);
+
+    // Below the 4x-live threshold (fresh, unchurned index): no trigger.
+    let clean = new_snapshot(
+        snapshot.base.clone(),
+        OverlayView::empty(),
+        RoaringBitmap::new(),
+        PathIndex::build(&[PathBuf::from("a.rs")]),
+        HashMap::new(),
+        0.10,
+    );
+    assert!(
+        plan(&clean, &config).is_none(),
+        "an unchurned index must not trigger file_id-bloat compaction"
+    );
+}
+
+#[test]
 fn forced_plan_rewrites_from_earliest_deleted_segment() {
     let mut delete_set = RoaringBitmap::new();
     delete_set.insert(1);

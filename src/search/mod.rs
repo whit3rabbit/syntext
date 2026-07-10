@@ -253,8 +253,7 @@ pub fn search(
 /// Sort matches by path (lexicographic), then by line number ascending.
 fn sort_matches(mut matches: Vec<SearchMatch>) -> Vec<SearchMatch> {
     matches.sort_unstable_by(|a, b| {
-        a.path
-            .cmp(&b.path)
+        crate::path_util::cmp_path_bytes(&a.path, &b.path)
             .then_with(|| a.line_number.cmp(&b.line_number))
     });
     matches
