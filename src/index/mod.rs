@@ -354,7 +354,7 @@ impl Index {
     /// Attempts to apply a cheap durable delta first (appending a delta segment and updating
     /// the persistent delete-set). Falls back to a full rebuild if the delta path cannot safely or
     /// cheaply handle the change set (e.g. non-ancestor HEAD, over-cap change set, or overlay full).
-    pub fn rebuild_if_stale(&self) -> Result<Option<IndexStats>, IndexError> {
+    pub fn rebuild_if_stale(&self) -> Result<Option<(IndexStats, bool)>, IndexError> {
         if self.pending.has_uncommitted() {
             self.commit_batch()?;
         }
@@ -371,10 +371,10 @@ impl Index {
         // path cannot safely/cheaply handle. A full rebuild is always correct,
         // so any "no" is answered by one.
         if let Some(stats) = self.try_committed_delta(&manifest, current_head.as_deref())? {
-            return Ok(Some(stats));
+            return Ok(Some((stats, false)));
         }
 
-        self.rebuild_with(build::build_index).map(Some)
+        self.rebuild_with(build::build_index).map(|stats| Some((stats, true)))
     }
 }
 

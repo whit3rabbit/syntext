@@ -105,10 +105,13 @@ pub(super) fn flush_overlay_as_delta(
     // Refresh paths.idx from the snapshot's already-incremental path index
     // (commit_batch removed deleted paths and added new ones), so a reopen with
     // a matching version sees the correct path set for `--files`/path filters.
+    let mut paths_idx_ok = false;
     if let Err(e) = paths_idx::write_paths_idx(&config.index_dir, &snapshot.path_index) {
         if config.verbose {
             eprintln!("syntext: warning: could not write paths.idx cache: {e}");
         }
+    } else {
+        paths_idx_ok = true;
     }
 
     let total_files = previous_manifest
@@ -117,7 +120,11 @@ pub(super) fn flush_overlay_as_delta(
     let mut manifest = Manifest::new(seg_refs, total_files);
     manifest.base_commit = head;
     manifest.scan_threshold_fraction = previous_manifest.scan_threshold_fraction;
-    manifest.paths_idx_version = Some(paths_idx::FORMAT_VERSION);
+    manifest.paths_idx_version = if paths_idx_ok {
+        Some(paths_idx::FORMAT_VERSION)
+    } else {
+        None
+    };
     manifest.overlay_deletes_file = deletes_file;
     manifest.save(&config.index_dir)?;
     // Removes orphan segments and stale deletes-*.idx (all but the one named in

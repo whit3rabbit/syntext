@@ -30,6 +30,15 @@ use crate::Config;
 pub(super) fn handle_missing_index(_config: &Config, args: &SearchArgs, index_dir: &Path) -> i32 {
     let dir = index_dir.display();
 
+    // Only --sym/--refs genuinely require the symbol index (they produce
+    // symbol-derived results). A bare --sym-kind carries no query of its own,
+    // so it must not hijack a plain content search into an error; it is
+    // stripped before the rg/grep fallback instead (see ST_VALUE_FLAGS).
+    if args.sym.is_some() || args.refs.is_some() {
+        eprintln!("st: symbol flags (--sym, --refs) are not supported without an index");
+        return 2;
+    }
+
     if !fallback_enabled(args) {
         // Opt-in is off: keep the actionable error, but advertise both remedies.
         eprintln!("st: no index found at {dir}");
@@ -115,14 +124,15 @@ fn exec(bin: &Path, args: Vec<OsString>) -> i32 {
 }
 
 /// st-only flags that take a value (rg does not understand any of them).
-const ST_VALUE_FLAGS: &[&str] = &["--repo-root", "--index-dir", "--index"];
+const ST_VALUE_FLAGS: &[&str] = &["--repo-root", "--index-dir", "--index", "--sym-kind"];
 /// st-only boolean flags (rg does not understand them).
-const ST_BOOL_FLAGS: &[&str] = &["--verbose", "--fallback"];
+const ST_BOOL_FLAGS: &[&str] = &["--verbose", "--fallback", "--no-update"];
 
 /// Strip st-specific tokens from argv so the remainder is valid ripgrep input.
 ///
-/// Drops `--verbose`/`--fallback` (no value) and `--repo-root`/`--index-dir`/
-/// `--index` plus their value (separate-token or `--flag=value` form). argv[0]
+/// Drops `--verbose`/`--fallback`/`--no-update` (no value) and `--repo-root`/
+/// `--index-dir`/`--index`/`--sym-kind` plus their value (separate-token or
+/// `--flag=value` form). argv[0]
 /// (the program name) is dropped; everything else passes through untouched.
 ///
 /// Known limitation: a value-form flag name appearing as the *value* of another

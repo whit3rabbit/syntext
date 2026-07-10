@@ -85,6 +85,25 @@ pub enum QueryRoute {
     FullScan,
 }
 
+fn hir_contains_literal_newline(hir: &regex_syntax::hir::Hir) -> bool {
+    use regex_syntax::hir::HirKind;
+    match hir.kind() {
+        HirKind::Literal(lit) => {
+            lit.0.contains(&b'\n')
+        }
+        HirKind::Concat(subs) | HirKind::Alternation(subs) => {
+            subs.iter().any(hir_contains_literal_newline)
+        }
+        HirKind::Repetition(rep) => {
+            hir_contains_literal_newline(&rep.sub)
+        }
+        HirKind::Capture(cap) => {
+            hir_contains_literal_newline(&cap.sub)
+        }
+        _ => false,
+    }
+}
+
 /// Classify a search pattern and return the optimal execution route.
 ///
 /// - Literal if pattern has no regex metacharacters AND case-sensitive
@@ -99,6 +118,9 @@ pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, 
         return Err("literal \\n not allowed".to_string());
     }
 
+    // Literal patterns cannot carry an escaped newline: `is_literal` rejects any
+    // pattern containing `\`, and raw '\n' is caught above. So the literal arms
+    // need no HIR at all — only the regex path parses (once, reused below).
     if case_insensitive && is_literal(pattern) {
         // Mirror the case-sensitive `Literal` arm's candidate logic (see
         // search::search). Only the required (interior-anchored) grams are
@@ -120,8 +142,20 @@ pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, 
         return Ok(QueryRoute::Literal);
     }
 
-    let gram_query = regex_decompose::decompose(pattern, case_insensitive)?;
-    let gram_query = gram_query.simplify();
+    // Regex path: parse the HIR once, reuse it for the newline guard and the
+    // gram decomposition (decompose_hir) instead of parsing the pattern twice.
+    let hir = regex_syntax::ParserBuilder::new()
+        .case_insensitive(case_insensitive)
+        .utf8(false)
+        .build()
+        .parse(pattern)
+        .map_err(|e| e.to_string())?;
+
+    if hir_contains_literal_newline(&hir) {
+        return Err("literal \\n not allowed".to_string());
+    }
+
+    let gram_query = regex_decompose::decompose_hir(&hir).simplify();
 
     Ok(match gram_query {
         GramQuery::All | GramQuery::None => QueryRoute::FullScan,

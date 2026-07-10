@@ -75,6 +75,39 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
     // Bounded by config.auto_update_budget_ms; None means detection failed
     // (no git binary, non-git directory) and is reported as unknown/null.
     let files_behind = detect_files_behind(&index, &config);
+
+    let git = crate::git_util::resolve_git_binary();
+    let mut base_stale_msg = None;
+    let behind = if let Some(ref base) = s.base_commit {
+        let canonical_root = std::fs::canonicalize(&config.repo_root).unwrap_or_else(|_| config.repo_root.clone());
+        if let Ok(output) = std::process::Command::new(&git)
+            .arg("-C")
+            .arg(&canonical_root)
+            .args(["rev-list", "--count", &format!("{base}..HEAD")])
+            .output()
+        {
+            if output.status.success() {
+                let n = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>().unwrap_or(0);
+                if n > 0 {
+                    base_stale_msg = Some(format!("stale base, behind HEAD by {n} commit(s)"));
+                }
+                Some(n)
+            } else {
+                // rev-list only fails when `base` is not a resolvable ref
+                // (gc'd, shallow clone, or repo_root is no longer a git repo).
+                // A merely non-ancestor HEAD still succeeds, so do not claim
+                // "non-ancestor" here.
+                base_stale_msg =
+                    Some("stale base, base commit not found (cannot compare to HEAD)".to_string());
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     if json {
         // Use serde_json to avoid malformed output when index_dir contains
         // characters that need JSON escaping (quotes, backslashes, etc.).
@@ -84,6 +117,7 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
             "grams": s.total_grams,
             "index_dir": config.index_dir.display().to_string(),
             "files_behind": files_behind,
+            "base_behind_commits": behind,
         });
         let stdout = io::stdout();
         let mut out = stdout.lock();
@@ -93,9 +127,11 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
     } else {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        let files_behind_display = match files_behind {
-            Some(n) => n.to_string(),
-            None => "unknown".to_string(),
+        let files_behind_display = match (files_behind, &base_stale_msg) {
+            (Some(fb), Some(msg)) => format!("{fb} ({msg})"),
+            (Some(fb), None) => fb.to_string(),
+            (None, Some(msg)) => format!("unknown ({msg})"),
+            (None, None) => "unknown".to_string(),
         };
         if let Err(err) = writeln!(out, "Index:     {}", config.index_dir.display())
             .and_then(|_| writeln!(out, "Documents: {}", s.total_documents))
@@ -145,20 +181,17 @@ pub(super) fn cmd_verify(mut config: Config) -> i32 {
     }
 }
 
-pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
+fn try_update_once(config: Config, quiet: bool) -> Result<i32, IndexError> {
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         // A missing index is expected when `st update` runs from a git hook
         // (e.g. post-checkout) before the repo has ever been indexed. Under
         // --quiet (the documented hook-safe mode), exit 0 with no stderr so
-        // hooks don't spam or fail; otherwise report loudly with exit 2.
+        // hooks don't spam or fail; otherwise propagate the error.
         Err(IndexError::IndexNotFound(_)) if quiet => {
-            return 0;
+            return Ok(0);
         }
-        Err(e) => {
-            eprintln!("st update: {e}");
-            return 2;
-        }
+        Err(e) => return Err(e),
     };
 
     // A moved HEAD (commit, checkout, merge, rebase/rewrite -- exactly the
@@ -169,27 +202,35 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     // Check base_commit staleness first and do a full rebuild when it
     // fired, so a hook-triggered `st update` actually picks up newly
     // committed content instead of silently no-op'ing.
+    // Whether a durable committed-HEAD delta was applied. A delta advances and
+    // persists base_commit before we fall through to the uncommitted-drift
+    // detection below, so the primary work is already done and durable: the
+    // trailing update_from_git pass must not contradict or override it.
+    let mut delta_applied = false;
     match index.rebuild_if_stale() {
-        Ok(Some(stats)) => {
+        Ok(Some((stats, full))) => {
             if !quiet {
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
-                if let Err(err) = writeln!(
-                    out,
-                    "st: rebuilt index ({} document(s), HEAD changed)",
-                    stats.total_documents
-                ) {
-                    return handle_output(err);
+                let msg = if full {
+                    format!("st: rebuilt index ({} document(s), HEAD changed)", stats.total_documents)
+                } else {
+                    format!("st: applied delta update ({} document(s), HEAD changed)", stats.total_documents)
+                };
+                if let Err(err) = writeln!(out, "{}", msg) {
+                    return Ok(handle_output(err));
                 }
             }
-            drop(index);
-            return 0;
+            if full {
+                drop(index);
+                return Ok(0);
+            }
+            delta_applied = true;
         }
         Ok(None) => {}
         Err(e) => {
-            eprintln!("st update: {e}");
             drop(index);
-            return 2;
+            return Err(e);
         }
     }
 
@@ -205,7 +246,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
                 if let Err(err) = writeln!(out, "st: updated {} file(s)", files) {
-                    return handle_output(err);
+                    return Ok(handle_output(err));
                 }
             }
             // Surface partial updates: files git reported as changed but that
@@ -218,27 +259,60 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
             }
             drop(index);
             if skipped > 0 {
-                1
+                Ok(1)
             } else {
-                0
+                Ok(0)
             }
         }
         Ok(_) => {
             // NoChanges, BudgetExceeded, TooManyFiles — none apply to CLI
-            // update (no budget, no max_files). Treat as no-changes.
-            if !quiet {
+            // update (no budget, no max_files). Treat as no-changes. Suppress
+            // the "no changes detected" line when a delta already reported an
+            // update: the committed HEAD move was applied, so "no changes"
+            // would contradict the message just printed.
+            if !quiet && !delta_applied {
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
                 if let Err(err) = writeln!(out, "st: no changes detected") {
-                    return handle_output(err);
+                    return Ok(handle_output(err));
                 }
             }
-            0
+            Ok(0)
         }
         Err(e) => {
-            eprintln!("st update: {e}");
             drop(index);
-            2
+            // If a durable delta was already applied, the uncommitted-drift
+            // pass failing is non-fatal: the committed HEAD update succeeded
+            // and is persisted. Warn but report success rather than masking the
+            // durable update behind a total-failure exit code.
+            if delta_applied {
+                eprintln!("st update: delta applied, but uncommitted-change scan failed: {e}");
+                Ok(0)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
+    let mut attempt = 0;
+    let base_delay = std::time::Duration::from_millis(50);
+    loop {
+        match try_update_once(config.clone(), quiet) {
+            Ok(code) => return code,
+            Err(IndexError::LockConflict(_)) if attempt < 5 => {
+                attempt += 1;
+                let delay = base_delay * (1 << (attempt - 1));
+                if config.verbose && !quiet {
+                    eprintln!("st update: lock conflict, retrying in {}ms...", delay.as_millis());
+                }
+                std::thread::sleep(delay);
+            }
+            Err(e) => {
+                eprintln!("st update: {e}");
+                return 2;
+            }
         }
     }
 }

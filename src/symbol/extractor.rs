@@ -262,11 +262,16 @@ pub fn heuristic_extract(content: &[u8]) -> Vec<ExtractedSymbol> {
     });
 
     let mut symbols = Vec::new();
+    let mut last_pos = 0;
+    let mut last_line = 1;
     for cap in re.captures_iter(text) {
         let name = cap[1].to_string();
         // Find line number by counting newlines before match start.
         let byte_pos = cap.get(0).map(|m| m.start()).unwrap_or(0);
-        let line = text[..byte_pos].chars().filter(|&c| c == '\n').count() as u32 + 1;
+        let newlines = text[last_pos..byte_pos].bytes().filter(|&b| b == b'\n').count() as u32;
+        let line = last_line + newlines;
+        last_pos = byte_pos;
+        last_line = line;
         symbols.push(ExtractedSymbol {
             name,
             kind: SymbolKind::Function,

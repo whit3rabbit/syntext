@@ -8,10 +8,10 @@ use crate::Config;
 
 use super::Cli;
 
-/// Hard ceiling for `SYNTEXT_MAX_FILE_SIZE` (1 GiB).
+/// Hard ceiling for `SYNTEXT_MAX_FILE_SIZE` (512 MiB).
 ///
 /// Prevents `take(0)` overflow when the env var is set to a very large value.
-pub(super) const MAX_FILE_SIZE_CEILING: u64 = 1_073_741_824;
+pub(super) const MAX_FILE_SIZE_CEILING: u64 = 536_870_912;
 
 /// Resolve Config from CLI args and environment.
 pub(super) fn resolve_config(cli: &Cli) -> Config {
@@ -142,9 +142,30 @@ pub(super) fn detect_repo_root() -> Option<PathBuf> {
 /// be unit-tested on any platform.
 #[cfg(unix)]
 fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
-    if !index_dir.is_absolute() {
-        return Ok(());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let resolved = if index_dir.is_absolute() {
+        index_dir.to_path_buf()
+    } else {
+        cwd.join(index_dir)
+    };
+
+    let mut ancestor = resolved.clone();
+    let mut popped = Vec::new();
+    while !ancestor.exists() {
+        if let Some(p) = ancestor.parent() {
+            if let Some(file_name) = ancestor.file_name() {
+                popped.push(file_name.to_os_string());
+            }
+            ancestor = p.to_path_buf();
+        } else {
+            break;
+        }
     }
+    let mut canonical = std::fs::canonicalize(&ancestor).unwrap_or(ancestor);
+    for file_name in popped.into_iter().rev() {
+        canonical.push(file_name);
+    }
+
     const SENSITIVE_PREFIXES: &[&str] = &[
         "/etc",
         "/usr",
@@ -163,7 +184,7 @@ fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
         "/private/etc",
         "/private/var/root",
     ];
-    let dir_str = index_dir.to_string_lossy();
+    let dir_str = canonical.to_string_lossy();
     if let Some(matched) = overlaps_sensitive_prefix(&dir_str, SENSITIVE_PREFIXES, '/') {
         return Err(format!(
             "st: refusing --index-dir '{}': overlaps system path '{matched}'; \
@@ -176,9 +197,30 @@ fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
-    if !index_dir.is_absolute() {
-        return Ok(());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let resolved = if index_dir.is_absolute() {
+        index_dir.to_path_buf()
+    } else {
+        cwd.join(index_dir)
+    };
+
+    let mut ancestor = resolved.clone();
+    let mut popped = Vec::new();
+    while !ancestor.exists() {
+        if let Some(p) = ancestor.parent() {
+            if let Some(file_name) = ancestor.file_name() {
+                popped.push(file_name.to_os_string());
+            }
+            ancestor = p.to_path_buf();
+        } else {
+            break;
+        }
     }
+    let mut canonical = std::fs::canonicalize(&ancestor).unwrap_or(ancestor);
+    for file_name in popped.into_iter().rev() {
+        canonical.push(file_name);
+    }
+
     // Build sensitive prefixes from environment variables (handles non-standard
     // Windows installs, e.g. Windows on D:\). Fall back to hardcoded defaults.
     let mut sensitive: Vec<String> = Vec::new();
@@ -206,11 +248,15 @@ fn validate_index_dir(index_dir: &std::path::Path) -> Result<(), String> {
             sensitive.push(s);
         }
     }
-    // Normalize the input path: lowercase, forward slashes -> backslashes.
-    let dir_lower = index_dir
+    // Normalize the input path: lowercase, forward slashes -> backslashes,
+    // and strip \\?\ prefix if present on Windows canonicalized paths.
+    let mut dir_lower = canonical
         .to_string_lossy()
         .to_lowercase()
         .replace('/', "\\");
+    if dir_lower.starts_with("\\\\?\\") {
+        dir_lower = dir_lower[4..].to_string();
+    }
     let prefixes: Vec<&str> = sensitive.iter().map(|s| s.as_str()).collect();
     if let Some(matched) = overlaps_sensitive_prefix(&dir_lower, &prefixes, '\\') {
         return Err(format!(

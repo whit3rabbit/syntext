@@ -91,6 +91,17 @@ impl SegmentWriter {
         let dict_filename = format!("{}.dict", segment_id);
         let post_filename = format!("{}.post", segment_id);
         let (dict_bytes, post_bytes, doc_count, gram_count) = self.serialize()?;
+        if dict_bytes.len() as u64 > super::MAX_SEGMENT_SIZE || post_bytes.len() as u64 > super::MAX_SEGMENT_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Segment size exceeds limit (dict: {} bytes, post: {} bytes, max: {})",
+                    dict_bytes.len(),
+                    post_bytes.len(),
+                    super::MAX_SEGMENT_SIZE
+                ),
+            ));
+        }
         std::fs::write(dir.join(&dict_filename), &dict_bytes)?;
         std::fs::write(dir.join(&post_filename), &post_bytes)?;
         let doc_bytes = self.docs.iter().map(|d| d.size_bytes).sum::<u64>();
@@ -131,6 +142,17 @@ impl SegmentWriter {
             .unwrap_or("segment.post")
             .to_owned();
         let (dict_bytes, post_bytes, doc_count, gram_count) = self.serialize()?;
+        if dict_bytes.len() as u64 > super::MAX_SEGMENT_SIZE || post_bytes.len() as u64 > super::MAX_SEGMENT_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Segment size exceeds limit (dict: {} bytes, post: {} bytes, max: {})",
+                    dict_bytes.len(),
+                    post_bytes.len(),
+                    super::MAX_SEGMENT_SIZE
+                ),
+            ));
+        }
         std::fs::write(&dict_path, &dict_bytes)?;
         std::fs::write(&post_path, &post_bytes)?;
         let doc_bytes = self.docs.iter().map(|d| d.size_bytes).sum::<u64>();

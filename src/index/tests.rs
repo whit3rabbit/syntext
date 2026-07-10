@@ -1463,7 +1463,7 @@ fn rebuild_if_stale_refreshes_snapshot_after_head_change() {
     std::fs::write(&file, b"fn new_name() {}\n").unwrap();
     let second_head = commit_all(repo.path(), "second");
 
-    let stats = index
+    let (stats, _full) = index
         .rebuild_if_stale()
         .unwrap()
         .expect("HEAD changed, rebuild must run");

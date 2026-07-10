@@ -10,10 +10,47 @@ use crate::Config;
 
 use super::{
     compile_output_regex, group_matches_by_path, json_data, json_elapsed, json_line_message,
-    json_stats, json_submatches, read_matched_file, read_repo_file_bytes, repo_canonical_root,
+    json_stats, json_submatches, read_matched_file, repo_canonical_root,
     write_json_line,
 };
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
+
+/// Best-effort size (bytes) of a scoped file with no match, for the summary
+/// `bytes_searched` stat. Uses the in-memory index (overlay content, else the
+/// live base-segment doc's `size_bytes`) to avoid reading every unmatched file
+/// off disk. Falls back to a cheap `metadata` stat (not a full read) for a
+/// scoped path absent from the index (e.g. an untracked file in scope), so it
+/// is not silently counted as zero.
+fn get_file_size(
+    snap: &crate::index::IndexSnapshot,
+    root: &std::path::Path,
+    path: &std::path::Path,
+) -> usize {
+    if let Some(doc) = snap.overlay.get_doc_by_path(path) {
+        return doc.content.len();
+    }
+    if let Some(doc_ids) = snap.base.path_doc_ids.get(path) {
+        for &global_id in doc_ids {
+            if !snap.delete_set.contains(global_id) {
+                let seg_idx = snap
+                    .segment_base_ids()
+                    .partition_point(|&b| b <= global_id)
+                    .saturating_sub(1);
+                if seg_idx < snap.base_segments().len() {
+                    let base = snap.segment_base_ids()[seg_idx];
+                    if let Some(local_id) = global_id.checked_sub(base) {
+                        if let Some(doc_entry) = snap.base_segments()[seg_idx].get_doc(local_id) {
+                            return doc_entry.size_bytes as usize;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::fs::metadata(root.join(path))
+        .map(|m| m.len() as usize)
+        .unwrap_or(0)
+}
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
 pub(in crate::cli) fn render_json(
@@ -116,13 +153,12 @@ pub(in crate::cli) fn render_json(
         write_json_line(&mut out, &end)?;
     }
 
+    let snap = index.snapshot();
     for path in scoped_paths {
         if by_file.contains_key(&path) {
             continue;
         }
-        if let Ok(raw_content) = read_repo_file_bytes(config, &canonical_root, &path) {
-            total_bytes_searched += raw_content.len();
-        }
+        total_bytes_searched += get_file_size(&snap, &canonical_root, &path);
     }
 
     // summary

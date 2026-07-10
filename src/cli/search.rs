@@ -99,6 +99,33 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
         );
     }
 
+    if output_args.files_without_match {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        let sep = if output_args.null { b'\0' } else { b'\n' };
+        let matched: std::collections::BTreeSet<_> =
+            results.iter().map(|m| m.path.clone()).collect();
+        let mut found_any = false;
+        for path in collect_scoped_paths(index, config, &output_args) {
+            if matched.contains(&path) {
+                continue;
+            }
+            found_any = true;
+            // Under -q, suppress output but keep scanning so the exit code
+            // still reflects whether any unmatched file exists.
+            if output_args.quiet {
+                break;
+            }
+            let result = out
+                .write_all(path_bytes(&path).as_ref())
+                .and_then(|_| out.write_all(&[sep]));
+            if let Err(err) = result {
+                return handle_output(err);
+            }
+        }
+        return if found_any { 0 } else { 1 };
+    }
+
     if results.is_empty() && output_args.json {
         if let Err(err) = super::render::render_json(index, config, &results, &output_args) {
             return handle_output(err);
@@ -131,28 +158,6 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
             }
         }
         return 0;
-    }
-
-    if output_args.files_without_match {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        let sep = if output_args.null { b'\0' } else { b'\n' };
-        let matched: std::collections::BTreeSet<_> =
-            results.iter().map(|m| m.path.clone()).collect();
-        let mut found_any = false;
-        for path in collect_scoped_paths(index, config, &output_args) {
-            if matched.contains(&path) {
-                continue;
-            }
-            found_any = true;
-            let result = out
-                .write_all(path_bytes(&path).as_ref())
-                .and_then(|_| out.write_all(&[sep]));
-            if let Err(err) = result {
-                return handle_output(err);
-            }
-        }
-        return if found_any { 0 } else { 1 };
     }
 
     if output_args.count_matches || (output_args.count && output_args.only_matching) {

@@ -611,7 +611,7 @@ fn auto_update_over_max_files_does_not_crash_search() {
 }
 
 #[test]
-fn max_file_size_is_clamped_to_1gb() {
+fn max_file_size_is_clamped_to_ceiling() {
     // Use clamp_max_file_size() directly rather than setting the env var.
     // std::env::set_var is not thread-safe: the test harness runs tests in
     // parallel, so a set_var / remove_var pair in one test can affect any
@@ -622,7 +622,7 @@ fn max_file_size_is_clamped_to_1gb() {
     assert_eq!(
         result,
         super::MAX_FILE_SIZE_CEILING,
-        "value above 1 GiB must be clamped to MAX_FILE_SIZE_CEILING"
+        "value above 512 MiB must be clamped to MAX_FILE_SIZE_CEILING"
     );
     // The +1 used in commit_batch must not overflow after clamping.
     assert!(

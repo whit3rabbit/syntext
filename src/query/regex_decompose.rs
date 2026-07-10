@@ -34,7 +34,17 @@ pub fn decompose(pattern: &str, case_insensitive: bool) -> Result<GramQuery, Str
         .build()
         .parse(pattern)
         .map_err(|e| e.to_string())?;
-    Ok(walk(&hir))
+    Ok(decompose_hir(&hir))
+}
+
+/// Decompose an already-parsed HIR into a `GramQuery` boolean tree.
+///
+/// Same result as [`decompose`], but reuses a caller-parsed HIR to avoid a
+/// second parse of the same pattern. The HIR must have been parsed with the
+/// caller's intended `case_insensitive` setting. The returned tree should be
+/// passed through [`GramQuery::simplify`] before use.
+pub fn decompose_hir(hir: &Hir) -> GramQuery {
+    walk(hir)
 }
 
 /// Recursively walk an HIR node and produce a `GramQuery`.

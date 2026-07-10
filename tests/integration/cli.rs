@@ -1036,6 +1036,53 @@ fn files_without_match_lists_only_unmatched_files() {
 }
 
 #[test]
+fn files_without_match_lists_all_files_on_no_matches() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "alpha\n");
+    write_text(&repo.path().join("src/two.txt"), "beta\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--files-without-match", "nonexistent", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        fix_path(stdout_text(&output)),
+        "src/one.txt\nsrc/two.txt\n"
+    );
+}
+
+#[test]
+fn files_without_match_quiet_is_silent_but_keeps_exit_code() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "alpha shared\n");
+    write_text(&repo.path().join("src/two.txt"), "beta shared\n");
+    build_index(repo.path(), index.path());
+
+    // -q suppresses output; exit 0 because at least one file lacks "alpha".
+    let out_some = run_repo(
+        repo.path(),
+        index.path(),
+        &["-q", "--files-without-match", "alpha", "src"],
+    );
+    assert_eq!(out_some.status.code(), Some(0));
+    assert_eq!(stdout_text(&out_some), "");
+
+    // Every file matches "shared" -> no unmatched file -> exit 1, still silent.
+    let out_none = run_repo(
+        repo.path(),
+        index.path(),
+        &["-q", "--files-without-match", "shared", "src"],
+    );
+    assert_eq!(out_none.status.code(), Some(1));
+    assert_eq!(stdout_text(&out_none), "");
+}
+
+#[test]
 fn count_matches_counts_individual_matches_per_file() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
