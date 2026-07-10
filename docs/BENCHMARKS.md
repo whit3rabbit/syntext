@@ -523,3 +523,53 @@ matches here); the timing comparison stands. fff's `workspace` latency
 (0.46 ms for 26 ranked results) is not comparable to the exhaustive
 24,948-match enumerations; on the selective literal the gap is 2.1 ms
 (syntext-persistent, exhaustive) vs 0.67 ms (fff, top-N).
+
+### open+detect+search e2e baseline, 100k synthetic files (2026-07-09)
+
+Baseline for the `open_search_e2e` criterion target (`benches/open_search_e2e.rs`),
+now gated nightly in CI (`.github/workflows/nightly.yml`,
+`bench-open-search-e2e` job). Measures `Index::open` + bounded
+`update_from_git` (`max_files: 200`, `budget_ms: 150`) + one `search()` call,
+against a synthetic 100k-file git repo built once outside the timed loop. Run:
+
+```sh
+cargo bench --bench open_search_e2e -- --sample-size 10
+```
+
+Local run (Apple M4 Max, macOS, 10 samples):
+
+| Benchmark | Mean | Median | 95% CI |
+|---|---:|---:|---:|
+| `open_detect_search_100k_files` | 11.048 s | 11.568 s | [10.391 s, 11.650 s] |
+
+This is a single-machine local baseline, not a CI-runner number; the nightly
+job's own history (criterion report uploaded as the `open-search-e2e-criterion-report`
+artifact) is the source of truth for regression comparisons going forward.
+
+### bench-freshness baseline, 2000 synthetic files (2026-07-09)
+
+Baseline for the `bench_freshness` criterion group (`benches/freshness.rs`),
+run on every PR (`[[bench]] name = "freshness"` in `Cargo.toml`). Isolates the
+freshness-detection cost (`detect_changed_files`) and the bounded
+`Index::update_from_git` apply path (`max_files: 200`, `budget_ms: 150`, same
+limits the CLI uses by default) from the much larger 100k-file
+`open_search_e2e` nightly target above. Run:
+
+```sh
+cargo bench --bench freshness -- --sample-size 10
+```
+
+Local run (Apple M4 Max, macOS, 10 samples):
+
+| Benchmark | Mean |
+|---|---:|
+| `detect_no_changes_2000_files` | 21.05 ms |
+| `detect_one_changed_file_2000_files` | 21.29 ms |
+| `update_from_git_bounded_2000_files` | 26.76 ms |
+
+Steady-state detection (no changes) and single-file-changed detection cost
+roughly the same (~21 ms): both pay for the same three bounded git subprocess
+calls (`detect_changed_files`), and the extra diff work for the one changed
+file is small relative to subprocess overhead. `update_from_git_bounded`
+adds ~5.7 ms on top for applying the change to the overlay, still well inside
+the 150 ms budget the CLI enforces by default.

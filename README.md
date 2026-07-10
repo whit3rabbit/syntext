@@ -235,6 +235,7 @@ Supported harnesses:
 | Windsurf | project | `st init --windsurf` or `st agent install windsurf --project` | `./.windsurfrules` |
 | Kilo Code | project | `st init --kilocode` or `st agent install kilocode --project` | `./.kilocode/rules/syntext-rules.md` |
 | Google Antigravity | project | `st init --antigravity` or `st agent install antigravity --project` | `./.agents/rules/antigravity-syntext-rules.md` |
+| Git hooks (auto-update) | project | `st init --githooks` or `st agent install githooks --project` | `.git/hooks/post-commit`, `post-checkout`, `post-merge`, `post-rewrite` |
 
 Each install is idempotent, preserves unrelated settings, writes a timestamped
 backup before editing an existing file, and only removes syntext-owned entries

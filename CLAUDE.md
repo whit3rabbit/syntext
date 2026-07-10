@@ -25,6 +25,7 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
     - **Git Binary**: Use platform-aware resolution (searching for `git.exe` on Windows) in `helpers.rs`.
     - **Forward-slash path normalization**: All paths stored in segments must use forward slashes (`/`). Use `path_util::normalize_to_forward_slashes()` at ingestion boundaries. Byte-level matching in `path/filter.rs` and `path/mod.rs` splits on `b'/'` only.
     - **Illegal filename characters in tests**: Windows forbids `\`, `<`, `>`, `"`, `|`, `?`, `*`, and control characters (including `\t`, `\n`) in file/directory names. Gate such tests with `#[cfg(unix)]`.
+    - **`Index::build` in a git repo indexes `.git/hooks/*.sample`**, so `base_doc_count` is ~20+, not your fixture file count. Tests that need `OverlayFull` (overlay > 50% of base) must size the change set off `index.stats().total_documents`, not a hardcoded small number.
 
 ## Dependencies
 
@@ -124,10 +125,28 @@ cargo test --test boundary_fuzz  # unit: boundary fuzzing
 cargo test --test index_build # integration: index construction
 cargo test --test incremental # integration: incremental updates
 cargo test --test symbols     # integration: symbol index
+cargo test --test oracle_self --features oracle  # integration: self-differential oracle
+cargo test --test oracle_incremental --features oracle # integration: incremental overlay differential oracle
+cargo test --test oracle_cli --features oracle   # integration: CLI subprocess differential oracle
+cargo test --features oracle                     # run all tests including oracle targets
 cargo bench --bench query_latency -- --sample-size 10
 cargo bench --bench index_build -- --sample-size 10
 cargo bench --bench selectivity -- --sample-size 10
+cargo bench --bench freshness -- --sample-size 10
 ```
+
+## Differential Oracle (st ↔ rg)
+
+To ensure search correctness, prevent false-negatives/positives, and maintain robust query routing, `syntext` integrates a differential testing framework comparing its outputs directly against `ripgrep` (`rg`).
+
+- **Oracle Version**: Locked to `ripgrep 15.1.0` (specified in `tests/oracle/ORACLE_VERSION`).
+- **Divergence Policy**: Allowed/intentional differences (e.g. smart-case handling, result ordering, and `-v` candidate-only scope filter) are detailed in `tests/oracle/DIVERGENCES.md` and parsed/normalized gracefully during comparisons.
+- **Self-Differential Test (`oracle_self`)**: An in-process `proptest`-based target comparing the standard routed query match results against forced full-scan results.
+- **CLI Subprocess Differential Test (`oracle_cli`)**: A subprocess-based target executing CLI runs of `st` against `rg` on dynamically generated corpora.
+- **Current Status**: Fully implemented, integrated into the quality gate, and running cleanly. All differential targets pass with zero failures.
+- **proptest randomness**: oracle targets are random per run — one green run is a single sample, NOT proof. Failures persist to `tests/integration/*.proptest-regressions` (deterministic replay next run; check them in). Sweep with `PROPTEST_CASES=1024 cargo test --features oracle <name>` before trusting a change.
+- **`oracle_incremental` gotcha**: it drives a subprocess `st` that auto-updates from git independently; the harness must NOT hold a concurrent in-process `Index` lock during the subprocess search, or the subprocess's `OverlayFull` rebuild is blocked (LockConflict → false-stale Tier-A failure). Release/reopen around the subprocess.
+
 
 ## Benchmarking Reference
 
@@ -141,11 +160,15 @@ launches several Criterion benches back-to-back when collecting numbers for docs
 cargo bench --bench query_latency -- --sample-size 10
 cargo bench --bench index_build -- --sample-size 10
 cargo bench --bench selectivity -- --sample-size 10
+cargo bench --bench freshness -- --sample-size 10
 ```
 
 Use these when changing tokenizer coverage, posting execution, query routing,
 or commit-path performance. Record before/after results in
-`docs/BENCHMARKS.md`.
+`docs/BENCHMARKS.md`. `freshness` isolates `detect_changed_files` and the
+bounded `Index::update_from_git` apply path (see `benches/freshness.rs`) from
+the full 100k-file `open_search_e2e` nightly target; use it when changing
+incremental freshness detection or the `update_from_git` bounded-apply cost.
 
 ### External repository comparison harness
 
@@ -258,6 +281,7 @@ All PRs must pass before merge:
 1. `cargo test` -- no failures
 2. `cargo clippy` -- no warnings
 3. No source file > 400 lines (test files exempt)
+   - Inline `#[cfg(test)] mod tests` counts toward the total. Over 400 mostly from tests: extract to a sibling via `#[cfg(test)] #[path = "X_tests.rs"] mod tests;` (pattern: `overlay_tests.rs`, `freshness_tests.rs`). Over 400 from real code: split into a child module — a `mod` under `index`/`cli` can call the parent type's private methods (Rust descendant privacy), so no `pub` widening; add `pub(super)` only when a helper a parent/sibling calls moves into the child (e.g. `update.rs`, `path_resolve.rs`).
 4. New public APIs have doc comments
 5. No new `unsafe` without documented justification
 6. Performance changes include benchmark results (before/after)
@@ -271,6 +295,7 @@ All PRs must pass before merge:
 - **Stable file IDs are a long-term choice** for incremental path-index maintenance, even though the first implementation regressed `commit_batch`; compare against `docs/BENCHMARKS.md` before changing course.
 - **File-level documents**, not chunks. Segment format uses u32 IDs that can represent chunk_ids later.
 - **Full reindex at 30% overlay threshold** is the only mechanism that cleans stale doc_ids from base segments. Overlay compaction is not needed (single merged view).
+- **Overlay is in-memory only.** `commit_batch` persists nothing to disk (`open.rs` loads `OverlayView::empty()`); only `build::build_index` and compaction write durable segments. Any cross-process freshness (git hooks, async catch-up -- both run as a separate `st update` process) must full-rebuild, not overlay-apply, or a later `st search` process won't see the change. Incremental-per-commit needs the deferred overlay-generation persistence first.
 
 ## Project Structure
 
@@ -288,7 +313,7 @@ src/
     weights.rs                # pre-trained [u16; 65536] byte-pair frequency table
     tests.rs                  # unit tests for tokenizer
   index/
-    mod.rs                    # Index struct, top-level re-exports
+    mod.rs                    # Index struct, top-level re-exports, search_fresh (bounded update + search)
     tests.rs                  # unit tests for Index (path resolution, compaction, overlay)
     open.rs                   # open / open_inner entry points
     commit.rs                 # commit_batch logic
@@ -356,3 +381,155 @@ src/
 ## Spec Location
 
 All design documents are in `docs/`. When in doubt about a design decision, check `docs/ARCHITECTURE.md` first -- it covers every major subsystem with Decision / Rationale / Alternatives Considered.
+
+## 2026-07-09: Eatahorse run -- Bounded Update-on-Search (hardening + git hooks) -- COMPLETE
+
+Board: `.eatahorse-task-list-bounded-update-on-search-compl`. First pass hit a
+40-iteration cap mid-card (EH-0009 in `doing`, EH-0010..EH-0018 unstarted); a
+second pass on the same board finished the rest. Final: 77 iterations total,
+all 18 cards `done`, 0 blocked, 0 dropped, stopReason `board cleared`. As of
+this write-back none of the work below is committed -- it is all sitting in
+the working tree (`git status` shows the modified/new files listed under
+"Project Structure" below).
+
+**Goal:** the auto-update-on-search mechanism (`freshness.rs`, `UpdateLimits`,
+`Index::update_from_git`, `cmd_search`'s `auto_update_budget_ms` /
+`auto_update_max_files`) already existed; this board hardens it (Phase 0-1),
+adds the two missing pillars -- git hooks and open-cost reduction (Phase 2, 4)
+-- then wires in fsmonitor, a library API, and the differential oracle.
+
+**Completed (EH-0001..EH-0017, all done):**
+- Fixed change-set dedup and symlink misclassification in `update_from_git`.
+- Proved auto-update never changes search's exit code/stdout, and that a
+  requeue survives a failed background update.
+- Completed the staleness-notice + async-catchup contract on search (this
+  logic now lives in `src/cli/catchup.rs`, split out of `src/cli/search.rs`
+  to stay under the 400-line quality-gate limit -- if you grep for the
+  staleness-notice string, look in `catchup.rs`, not `search.rs`).
+- Routed `--files` and invert (`st -v`) scoped listing through bounded update.
+- Added a `files_behind` freshness field to `st status`.
+- Added a githooks vendor (`src/hook/vendors/githooks.rs`: install/uninstall
+  for post-commit/checkout/merge/rewrite), made it worktree-correct with
+  defined no-index behavior, and wired it into the installer surface and
+  `st init`.
+- Persisted `PathIndex` to a checksummed `paths.idx` sidecar
+  (`src/index/paths_idx.rs`), written by `build.rs`/`compact.rs`, loaded by
+  `open.rs` with fallback to the existing rebuild-from-segments path on any
+  read/checksum failure -- this is what makes the per-search bounded
+  `update_from_git` reopen path cheap (it no longer rebuilds `PathIndex` from
+  every doc entry in every base segment on every search).
+- Made the dictionary checksum opt-in and closed the SIGBUS window by
+  switching dictionary/doc-table reads to `pread` instead of the mmap slice
+  (`src/index/segment/dict_read.rs`, extracted from `segment/mod.rs` to stay
+  under the 400-line limit).
+- Added freshness integration tests (`tests/integration/incremental.rs`) and
+  persisted/lazily-initialized `base_doc_to_file_id` (touches
+  `src/index/{open,snapshot,compact_tests,tests}.rs`, `src/search/mod.rs`,
+  `src/index/wasm_index.rs`).
+- Added a 100k-file open+detect+search bench gate
+  (`benches/open_search_e2e.rs`) wired into `.github/workflows/nightly.yml`
+  as its own job (too slow for PR CI), plus a separate, cheap
+  `benches/freshness.rs` (`[[bench]] name = "freshness"` in `Cargo.toml`,
+  see `## Commands`/`## Benchmarking Reference`) for per-PR-sized freshness
+  timing; baseline recorded in `docs/BENCHMARKS.md` ("bench-freshness
+  baseline, 2000 synthetic files (2026-07-09)").
+- Added the fsmonitor detection hint (`maybe_print_fsmonitor_tip`) and
+  `st init --fsmonitor` opt-in (`enable_fsmonitor`/`is_fsmonitor_enabled` in
+  `freshness.rs`, `cmd_init_fsmonitor` in `src/cli/mod.rs`) -- confirmed
+  these were actually implemented in an earlier pass and only needed the
+  bench-freshness half finished.
+- Added `Index::search_fresh` (`src/index/mod.rs`) as the one-call
+  "bounded-update-then-search" library API, and re-exported `ChangeSet`,
+  `FreshnessError`, `UpdateOutcome`, `UpdateLimits` at `syntext::index::{..}`
+  (additive `pub use`, the old `index::freshness::` path still resolves).
+- Encoded the staleness-invariant pair in the differential oracle
+  (`tests/integration/oracle_freshness.rs`, `required-features = ["oracle"]`):
+  in one test run, a stale `search_fresh` call (forced `TooManyFiles` via a
+  tiny `UpdateLimits`) must match `rg` on the *pre*-mutation tree, and a
+  generous-limits `search_fresh` call on the same index must match `rg` on
+  the *post*-mutation tree. Key finding baked into the test design:
+  `resolve_doc` (`src/search/resolver.rs`) re-reads live file bytes for
+  already-indexed base-segment docs regardless of posting-list staleness, so
+  the stale-half mutation must be a brand-new *untracked* file (not an edit
+  to an existing file) or the test would silently pass against live bytes
+  instead of the pre-mutation snapshot.
+- Wired `oracle_freshness` into `nightly.yml`'s oracle suite (unit/integration
+  freshness tests already ran under plain `cargo test` in `ci.yml`, no PR-CI
+  change was needed for that half).
+
+**Explicitly deferred, tracking-only, NOT implemented (EH-0018):** a
+centralized index dir (e.g. `~/.cache/syntext/<repo-id>/` instead of the
+in-tree `.syntext/`, for multi-worktree sharing) and an `st watch` daemon
+(proactive filesystem-notification-driven freshness instead of the current
+reactive per-search bounded update). Both are scoped out of this board on
+purpose -- do not implement them as part of a rerun of this board; they
+belong to a future task list. `st watch` in particular should wait on the
+on-disk generation persistence gap below being closed first, or it becomes a
+second copy of the same cross-process staleness problem.
+
+**Board invariants this run honored (keep honoring on rerun):**
+- One card in `doing` at a time; move to `doing`, finish one bite, sync,
+  repeat -- never batch multiple cards concurrently.
+- A card only moves to `done` when every acceptance checkbox is checked; a
+  card with unchecked acceptance items does not move to `done` even if all
+  its bites are checked off (this is why the first pass correctly left
+  EH-0009 in `doing` instead of force-completing it).
+- No status was force-moved by either write-back pass -- board state reflects
+  genuine run progress, not manual editing.
+
+**Known gap, still open after this board (not blocked, just not in scope --
+carry forward as a constraint for any board that touches freshness or
+`st watch`):** the background `st update` catch-up child only updates its own
+process's in-memory `ArcSwap<IndexSnapshot>`. `Manifest::overlay_gen`'s doc
+comment (`src/index/manifest.rs`) still says on-disk generation files are
+"not yet written (deferred to a later milestone)" -- confirmed still true
+after this board (paths.idx persists `PathIndex` only, not overlay
+generations). So a *separate, later* `st search` process does not see edits
+committed by an async catch-up spawned by an earlier search's process. This
+was flagged in EH-0003's original notes as a candidate to fold into EH-0009's
+persistence work, but EH-0009 shipped scoped to `PathIndex` only -- the gap
+was not closed and is not tracked by any other card on this board. Whoever
+plans the next freshness-related board (or `st watch`, per EH-0018) should
+open a card for it explicitly rather than assume paths.idx covered it.
+
+**Note on card bodies:** the markdown files for EH-0001..EH-0013 in
+`tasks/done/` currently have empty `## One-bite-at-a-time plan` / `## Notes`
+bodies (0 bites listed, despite `activity.jsonl` showing bites 1-3 were
+checked off during the run) -- an apparent sync/resume artifact from the
+board being picked up across two passes, not evidence the work wasn't done.
+The completion claims above for EH-0001..EH-0008 were cross-checked against
+this same file's prior write-back (still readable in git history if this
+section is ever replaced) and against real source (e.g. `src/cli/catchup.rs`,
+`src/hook/vendors/githooks.rs` exist and are non-trivial); EH-0009..EH-0017's
+claims above were cross-checked against the actual diffs/new files
+(`paths_idx.rs`, `dict_read.rs`, `oracle_freshness.rs`, `benches/freshness.rs`,
+`benches/open_search_e2e.rs`, `nightly.yml`, `docs/BENCHMARKS.md`) rather than
+card notes, since only EH-0014..EH-0017 retained detailed `## Notes`.
+
+**Manual verification residuals (2026-07-09):** one residual-style flag
+survived only in the board's `state.json` acceptance history (not in any
+current card's `## Notes`, so it would otherwise be lost): an earlier
+acceptance-criteria draft for EH-0014 read "`st init --fsmonitor` sets
+`core.fsmonitor=true` in a temp repo -- asserted via `git config
+core.fsmonitor` in a subprocess test (**manual residual: interactive prompt
+path**)". The shipped implementation is flag-only (`st init --fsmonitor`,
+`cmd_init_fsmonitor` in `src/cli/mod.rs`) with no stdin-driven interactive
+prompt found in the current code, so this may be stale -- but a human should
+still spot-check, in a real terminal against a real git repo:
+1. Run `st search` (or trigger a stale search) in a git repo with
+   `core.fsmonitor` unset and confirm `maybe_print_fsmonitor_tip`'s one-time
+   tip actually prints with the expected wording/timing (not just that the
+   unit test around it passes).
+2. Run `st init --fsmonitor` in that same repo and confirm
+   `git config core.fsmonitor` is really set afterward, matching what the
+   subprocess test asserts in CI.
+
+Separately (not from a `residual:` tag, but the same "needs a live runtime to
+observe" character): manually verify the cross-process staleness gap above by
+running `st update` (or triggering an auto-update via search) in one process,
+then running `st search --no-update <new-content>` in a *second*, fresh
+process against the same index dir, and confirming the second process still
+does not see the update -- this is the live behavior the "known gap" section
+describes, and it is easy to accidentally fix half of (e.g. via a paths.idx-
+adjacent change) without noticing the overlay-generation persistence itself
+is still missing.
