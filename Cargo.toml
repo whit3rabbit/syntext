@@ -1,7 +1,8 @@
 [package]
 name = "syntext"
-version = "1.4.0"
+version = "2.0.0"
 edition = "2021"
+rust-version = "1.89"
 description = "Hybrid code search index for agent workflows"
 license = "MIT"
 readme = "README.md"
@@ -31,8 +32,6 @@ roaring = "0.11"
 
 # Parallel index building (native only; WASM is single-threaded)
 rayon = { version = "1", optional = true }
-
-# Zero-copy segment format
 
 # Lock-free snapshot swapping
 arc-swap = "1"

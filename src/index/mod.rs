@@ -27,20 +27,20 @@ pub(crate) use io_util::open_readonly_nofollow;
 #[cfg(any(unix, windows))]
 pub(crate) use io_util::verify_fd_matches_stat;
 #[cfg(not(target_arch = "wasm32"))]
-/// Manifest serialization, locking, and generation management.
-pub mod manifest;
+mod deletes_idx;
 #[cfg(not(target_arch = "wasm32"))]
 mod delta;
 #[cfg(not(target_arch = "wasm32"))]
 mod delta_apply;
 #[cfg(not(target_arch = "wasm32"))]
-mod deletes_idx;
+/// Manifest serialization, locking, and generation management.
+pub mod manifest;
 #[cfg(not(target_arch = "wasm32"))]
 mod open;
-#[cfg(not(target_arch = "wasm32"))]
-mod paths_idx;
 /// In-memory overlay structures representing uncommitted document edits.
 pub mod overlay;
+#[cfg(not(target_arch = "wasm32"))]
+mod paths_idx;
 /// Pending edits buffer for tracking path modifications before commit.
 pub mod pending;
 /// Immutable single-file segment format definitions and writer.
@@ -54,7 +54,6 @@ pub mod walk;
 #[cfg(feature = "wasm")]
 /// Fully in-memory WASM index implementation.
 pub mod wasm_index;
-
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use build_external::ExternalFileRecord;
@@ -205,11 +204,13 @@ impl Index {
         // Verify deletes sidecar if present in the manifest.
         let manifest = Manifest::load(&self.config.index_dir)?;
         if let Some(ref deletes_file) = manifest.overlay_deletes_file {
-            self::deletes_idx::read_deletes_idx(&self.config.index_dir, deletes_file).map_err(|e| {
-                IndexError::CorruptIndex(format!(
-                    "delete-set sidecar {deletes_file} verification failed: {e}"
-                ))
-            })?;
+            self::deletes_idx::read_deletes_idx(&self.config.index_dir, deletes_file).map_err(
+                |e| {
+                    IndexError::CorruptIndex(format!(
+                        "delete-set sidecar {deletes_file} verification failed: {e}"
+                    ))
+                },
+            )?;
         }
         Ok(())
     }
@@ -236,6 +237,24 @@ impl Index {
             &self.canonical_root,
             pattern,
             opts,
+        )
+    }
+
+    /// Like [`search`](Self::search) but also returns the verified content of
+    /// each matched file, so content renderers emit the exact bytes that
+    /// matched instead of re-reading files that may have churned since.
+    pub(crate) fn search_with_content(
+        &self,
+        pattern: &str,
+        opts: &SearchOptions,
+    ) -> Result<crate::search::SearchOutcome, IndexError> {
+        crate::search::search_with_content(
+            self.snapshot(),
+            &self.config,
+            &self.canonical_root,
+            pattern,
+            opts,
+            true,
         )
     }
 
@@ -341,19 +360,13 @@ impl Index {
         Ok(())
     }
 
-    /// Rebuilds the index from scratch if the repository's git HEAD has changed since the last build.
+    /// Update the index when git HEAD moved since the last build: apply a cheap
+    /// durable delta (delta segment + persistent delete-set), or fall back to a
+    /// full rebuild when the delta path can't safely/cheaply handle the change
+    /// set (non-ancestor HEAD, over-cap change set, or overlay full). Runs from
+    /// `cmd_update` / the git hooks in a separate process.
     ///
-    /// Returns `Some(IndexStats)` if a rebuild was executed, or `None` if the index is already fresh.
-    ///
-    /// A full rebuild (not an incremental overlay apply) is deliberate here:
-    /// this runs from `cmd_update` / the git hooks in a *separate process*, and
-    /// Rebuilds the index or applies a committed delta if the repository's git HEAD has changed since the last build.
-    ///
-    /// Returns `Some(IndexStats)` if an update was executed, or `None` if the index is already fresh.
-    ///
-    /// Attempts to apply a cheap durable delta first (appending a delta segment and updating
-    /// the persistent delete-set). Falls back to a full rebuild if the delta path cannot safely or
-    /// cheaply handle the change set (e.g. non-ancestor HEAD, over-cap change set, or overlay full).
+    /// Returns `Some((stats, was_full_rebuild))` if an update ran, else `None`.
     pub fn rebuild_if_stale(&self) -> Result<Option<(IndexStats, bool)>, IndexError> {
         if self.pending.has_uncommitted() {
             self.commit_batch()?;
@@ -365,16 +378,15 @@ impl Index {
             return Ok(None);
         }
 
-        // Try a cheap durable delta first (diff base_commit..HEAD, append a delta
-        // segment + persistent delete-set). `try_committed_delta` returns
-        // `Some(stats)` when it applied one and `None` for anything the delta
-        // path cannot safely/cheaply handle. A full rebuild is always correct,
-        // so any "no" is answered by one.
+        // Try a cheap durable delta first: `try_committed_delta` returns
+        // `Some(stats)` when it applied one, `None` for anything it can't
+        // safely/cheaply handle (a full rebuild always answers that "no").
         if let Some(stats) = self.try_committed_delta(&manifest, current_head.as_deref())? {
             return Ok(Some((stats, false)));
         }
 
-        self.rebuild_with(build::build_index).map(|stats| Some((stats, true)))
+        self.rebuild_with(build::build_index)
+            .map(|stats| Some((stats, true)))
     }
 }
 
@@ -382,10 +394,10 @@ impl Index {
 // under the 400-line quality gate.
 #[cfg(not(target_arch = "wasm32"))]
 mod path_resolve;
-#[cfg(not(target_arch = "wasm32"))]
-mod update;
 #[cfg(all(not(target_arch = "wasm32"), feature = "symbols"))]
 mod search_symbols;
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **FABLE EDITION** These were recommendations made by Claude Fable 5 for security/bugs/improvments.
 - Durable incremental HEAD-move updates via LSM-style delta segments when the base commit is behind HEAD.
 - Checksummed delete-set sidecar (`deletes-<uuid>.idx`) for tracking deleted base documents across restarts, designed to fail closed on corruption to prevent duplicate matching.
 - Automatic bounded update-on-search capability with async catch-up updates and staleness warnings.
@@ -23,8 +24,21 @@ All notable changes to this project will be documented in this file.
 - Replaced the overlay posting-bitmap cache clear-all behavior with a FIFO eviction policy under a 256MB byte-budget.
 - Optimized token boundaries and Covering gram extraction.
 - Overlay `gram_index` posting lists are now `Arc`-shared to support zero-copy clones and copy-on-write modifications.
+- `--column` now compiles the output regex once and reuses it to count matches for the long-line placeholder, keeping the count exact without recompiling per long line.
+
+### Performance
+- `Index::open` reads each segment's whole doc-table region in a single positional read (`MmapSegment::iter_docs`) instead of three `pread`s per document (~3x faster open; paid on every open, which bounded update-on-search makes frequent).
+- `PathIndex` interns each unique path once as a shared `Arc<Path>` across its three internal maps instead of storing it three times (~5% lower search RSS at 40k files, ~7 MB at 100k).
+- Search skips the per-match `line_content` copy for `-l`/`-L` (files-with/without-match) output modes, which never render line bodies.
+- Render reuses the encoding-normalized bytes captured during search (`matched_file_bytes`) instead of re-reading and re-normalizing the file on output.
+
+### Security
+- Render-time file reads open guaranteed-beneath the repo root (`openat2(RESOLVE_BENEATH)` on Linux, else canonicalize + `O_NOFOLLOW` + fd-verify), closing the symlink-swap TOCTOU window between index time and render time.
 
 ### Fixed
+- Throttled async catch-up spawning with a coarse TTL stamp so a burst of concurrent stale searches collapses to roughly one `st update` per window instead of stampeding the writer lock.
+- Truncated UTF-16 files (odd byte count after the BOM) now decode the incomplete trailing code unit as U+FFFD instead of dropping it, matching ripgrep and removing an `-x` false-positive divergence (oracle fixture `repro_e1c1603c26349124`).
+- `-x` (line-regexp) now matches CRLF mode like `rg --crlf`: a trailing `\r` at end-of-line is treated as part of the terminator, so `^pat$` matches a final line `pat\r` and submatch extraction stays consistent with the match decision (oracle fixture `repro_e1477df13c5a98f4`).
 - Resolved a predictable temporary file name TOCTOU vulnerability in `write_atomic` by using random UUIDs.
 - Canonicalized directory paths before performing sensitive prefix checks in `validate_index_dir`.
 - Structured verifier to count backward line-starts relative to a watermark to remove the quadratic $O(\text{matches} \times \text{file\_size})$ cost.

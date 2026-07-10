@@ -110,7 +110,9 @@ fn apply_mutation(
                 return Ok(false);
             }
             fs::write(&abs, content).map_err(|e| format!("ModifyFile write failed: {e}"))?;
-            index.notify_change(&abs).map_err(|e| format!("notify_change failed: {e}"))?;
+            index
+                .notify_change(&abs)
+                .map_err(|e| format!("notify_change failed: {e}"))?;
             // No git add needed — existing tracked file, rg already sees it.
             Ok(true)
         }
@@ -120,7 +122,9 @@ fn apply_mutation(
                 fs::create_dir_all(p).map_err(|e| format!("create_dir_all failed: {e}"))?;
             }
             fs::write(&abs, content).map_err(|e| format!("CreateFile write failed: {e}"))?;
-            index.notify_change(&abs).map_err(|e| format!("notify_change failed: {e}"))?;
+            index
+                .notify_change(&abs)
+                .map_err(|e| format!("notify_change failed: {e}"))?;
             // Track in git so st's git-walk includes it.
             git_cmd(&["add", path]);
             Ok(true)
@@ -131,7 +135,9 @@ fn apply_mutation(
                 return Ok(false);
             }
             fs::remove_file(&abs).map_err(|e| format!("DeleteFile remove_file failed: {e}"))?;
-            index.notify_delete(&abs).map_err(|e| format!("notify_delete failed: {e}"))?;
+            index
+                .notify_delete(&abs)
+                .map_err(|e| format!("notify_delete failed: {e}"))?;
             // Remove from git index so rg and st agree the file is gone.
             git_cmd(&["rm", "--cached", "--ignore-unmatch", path]);
             Ok(true)
@@ -143,12 +149,16 @@ fn apply_mutation(
                 return Ok(false);
             }
             if let Some(p) = abs_to.parent() {
-                fs::create_dir_all(p).map_err(|e| format!("RenameFile create_dir_all failed: {e}"))?;
+                fs::create_dir_all(p)
+                    .map_err(|e| format!("RenameFile create_dir_all failed: {e}"))?;
             }
-            fs::rename(&abs_from, &abs_to)
-                .map_err(|e| format!("RenameFile rename failed: {e}"))?;
-            index.notify_delete(&abs_from).map_err(|e| format!("notify_delete(from) failed: {e}"))?;
-            index.notify_change(&abs_to).map_err(|e| format!("notify_change(to) failed: {e}"))?;
+            fs::rename(&abs_from, &abs_to).map_err(|e| format!("RenameFile rename failed: {e}"))?;
+            index
+                .notify_delete(&abs_from)
+                .map_err(|e| format!("notify_delete(from) failed: {e}"))?;
+            index
+                .notify_change(&abs_to)
+                .map_err(|e| format!("notify_change(to) failed: {e}"))?;
             // Update git index: remove old path, add new path.
             git_cmd(&["rm", "--cached", "--ignore-unmatch", from]);
             git_cmd(&["add", to]);
@@ -161,33 +171,44 @@ fn apply_mutation(
             content.push(0);
             content.extend_from_slice(b" }\n");
             if let Some(p) = abs.parent() {
-                fs::create_dir_all(p).map_err(|e| format!("BinaryifyFile create_dir_all failed: {e}"))?;
+                fs::create_dir_all(p)
+                    .map_err(|e| format!("BinaryifyFile create_dir_all failed: {e}"))?;
             }
             fs::write(&abs, &content).map_err(|e| format!("BinaryifyFile write failed: {e}"))?;
-            index.notify_change(&abs).map_err(|e| format!("notify_change failed: {e}"))?;
+            index
+                .notify_change(&abs)
+                .map_err(|e| format!("notify_change failed: {e}"))?;
             Ok(true)
         }
         MutationOp::GrowPastLimit { path } => {
             let abs = repo.join(path);
             if let Some(p) = abs.parent() {
-                fs::create_dir_all(p).map_err(|e| format!("GrowPastLimit create_dir_all failed: {e}"))?;
+                fs::create_dir_all(p)
+                    .map_err(|e| format!("GrowPastLimit create_dir_all failed: {e}"))?;
             }
             // Write max_file_size + 1 bytes so the file is excluded from indexing
             let oversized = vec![b'x'; (max_file_size + 1) as usize];
             fs::write(&abs, &oversized).map_err(|e| format!("GrowPastLimit write failed: {e}"))?;
-            index.notify_change(&abs).map_err(|e| format!("notify_change failed: {e}"))?;
+            index
+                .notify_change(&abs)
+                .map_err(|e| format!("notify_change failed: {e}"))?;
             Ok(true)
         }
         MutationOp::ChangeThenDeleteSameBatch { path, content } => {
             let abs = repo.join(path);
             if let Some(p) = abs.parent() {
-                fs::create_dir_all(p).map_err(|e| format!("ChangeThenDelete create_dir_all failed: {e}"))?;
+                fs::create_dir_all(p)
+                    .map_err(|e| format!("ChangeThenDelete create_dir_all failed: {e}"))?;
             }
             // Write the file, notify_change, then delete, notify_delete — all in one batch
             fs::write(&abs, content).map_err(|e| format!("ChangeThenDelete write failed: {e}"))?;
-            index.notify_change(&abs).map_err(|e| format!("notify_change failed: {e}"))?;
+            index
+                .notify_change(&abs)
+                .map_err(|e| format!("notify_change failed: {e}"))?;
             fs::remove_file(&abs).map_err(|e| format!("ChangeThenDelete remove failed: {e}"))?;
-            index.notify_delete(&abs).map_err(|e| format!("notify_delete failed: {e}"))?;
+            index
+                .notify_delete(&abs)
+                .map_err(|e| format!("notify_delete failed: {e}"))?;
             // Remove from git index — file is gone from disk.
             git_cmd(&["rm", "--cached", "--ignore-unmatch", path]);
             Ok(true)
@@ -210,8 +231,10 @@ fn assert_st_matches_rg(
     let st_bin = env!("CARGO_BIN_EXE_st");
 
     let st_args = [
-        "--repo-root", repo.to_str().unwrap(),
-        "--index-dir", index_dir.to_str().unwrap(),
+        "--repo-root",
+        repo.to_str().unwrap(),
+        "--index-dir",
+        index_dir.to_str().unwrap(),
         "--json",
         query,
     ];
@@ -224,7 +247,17 @@ fn assert_st_matches_rg(
         .map_err(|e| format!("step {step}: failed to run st: {e}"))?;
 
     let rg_output = Command::new("rg")
-        .args(["--json", "--hidden", "--crlf", "--glob", "!.gitignore", "--glob", "!.syntext", query, "."])
+        .args([
+            "--json",
+            "--hidden",
+            "--crlf",
+            "--glob",
+            "!.gitignore",
+            "--glob",
+            "!.syntext",
+            query,
+            ".",
+        ])
         .current_dir(repo)
         .output()
         .map_err(|e| format!("step {step}: failed to run rg: {e}"))?;
@@ -414,7 +447,8 @@ fn overlay_full_correctness() {
 
     let git = |args: &[&str]| {
         Command::new("git")
-            .arg("-C").arg(repo.path())
+            .arg("-C")
+            .arg(repo.path())
             .args(args)
             .output()
             .ok();
@@ -455,8 +489,9 @@ fn overlay_full_correctness() {
         Err(IndexError::OverlayFull { .. }) => {
             // Expected — now verify Tier A still holds on the pre-error tree state.
             // st should not return fabricated matches (verifier re-reads live files).
-            assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 99)
-                .expect("post-OverlayFull differential mismatch: verifier must not fabricate matches");
+            assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 99).expect(
+                "post-OverlayFull differential mismatch: verifier must not fabricate matches",
+            );
         }
         Ok(()) => {
             // The overlay didn't fill up with this corpus size.
@@ -491,7 +526,8 @@ fn golden_incremental_rename() {
 
     let git = |args: &[&str]| {
         Command::new("git")
-            .arg("-C").arg(repo.path())
+            .arg("-C")
+            .arg(repo.path())
             .args(args)
             .output()
             .ok();
@@ -548,7 +584,8 @@ fn golden_incremental_grow_past_limit() {
 
     let git = |args: &[&str]| {
         Command::new("git")
-            .arg("-C").arg(repo.path())
+            .arg("-C")
+            .arg(repo.path())
             .args(args)
             .output()
             .ok();

@@ -80,8 +80,8 @@ pub use segment_writer::SegmentWriter;
 
 mod open;
 pub use open::{DictVerify, PostVerify};
-mod reader;
 mod dict_read;
+mod reader;
 
 // ---------------------------------------------------------------------------
 // T022: MmapSegment (reader)

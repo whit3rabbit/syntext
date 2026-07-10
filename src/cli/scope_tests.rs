@@ -1,6 +1,9 @@
 use super::*;
 
+// This file is included as `mod tests` (via `#[path]` in scope/mod.rs); the
+// inner `mod tests` is an intentional #[cfg(unix)] grouping, not a mistake.
 #[cfg(unix)]
+#[allow(clippy::module_inception)]
 mod tests {
     use super::*;
 
@@ -39,6 +42,33 @@ mod tests {
     }
 
     #[test]
+    fn relativize_parent_dir_collapses_to_sibling() {
+        // `st pat ../other` from a subdir must scope to the sibling's real
+        // indexed path (`other`), not the literal `crates/foo/../other` that
+        // matches nothing and silently returns zero results.
+        let repo_root = Path::new("/repo");
+        let cwd = Path::new("/repo/crates/foo");
+        assert_eq!(
+            relativize_cli_path(repo_root, cwd, Path::new("../other")),
+            PathBuf::from("crates/other")
+        );
+    }
+
+    #[test]
+    fn relativize_parent_dir_escaping_root_keeps_leading_parent() {
+        // A `..` that escapes the repo root has no normal component to pop, so
+        // it stays a leading `..` and matches no indexed path (unchanged).
+        let repo_root = Path::new("/repo");
+        let cwd = Path::new("/repo/sub");
+        // cwd.join("../../etc") = /repo/sub/../../etc -> strip /repo ->
+        // sub/../../etc -> collapse: pop `sub`, then leading `..`, then etc.
+        assert_eq!(
+            relativize_cli_path(repo_root, cwd, Path::new("../../etc")),
+            PathBuf::from("../etc")
+        );
+    }
+
+    #[test]
     fn relativize_falls_back_to_repo_root_when_cwd_outside_repo() {
         // Explicit --repo-root pointing at a repo the caller is not standing in:
         // relative paths stay repo-root-relative so they still reach the index.
@@ -68,7 +98,12 @@ mod glob_and_depth_tests {
     #[test]
     fn glob_star_extension_rejects_wrong_ext() {
         let path = Path::new("src/main.py");
-        assert!(!matches_optional_glob(path, &[], &[], &["*.rs".to_string()]));
+        assert!(!matches_optional_glob(
+            path,
+            &[],
+            &[],
+            &["*.rs".to_string()]
+        ));
     }
 
     #[test]
@@ -139,6 +174,29 @@ mod glob_and_depth_tests {
     #[test]
     fn glob_empty_returns_true() {
         assert!(matches_optional_glob(Path::new("anything"), &[], &[], &[]));
+    }
+
+    #[test]
+    fn validate_globs_accepts_valid_and_rejects_malformed() {
+        assert!(validate_globs(&[]).is_ok());
+        assert!(validate_globs(&["*.rs".to_string(), "!vendor/**".to_string()]).is_ok());
+        // Unclosed character class is a malformed glob.
+        let err = validate_globs(&["[bad".to_string()]).unwrap_err();
+        assert_eq!(err.0, "[bad", "reports the offending spec");
+        // Negated malformed glob is also caught (prefix stripped before build).
+        assert!(validate_globs(&["![bad".to_string()]).is_err());
+    }
+
+    #[test]
+    fn glob_last_match_wins_ordering() {
+        // -g '!foo' -g 'foo' -> foo is matched because positive glob is last
+        let path = Path::new("foo");
+        let globs = vec!["!foo".to_string(), "foo".to_string()];
+        assert!(matches_optional_glob(path, &[], &[], &globs));
+
+        // -g 'foo' -g '!foo' -> foo is excluded because negative glob is last
+        let globs2 = vec!["foo".to_string(), "!foo".to_string()];
+        assert!(!matches_optional_glob(path, &[], &[], &globs2));
     }
 
     // --- path_depth ---

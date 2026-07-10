@@ -457,12 +457,9 @@ fn fsmonitor_tip_never_fires_when_core_fsmonitor_already_true() {
     );
 }
 
-/// Bug 9 regression: a change set whose `git` output exceeds the ~64 KB OS
-/// pipe buffer must not be lost. Before draining stdout concurrently in bounded
-/// mode, git blocked writing the full pipe, was killed at the deadline, and its
-/// output was discarded -- so the heavily-behind repos reported 0 changes and
-/// never triggered catch-up. With a generous budget, draining lets the (fast
-/// but verbose) `git ls-files` finish and every untracked file is detected.
+/// Verify that a large change set whose `git` output exceeds the OS pipe buffer
+/// (~64 KB) is fully drained without blocking or getting killed at the deadline.
+/// This ensures heavily-behind repos with many untracked files are correctly detected.
 #[test]
 fn detect_changed_files_drains_output_larger_than_pipe_buffer() {
     let repo = init_git_repo();

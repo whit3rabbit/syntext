@@ -87,10 +87,33 @@ fn rewrite_command_words(words: &[Word], st_program: &str) -> SegmentRewrite {
 }
 
 fn render_rewritten_segment(env: &[Word], st_program: &str, args: &[String]) -> String {
-    let mut pieces: Vec<String> = env.iter().map(|word| word.raw.clone()).collect();
+    let mut pieces: Vec<String> = env
+        .iter()
+        .map(|word| quote_env_assignment(&word.text))
+        .collect();
     pieces.push(shell::shell_quote(st_program));
     pieces.extend(args.iter().map(|arg| shell::shell_quote(arg)));
     pieces.join(" ")
+}
+
+/// Re-quote the VALUE of a leading `KEY=VALUE` env assignment so any
+/// shell-active characters in the value are neutralized when the rewritten
+/// command is re-executed by a shell.
+///
+/// These env words are the only tokens re-emitted into the rewritten command
+/// from parsed input; every other value already passes through
+/// [`shell::shell_quote`]. Emitting the original `.raw` verbatim (the prior
+/// behavior) could reintroduce expansion the parse-time `has_expansion` gate
+/// does not cover inside an assignment value (globs, brace/tilde expansion,
+/// re-opened quotes). Re-quoting the value from the shell-parsed `.text`
+/// (quotes already removed) makes the emitted assignment inert while preserving
+/// its meaning. The KEY is guaranteed well-formed by `is_env_assignment`
+/// upstream; the `None` arm is defensive.
+pub(crate) fn quote_env_assignment(text: &str) -> String {
+    match text.split_once('=') {
+        Some((key, value)) => format!("{key}={}", shell::shell_quote(value)),
+        None => shell::shell_quote(text),
+    }
 }
 
 pub(crate) fn rewrite_rg_args(args: &[Word]) -> Option<Vec<String>> {
@@ -361,7 +384,7 @@ fn parse_grep_short(
     Some(index + 1)
 }
 
-#[cfg(test)]
-#[path = "rewrite_tests.rs"]
-mod tests;
-
+// rewrite_tests.rs is loaded as a sibling module via `mod rewrite_tests;` in
+// hook/core/mod.rs (its tests use absolute `crate::hook::core::...` paths), so
+// it is NOT re-declared here -- doing so would load the same file as two
+// distinct modules (clippy::duplicate_mod).

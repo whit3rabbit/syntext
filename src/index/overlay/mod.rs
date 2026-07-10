@@ -101,8 +101,6 @@ impl OverlayView {
         }
     }
 
-
-
     /// Look up an overlay doc by its global doc_id. O(1) via HashMap.
     pub fn get_doc(&self, global_id: u32) -> Option<&OverlayDoc> {
         self.doc_id_map.get(&global_id).map(|&idx| &self.docs[idx])
@@ -115,7 +113,7 @@ impl OverlayView {
 }
 
 // Re-export pending types so callers using `crate::index::overlay::*` continue to compile.
-pub use crate::index::pending::{compute_delete_set, PendingEdits, TakeResult};
+pub use crate::index::pending::{compute_delete_set, PendingEdits};
 
 #[cfg(test)]
 #[path = "../overlay_tests.rs"]

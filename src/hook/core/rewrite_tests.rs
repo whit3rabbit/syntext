@@ -1,4 +1,4 @@
-use crate::hook::core::rewrite::rewrite_rg_args;
+use crate::hook::core::rewrite::{quote_env_assignment, rewrite_rg_args};
 use crate::hook::core::shell::Word;
 
 fn word(s: &str) -> Word {
@@ -77,4 +77,49 @@ fn rg_allowed_flags_produce_output() {
 fn rg_no_pattern_and_no_positional_returns_none() {
     // No pattern means there is nothing to search for.
     assert!(rewrite_rg_args(&words(&["-n"])).is_none());
+}
+
+// --- env-assignment neutralization (shell-expansion safety) ---
+//
+// Leading `KEY=VALUE` env words are the only parsed tokens re-emitted into the
+// rewritten command. Their value must be re-quoted so shell-active characters
+// cannot expand when the rewritten command is re-executed.
+
+#[test]
+fn env_plain_value_is_unchanged() {
+    assert_eq!(quote_env_assignment("FOO=bar"), "FOO=bar");
+}
+
+#[test]
+fn env_pathlike_value_stays_unquoted() {
+    // shell_quote's safe set includes ':' '/' '.' '-' etc.
+    assert_eq!(
+        quote_env_assignment("PATH=/usr/bin:/bin"),
+        "PATH=/usr/bin:/bin"
+    );
+}
+
+#[test]
+fn env_glob_value_is_neutralized() {
+    // A glob in the value must be single-quoted so it cannot pathname-expand.
+    assert_eq!(quote_env_assignment("FOO=*.rs"), "FOO='*.rs'");
+}
+
+#[test]
+fn env_whitespace_value_is_neutralized() {
+    assert_eq!(quote_env_assignment("FOO=a b"), "FOO='a b'");
+}
+
+#[test]
+fn env_command_substitution_value_is_neutralized() {
+    // Even if this reached rendering (the parse-time has_expansion gate rejects
+    // unquoted `$`/backtick upstream), the value must be inert once emitted.
+    assert_eq!(quote_env_assignment("FOO=$(rm -rf /)"), "FOO='$(rm -rf /)'");
+}
+
+#[test]
+fn env_key_is_preserved_and_only_value_is_quoted() {
+    // The '=' split keeps the KEY bare (a quoted key would break the assignment)
+    // and quotes only the value.
+    assert_eq!(quote_env_assignment("A_B1=x;y"), "A_B1='x;y'");
 }

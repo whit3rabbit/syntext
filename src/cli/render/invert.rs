@@ -10,11 +10,11 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
+use super::color::write_styled;
 use super::{
     compile_output_regex, json_data, json_elapsed, json_stats, read_matched_file,
     repo_canonical_root, write_formatted_line, write_json_line, ColorStyles,
 };
-use super::color::write_styled;
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
 pub(in crate::cli) fn render_invert_match(
@@ -181,7 +181,12 @@ fn render_invert_match_scan(
     let sep = if args.null { b'\0' } else { b'\n' };
     if args.files_with_matches {
         for path in matched_files {
-            write_styled(&mut out, args.color, styles.path, path_bytes(&path).as_ref())?;
+            write_styled(
+                &mut out,
+                args.color,
+                styles.path,
+                path_bytes(&path).as_ref(),
+            )?;
             out.write_all(&[sep])?;
         }
     } else if args.files_without_match {
@@ -194,7 +199,12 @@ fn render_invert_match_scan(
             if args.no_filename {
                 writeln!(out, "{count}")?;
             } else {
-                write_styled(&mut out, args.color, styles.path, path_bytes(&path).as_ref())?;
+                write_styled(
+                    &mut out,
+                    args.color,
+                    styles.path,
+                    path_bytes(&path).as_ref(),
+                )?;
                 let count_sep = if args.null { b'\0' } else { b':' };
                 out.write_all(&[count_sep])?;
                 writeln!(out, "{count}")?;

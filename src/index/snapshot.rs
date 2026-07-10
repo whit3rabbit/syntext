@@ -312,7 +312,10 @@ mod tests {
         cache.insert_with_budget(2, bitmap(2), budget);
 
         assert!(cache.get(0).is_none(), "oldest entry must be evicted");
-        assert!(cache.get(1).is_some(), "recent entry must survive the cliff");
+        assert!(
+            cache.get(1).is_some(),
+            "recent entry must survive the cliff"
+        );
         assert!(cache.get(2).is_some(), "newest entry must be present");
         assert!(cache.bytes <= budget, "byte total stays bounded");
     }

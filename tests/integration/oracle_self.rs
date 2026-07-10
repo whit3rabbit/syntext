@@ -62,19 +62,15 @@ proptest! {
 
         let index = Index::build(config).expect("build index");
 
-        let opts_natural = SearchOptions {
-            case_insensitive,
-            #[cfg(any(test, feature = "oracle"))]
-            force_full_scan: false,
-            ..SearchOptions::default()
-        };
+        let mut opts_natural = SearchOptions::default();
+        opts_natural.case_insensitive = case_insensitive;
+        #[cfg(any(test, feature = "oracle"))]
+        { opts_natural.force_full_scan = false; }
 
-        let opts_scan = SearchOptions {
-            case_insensitive,
-            #[cfg(any(test, feature = "oracle"))]
-            force_full_scan: true,
-            ..SearchOptions::default()
-        };
+        let mut opts_scan = SearchOptions::default();
+        opts_scan.case_insensitive = case_insensitive;
+        #[cfg(any(test, feature = "oracle"))]
+        { opts_scan.force_full_scan = true; }
 
         let matches_natural = index.search(&query, &opts_natural);
         let matches_scan = index.search(&query, &opts_scan);

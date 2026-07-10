@@ -62,7 +62,7 @@ fn build_index(repo: &Path, index: &Path) {
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
-    syntext::base64::encode(bytes)
+    syntext::__internal::encode(bytes)
 }
 
 fn fix_path(text: String) -> String {
@@ -85,6 +85,42 @@ fn invalid_flag_exits_with_clap_error() {
     let output = run(&["--wat"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr_text(&output).contains("unexpected argument"));
+}
+
+#[test]
+fn search_with_openat2_disabled_still_finds_matches() {
+    // Forcing SYNTEXT_NO_OPENAT2 exercises the portable (legacy) open path in
+    // io_util::open_beneath even on an openat2-capable kernel, so on Linux CI a
+    // normal `cargo test` run covers BOTH branches (default run = openat2 fast
+    // path, this test = forced legacy). Results must be identical either way.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/a.rs"),
+        "fn openat2_probe_marker() {}\n",
+    );
+    build_index(repo.path(), index.path());
+
+    let output = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index.path())
+        .env("SYNTEXT_NO_OPENAT2", "1")
+        .args(["-l", "openat2_probe_marker"])
+        .output()
+        .expect("run st");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "forced-legacy search failed: {}",
+        stderr_text(&output)
+    );
+    assert!(
+        fix_path(stdout_text(&output)).contains("src/a.rs"),
+        "forced-legacy search must still find the match, got: {}",
+        stdout_text(&output)
+    );
 }
 
 #[test]
@@ -186,7 +222,8 @@ fn status_reports_files_behind_for_untracked_files() {
     assert_eq!(text_output.status.code(), Some(0));
     let text = stdout_text(&text_output);
     assert!(
-        text.lines().any(|line| line.starts_with("Behind:") && line.contains('3')),
+        text.lines()
+            .any(|line| line.starts_with("Behind:") && line.contains('3')),
         "text status output should show a files-behind line with count 3, got:\n{text}"
     );
 }
@@ -1049,10 +1086,7 @@ fn files_without_match_lists_all_files_on_no_matches() {
         &["--files-without-match", "nonexistent", "src"],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(
-        fix_path(stdout_text(&output)),
-        "src/one.txt\nsrc/two.txt\n"
-    );
+    assert_eq!(fix_path(stdout_text(&output)), "src/one.txt\nsrc/two.txt\n");
 }
 
 #[test]
@@ -1732,9 +1766,7 @@ fn auto_update_over_max_files_emits_notice_and_searches_normally() {
         stdout
     );
     assert!(
-        stderr.contains(
-            "st: index is ~4 files behind; searching stale (run 'st update')"
-        ),
+        stderr.contains("st: index is ~4 files behind; searching stale (run 'st update')"),
         "expected stderr to contain warning notice, got: {}",
         stderr
     );
@@ -1976,7 +2008,10 @@ fn no_async_update_env_suppresses_the_spawn() {
     );
 
     let parent_git_calls = count_lines(&log_path);
-    assert_eq!(parent_git_calls, 3, "expected only the parent's 3 detection calls");
+    assert_eq!(
+        parent_git_calls, 3,
+        "expected only the parent's 3 detection calls"
+    );
 
     // Wait past the window the spawn test uses, then confirm no extra calls
     // ever landed: the count must stay pinned at exactly 3.
@@ -2139,8 +2174,7 @@ fn broken_git_binary_yields_identical_exit_code_and_stdout() {
     let broken_path = format!("{}:{}", fake_bin.path().display(), real_path);
 
     let run_with_path = |query: &str, path: &str| {
-        st()
-            .arg("--repo-root")
+        st().arg("--repo-root")
             .arg(repo.path())
             .arg("--index-dir")
             .arg(&index_dir)

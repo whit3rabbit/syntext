@@ -367,4 +367,3 @@ mod tests {
         let _ = results;
     }
 }
-

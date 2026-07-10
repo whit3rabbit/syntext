@@ -107,7 +107,10 @@ impl std::fmt::Display for SidecarError {
                 write!(f, "paths.idx checksum does not match its contents")
             }
             SidecarError::Truncated => {
-                write!(f, "paths.idx body ends before all recorded entries were read")
+                write!(
+                    f,
+                    "paths.idx body ends before all recorded entries were read"
+                )
             }
             SidecarError::Bitmap(e) => write!(f, "paths.idx has a corrupt roaring bitmap: {e}"),
         }
@@ -216,6 +219,14 @@ fn read_bitmap_table(
 
 /// Serialize `index`'s sorted path list and extension/component bitmaps.
 fn encode(index: &PathIndex) -> Vec<u8> {
+    for (i, path) in index.paths.iter().enumerate() {
+        debug_assert_eq!(
+            index.file_id(path),
+            Some(i as u32),
+            "PathIndex passed to paths_idx::encode must have positional file_ids"
+        );
+    }
+
     let mut body = Vec::with_capacity(1024 + index.paths.len() * 24);
     body.extend_from_slice(&(index.paths.len() as u32).to_le_bytes());
     for path in &index.paths {

@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use proptest::prelude::*;
-use syntext::tokenizer::{build_all, build_covering, MIN_GRAM_LEN};
+use syntext::__internal::{build_all, build_covering, MIN_GRAM_LEN};
 
 // ---------------------------------------------------------------------------
 // Curated invariant test (deterministic, exhaustive on small inputs)

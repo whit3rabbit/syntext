@@ -9,7 +9,7 @@
 use std::path::Path;
 use tempfile::TempDir;
 
-use syntext::index::segment::{MmapSegment, FOOTER_SIZE, MAGIC};
+use syntext::__internal::{MmapSegment, FOOTER_SIZE, MAGIC};
 use syntext::index::ExternalFileRecord;
 use syntext::index::Index;
 use syntext::{Config, SearchOptions};
@@ -238,10 +238,8 @@ fn search_file_type_py_only() {
     let config = make_config(&index_dir);
     let idx = Index::build(config).unwrap();
 
-    let opts = SearchOptions {
-        file_type: Some("py".to_string()),
-        ..SearchOptions::default()
-    };
+    let mut opts = SearchOptions::default();
+    opts.file_type = Some("py".to_string());
     let results = idx.search("parse_query", &opts).unwrap();
     for m in &results {
         let p = m.path.to_string_lossy();
@@ -265,10 +263,8 @@ fn search_file_type_rs_only() {
     let config = make_config(&index_dir);
     let idx = Index::build(config).unwrap();
 
-    let opts = SearchOptions {
-        file_type: Some("rs".to_string()),
-        ..SearchOptions::default()
-    };
+    let mut opts = SearchOptions::default();
+    opts.file_type = Some("rs".to_string());
     let results = idx.search("parse_query", &opts).unwrap();
     for m in &results {
         let p = m.path.to_string_lossy();
@@ -288,10 +284,8 @@ fn search_path_filter_subdirectory() {
     let config = make_config(&index_dir);
     let idx = Index::build(config).unwrap();
 
-    let opts = SearchOptions {
-        path_filter: Some("python/".to_string()),
-        ..SearchOptions::default()
-    };
+    let mut opts = SearchOptions::default();
+    opts.path_filter = Some("python/".to_string());
     let results = idx.search("parse_query", &opts).unwrap();
     for m in &results {
         let p = m.path.to_string_lossy();
@@ -311,11 +305,9 @@ fn search_combined_type_and_path() {
     let config = make_config(&index_dir);
     let idx = Index::build(config).unwrap();
 
-    let opts = SearchOptions {
-        file_type: Some("rs".to_string()),
-        path_filter: Some("rust/".to_string()),
-        ..SearchOptions::default()
-    };
+    let mut opts = SearchOptions::default();
+    opts.file_type = Some("rs".to_string());
+    opts.path_filter = Some("rust/".to_string());
     let results = idx.search("parse_query", &opts).unwrap();
     for m in &results {
         let p = m.path.to_string_lossy();
@@ -331,10 +323,8 @@ fn search_exclude_type_omits_matching_extension() {
     let config = make_config(&index_dir);
     let idx = Index::build(config).unwrap();
 
-    let opts = SearchOptions {
-        exclude_type: Some("py".to_string()),
-        ..SearchOptions::default()
-    };
+    let mut opts = SearchOptions::default();
+    opts.exclude_type = Some("py".to_string());
     let results = idx.search("parse_query", &opts).unwrap();
     assert!(
         results
@@ -588,10 +578,8 @@ fn open_falls_back_and_still_searches_correctly_when_paths_idx_is_corrupted() {
 
     // file_type scoping (which reads PathIndex extension bitmaps) must also
     // still work correctly off the rebuilt (not sidecar-loaded) PathIndex.
-    let py_opts = SearchOptions {
-        file_type: Some("py".to_string()),
-        ..SearchOptions::default()
-    };
+    let mut py_opts = SearchOptions::default();
+    py_opts.file_type = Some("py".to_string());
     let py_results = index
         .search("parse_query", &py_opts)
         .expect("scoped search must succeed after fallback rebuild");
@@ -638,17 +626,11 @@ fn search_results_identical_from_sidecar_and_from_rebuilt_path_index() {
     // Run each query twice: once against an index that loads the sidecar,
     // once (after removing it) against an index forced to rebuild PathIndex
     // from segment doc tables.
-    let queries: &[SearchOptions] = &[
-        SearchOptions::default(),
-        SearchOptions {
-            file_type: Some("py".to_string()),
-            ..SearchOptions::default()
-        },
-        SearchOptions {
-            path_filter: Some("*.rs".to_string()),
-            ..SearchOptions::default()
-        },
-    ];
+    let mut query_py = SearchOptions::default();
+    query_py.file_type = Some("py".to_string());
+    let mut query_rs = SearchOptions::default();
+    query_rs.path_filter = Some("*.rs".to_string());
+    let queries: &[SearchOptions] = &[SearchOptions::default(), query_py, query_rs];
     let terms = ["parse_query", "def ", "fn "];
 
     let mut from_sidecar = Vec::new();
@@ -673,8 +655,8 @@ fn search_results_identical_from_sidecar_and_from_rebuilt_path_index() {
 
     let mut from_rebuild = Vec::new();
     {
-        let index =
-            Index::open(config.clone()).expect("open with sidecar missing must fall back and succeed");
+        let index = Index::open(config.clone())
+            .expect("open with sidecar missing must fall back and succeed");
         for term in terms {
             for opts in queries {
                 let mut results: Vec<_> = index

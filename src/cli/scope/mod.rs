@@ -153,7 +153,23 @@ fn normalize_relative_path(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::Normal(part) => normalized.push(part),
-            Component::ParentDir => normalized.push(component.as_os_str()),
+            Component::ParentDir => {
+                // Collapse `..` against the previous normal component so an
+                // in-repo `..` (e.g. `st pat ../sibling` from a subdir, which
+                // arrives here as `sub/../sibling`) maps to a real indexed path
+                // instead of the literal `sub/../sibling`, which matches nothing
+                // and silently returns zero results. A `..` that escapes the
+                // repo root (no normal component to pop) is kept verbatim; it
+                // still matches no indexed path, same as before.
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else {
+                    normalized.push(component.as_os_str());
+                }
+            }
             Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
         }
     }
@@ -171,6 +187,7 @@ pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> 
         // -l/-L only need which files matched, never the line bytes. -c is
         // excluded: count re-scans line_content for per-line occurrences.
         skip_line_content: args.files_with_matches || args.files_without_match,
+        deterministic: false,
         #[cfg(any(test, feature = "oracle"))]
         force_full_scan: false,
     }
@@ -181,6 +198,20 @@ fn single_filter(filters: &[String]) -> Option<String> {
         Some(filters[0].clone())
     } else {
         None
+    }
+}
+
+/// Compile one `-g`/`--glob` pattern. A pattern containing '/' treats slashes
+/// as real component boundaries (`literal_separator(true)`); a basename pattern
+/// does not. Single source of truth for both `validate_globs` (up-front error
+/// reporting) and `matches_optional_glob` (matching), so validation can never
+/// drift from the compile that actually runs.
+fn compile_glob(pattern: &str) -> Result<globset::Glob, globset::Error> {
+    use globset::GlobBuilder;
+    if pattern.contains('/') {
+        GlobBuilder::new(pattern).literal_separator(true).build()
+    } else {
+        GlobBuilder::new(pattern).build()
     }
 }
 
@@ -221,13 +252,12 @@ pub(super) fn matches_optional_glob(
     //     `mysrc/foo` (each slash is a component boundary).
     //
     // Both paths support [...] character classes and {a,b} alternation.
-    use globset::{GlobBuilder, GlobSetBuilder};
+    use globset::GlobSetBuilder;
 
     let basename = path.file_name().map(Path::new);
 
     let mut has_positive = false;
-    let mut matched_positive = false;
-    let mut excluded = false;
+    let mut state = None; // None means Undecided
 
     for glob_str in path_globs {
         let (is_exclude, pattern) = if let Some(excl) = glob_str.strip_prefix('!') {
@@ -240,22 +270,13 @@ pub(super) fn matches_optional_glob(
             continue;
         }
 
+        if !is_exclude {
+            has_positive = true;
+        }
+
         let has_slash = pattern.contains('/');
 
-        // Build the glob. Patterns with '/' use literal_separator(true) so
-        // slashes are real boundaries; basename patterns build without it.
-        let glob_result = if has_slash {
-            GlobBuilder::new(pattern).literal_separator(true).build()
-        } else {
-            GlobBuilder::new(pattern).build()
-        };
-
-        let Ok(glob) = glob_result else {
-            // Malformed glob: for exclusions, conservatively keep the file;
-            // for inclusions, treat as no-match (other patterns may still match).
-            if !is_exclude {
-                has_positive = true;
-            }
+        let Ok(glob) = compile_glob(pattern) else {
             continue;
         };
 
@@ -263,9 +284,6 @@ pub(super) fn matches_optional_glob(
         let mut builder = GlobSetBuilder::new();
         builder.add(glob);
         let Ok(set) = builder.build() else {
-            if !is_exclude {
-                has_positive = true;
-            }
             continue;
         };
 
@@ -277,23 +295,38 @@ pub(super) fn matches_optional_glob(
             basename.is_some_and(|b| set.is_match(b))
         };
 
-        if is_exclude {
-            if matches {
-                excluded = true;
-            }
-        } else {
-            has_positive = true;
-            if matches {
-                matched_positive = true;
+        if matches {
+            if is_exclude {
+                state = Some(false); // Excluded
+            } else {
+                state = Some(true); // Included
             }
         }
     }
 
-    if excluded {
-        return false;
+    match state {
+        Some(included) => included,
+        None => !has_positive,
     }
+}
 
-    !has_positive || matched_positive
+/// Validate `-g`/`--glob` specs up front via the shared `compile_glob`, the
+/// same compile `matches_optional_glob` runs. Returns `Err((spec, message))` on
+/// the first glob that fails to build. Without this, `matches_optional_glob`
+/// silently swallows a malformed positive glob into a never-matches filter, so
+/// a typo like `-g '[bad'` returns zero results with no error -- the worst
+/// failure mode for an agent. Call once before searching and exit 2 on error.
+pub(super) fn validate_globs(path_globs: &[String]) -> Result<(), (String, String)> {
+    for glob_str in path_globs {
+        let pattern = glob_str.strip_prefix('!').unwrap_or(glob_str.as_str());
+        if pattern.is_empty() {
+            continue;
+        }
+        if let Err(e) = compile_glob(pattern) {
+            return Err((glob_str.clone(), e.to_string()));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn collect_scoped_paths(
@@ -344,4 +377,3 @@ pub(super) fn sort_and_dedup_matches(
 #[cfg(test)]
 #[path = "../scope_tests.rs"]
 mod tests;
-

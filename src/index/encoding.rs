@@ -18,8 +18,9 @@ use std::borrow::Cow;
 /// every other character position and would be silently skipped without this.
 ///
 /// When `verbose` is true, emits a warning to stderr if a UTF-16 file has an
-/// odd byte count after the BOM (truncated on disk); the trailing byte is
-/// silently dropped by `chunks_exact(2)`, which can cause false negatives.
+/// odd byte count after the BOM (truncated on disk). The incomplete trailing
+/// byte is decoded as U+FFFD, matching the WHATWG UTF-16 decoder (and thus
+/// ripgrep); dropping it caused false-positive divergences under `-x`.
 pub(crate) fn normalize_encoding(content: &[u8], verbose: bool) -> Cow<'_, [u8]> {
     if let Some(rest) = content.strip_prefix(b"\xEF\xBB\xBF") {
         return Cow::Borrowed(rest);
@@ -35,16 +36,26 @@ pub(crate) fn normalize_encoding(content: &[u8], verbose: bool) -> Cow<'_, [u8]>
 
 fn decode_utf16(bytes: &[u8], from_bytes: fn([u8; 2]) -> u16, verbose: bool) -> Vec<u8> {
     let chunks = bytes.chunks_exact(2);
-    if verbose && !chunks.remainder().is_empty() {
+    let truncated = !chunks.remainder().is_empty();
+    if verbose && truncated {
         eprintln!(
-            "syntext: warning: UTF-16 file has odd byte count ({} bytes after BOM); trailing byte dropped",
+            "syntext: warning: UTF-16 file has odd byte count ({} bytes after BOM); trailing byte decoded as U+FFFD",
             bytes.len()
         );
     }
-    char::decode_utf16(chunks.map(|c| from_bytes([c[0], c[1]])))
+    let mut out = char::decode_utf16(chunks.map(|c| from_bytes([c[0], c[1]])))
         .map(|r| r.unwrap_or('\u{FFFD}'))
-        .collect::<String>()
-        .into_bytes()
+        .collect::<String>();
+    if truncated {
+        // WHATWG UTF-16 decoders (encoding_rs, hence ripgrep) emit a
+        // replacement character for an incomplete final code unit rather than
+        // dropping it. Completes the same lossy policy already applied to lone
+        // surrogates above (`unwrap_or('\u{FFFD}')`) and restores rg parity:
+        // dropping the byte let `-x parse` match st's "parse" but not rg's
+        // "parse\u{FFFD}".
+        out.push('\u{FFFD}');
+    }
+    out.into_bytes()
 }
 
 #[cfg(test)]
@@ -101,10 +112,20 @@ mod tests {
 
     #[test]
     fn utf16_le_odd_byte_trailing_truncated() {
-        // Odd byte after BOM dropped by chunks_exact(2)
+        // Incomplete final code unit -> U+FFFD, matching rg (encoding_rs).
         let input: &[u8] = b"\xFF\xFEh\x00i"; // BOM + "h" + lone byte
         let result = normalize_encoding(input, false);
-        assert_eq!(result.as_ref(), b"h");
+        assert_eq!(result.as_ref(), "h\u{FFFD}".as_bytes());
+    }
+
+    #[test]
+    fn utf16_be_odd_byte_trailing_truncated() {
+        // Mirrors oracle fixture repro_e1c1603c26349124: BE BOM + "parse" +
+        // lone 0x0D. rg decodes the dangling byte as U+FFFD (not \r), so `-x
+        // parse` must NOT match. Regression guard for the st<->rg divergence.
+        let input: &[u8] = b"\xFE\xFF\x00p\x00a\x00r\x00s\x00e\x0D";
+        let result = normalize_encoding(input, false);
+        assert_eq!(result.as_ref(), "parse\u{FFFD}".as_bytes());
     }
 
     #[test]
@@ -130,6 +151,6 @@ mod tests {
         // but we verify the output is still correct).
         let input: &[u8] = b"\xFF\xFEh\x00i"; // BOM + "h" + lone byte
         let result = normalize_encoding(input, true);
-        assert_eq!(result.as_ref(), b"h");
+        assert_eq!(result.as_ref(), "h\u{FFFD}".as_bytes());
     }
 }

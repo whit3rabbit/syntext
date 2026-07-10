@@ -6,18 +6,26 @@ use std::sync::Arc;
 
 use crate::index::IndexSnapshot;
 
-/// Resolve a global doc ID to its path and content.
+/// Resolve a global doc ID to its path, verified content, and raw byte length.
 /// Overlay docs return in-memory content. Base docs read from disk, capped at max_file_size.
 /// Returns None if deleted, out of range, or unreadable.
+///
+/// The third tuple element is the on-disk raw length used for `bytes_searched`.
+/// For base docs it is the pre-`normalize_encoding` length. Overlay docs keep
+/// only normalized content, so their raw length is approximated by the
+/// normalized length (identical except for BOM/UTF-16 files, matching the
+/// prior overlay stat behavior).
 pub(super) fn resolve_doc(
     snap: &IndexSnapshot,
     global_id: u32,
     canonical_root: &Path,
+    root_fd: Option<&std::fs::File>,
     max_file_size: u64,
     verbose: bool,
-) -> Option<(std::path::PathBuf, Arc<[u8]>)> {
+) -> Option<(std::path::PathBuf, Arc<[u8]>, u64)> {
     if let Some(doc) = snap.overlay.get_doc(global_id) {
-        return Some((doc.path.clone(), Arc::clone(&doc.content)));
+        let raw_len = doc.content.len() as u64;
+        return Some((doc.path.clone(), Arc::clone(&doc.content), raw_len));
     }
     if snap.delete_set.contains(global_id) {
         return None;
@@ -36,23 +44,12 @@ pub(super) fn resolve_doc(
     let local_id = global_id.checked_sub(base)?;
     let doc_entry = snap.base_segments()[seg_idx].get_doc(local_id)?;
 
-    let abs_path = canonical_root.join(&doc_entry.path);
-    let canonical = std::fs::canonicalize(&abs_path).ok()?;
-    if !canonical.starts_with(canonical_root) {
-        return None;
-    }
-    // Mitigate TOCTOU: stat before open, then verify fd matches the same inode.
-    // NOTE: This prevents final-component symlink swaps. A residual microsecond-scale
-    // TOCTOU window exists where an intermediate directory component could be swapped
-    // between canonicalize and metadata/open, which is acceptable in our single-user
-    // workstation threat model.
-    #[cfg(any(unix, windows))]
-    let pre_meta = std::fs::metadata(&canonical).ok()?;
-    let file = crate::index::open_readonly_nofollow(&canonical).ok()?;
-    #[cfg(any(unix, windows))]
-    if !crate::index::verify_fd_matches_stat(&file, &pre_meta) {
-        return None;
-    }
+    // Open the file guaranteed-beneath the repo root. On Linux this is a single
+    // openat2(RESOLVE_BENEATH) when `root_fd` is present (atomic containment,
+    // no residual intermediate-component TOCTOU window); otherwise, and on other
+    // platforms, it uses the portable canonicalize + stat + O_NOFOLLOW + verify
+    // path. `None` means the doc's file is gone, unreadable, or escapes the root.
+    let file = crate::index::io_util::open_beneath(root_fd, canonical_root, &doc_entry.path)?;
     // Use max_file_size + 1 as the read sentinel (same pattern as commit_batch).
     // If more than max_file_size bytes were read, the file grew since indexing;
     // skip it rather than silently verify only the truncated portion.
@@ -62,8 +59,9 @@ pub(super) fn resolve_doc(
     if raw.len() as u64 > max_file_size {
         return None;
     }
+    let raw_len = raw.len() as u64;
     let content = crate::index::normalize_encoding(&raw, verbose);
-    Some((doc_entry.path, Arc::from(content.as_ref())))
+    Some((doc_entry.path, Arc::from(content.as_ref()), raw_len))
 }
 
 #[cfg(test)]

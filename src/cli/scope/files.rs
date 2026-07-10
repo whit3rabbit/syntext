@@ -5,9 +5,7 @@ use crate::index::Index;
 use crate::path_util::path_bytes;
 use crate::Config;
 
-use super::{
-    explicit_path_specs, matches_any_explicit_path, matches_optional_glob, path_depth,
-};
+use super::{explicit_path_specs, matches_any_explicit_path, matches_optional_glob, path_depth};
 
 /// List indexed files matching type/glob filters (--files mode).
 pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
@@ -26,7 +24,8 @@ pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
     // Same notice/quiet gating as `cmd_search`: still-stale-after-update spawns
     // the detached async catch-up, regardless of whether the stderr notice
     // itself was suppressed by `--quiet`.
-    let needs_async_catchup = crate::cli::catchup::run_bounded_auto_update(&index, &config, cli.quiet);
+    let needs_async_catchup =
+        crate::cli::catchup::run_bounded_auto_update(&index, &config, cli.quiet);
 
     let snapshot = index.snapshot();
     let stdout = io::stdout();
@@ -66,8 +65,7 @@ pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
                 let spec_depth = specs
                     .iter()
                     .filter(|spec| {
-                        spec.rel_path.as_os_str().is_empty()
-                            || p.starts_with(&spec.rel_path)
+                        spec.rel_path.as_os_str().is_empty() || p.starts_with(&spec.rel_path)
                     })
                     .map(|spec| spec.rel_path.components().count())
                     .max()

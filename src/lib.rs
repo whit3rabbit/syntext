@@ -14,11 +14,7 @@
 //! use syntext::{Config, SearchOptions};
 //! use syntext::index::Index;
 //!
-//! let config = Config {
-//!     index_dir: ".syntext".into(),
-//!     repo_root: ".".into(),
-//!     ..Config::default()
-//! };
+//! let config = Config::new(".syntext".into(), ".".into());
 //!
 //! // Build or open the index.
 //! let index = Index::build(config).unwrap();
@@ -31,40 +27,81 @@
 //! }
 //! ```
 
-/// Helper module for base64 encoding and decoding.
-pub mod base64;
-/// Command-line interface logic and argument parsing.
-#[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]
-pub mod cli;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod git_util;
-/// Git hook integrations for automated indexing workflows.
-#[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]
-pub mod hook;
+// ── Public API ───────────────────────────────────────────────
 /// Core index management, writing, and snapshot components.
 pub mod index;
-/// Directory and file path component indexing using Roaring bitmaps.
-pub mod path;
-pub(crate) mod path_util;
-/// Posting list encoding, decoding, and adaptive set operations.
-pub mod posting;
-/// Query planning, parsing, and decomposition of search patterns.
-pub mod query;
-/// Search execution and candidate verification engine.
-pub mod search;
 /// Tree-sitter symbol extraction and SQLite cache storage (optional).
 #[cfg(feature = "symbols")]
 pub mod symbol;
-/// Gram tokenization and weight frequency table definitions.
-pub mod tokenizer;
 /// WebAssembly bindings for fully in-memory index operations.
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
+// ── Internal modules (not public API) ────────────────────────
+pub(crate) mod base64;
+/// Command-line interface (used by the `st` binary).
+#[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]
+pub mod cli;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod git_util;
+/// Git hook integrations (used by the `st` binary).
+#[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]
+pub mod hook;
+pub(crate) mod path;
+pub(crate) mod path_util;
+pub(crate) mod posting;
+pub(crate) mod query;
+pub(crate) mod search;
+pub(crate) mod tokenizer;
+
+// ── Test-only access hatch ───────────────────────────────────
+/// Internal items exposed for test and benchmark access only.
+///
+/// **No stability guarantees.** These re-exports exist so integration tests
+/// and benchmarks can exercise internals. Library consumers MUST NOT use
+/// this module: the items here may change or vanish in any release.
+// Native only: re-exports native-gated items (manifest, mmap segment, walk)
+// for the native test/bench harness. wasm has no such harness.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub mod __internal {
+    // base64
+    pub use crate::base64::encode;
+    // path
+    pub use crate::path::filter;
+    // posting
+    pub use crate::posting::{
+        roaring_util, varint_decode, varint_encode, PostingList, ROARING_THRESHOLD,
+    };
+    // query
+    pub use crate::query::regex_decompose;
+    pub use crate::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
+    // tokenizer
+    pub use crate::tokenizer::{
+        build_all, build_covering, build_covering_inner, gram_hash, CoveringSet, MAX_GRAM_LEN,
+        MIN_GRAM_LEN,
+    };
+    // index submodules
+    pub use crate::index::manifest::Manifest;
+    pub use crate::index::overlay::{
+        compute_delete_set, EditKind, FileEdit, OverlayDoc, OverlayView,
+    };
+    pub use crate::index::pending::{PendingEdits, TakeResult};
+    pub use crate::index::segment::{
+        DictVerify, DocEntry, MmapSegment, PostVerify, SegmentMeta, SegmentWriter, FOOTER_SIZE,
+        FORMAT_VERSION, MAGIC,
+    };
+    pub use crate::index::snapshot::{new_snapshot, BaseSegments, IndexSnapshot};
+    pub use crate::index::walk::is_binary;
+}
 
 use std::path::PathBuf;
 
 /// Configuration for index building and searching.
+///
+/// Use [`Config::new`] to construct. New fields may be added in minor
+/// versions; prefer `Config::new(index_dir, repo_root)` with field
+/// assignment over struct literal syntax for forward compatibility.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Maximum file size to index (bytes). Default: 10MB.
@@ -119,15 +156,23 @@ pub struct Config {
     /// stale beyond the search-time budget). Default: true. Disable via
     /// `SYNTEXT_NO_ASYNC_UPDATE=1`.
     pub auto_update_async_catchup: bool,
+    /// Optional rayon thread pool for parallel search execution. When `None`
+    /// (the default), the global rayon pool is used. Embedders that manage
+    /// their own thread pool can provide one here to avoid contending with
+    /// the global pool.
+    #[cfg(feature = "rayon")]
+    pub thread_pool: Option<std::sync::Arc<rayon::ThreadPool>>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// Create a new `Config` with required paths set and sensible defaults for
+    /// all other fields.
+    pub fn new(index_dir: PathBuf, repo_root: PathBuf) -> Self {
         Self {
+            index_dir,
+            repo_root,
             max_file_size: 10 * 1024 * 1024,
             max_segments: 10,
-            index_dir: PathBuf::from(".syntext"),
-            repo_root: PathBuf::from("."),
             verbose: false,
             strict_permissions: true,
             verify_on_open: false,
@@ -136,7 +181,15 @@ impl Default for Config {
             auto_update_max_files: 200,
             auto_update_budget_ms: 150,
             auto_update_async_catchup: true,
+            #[cfg(feature = "rayon")]
+            thread_pool: None,
         }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self::new(PathBuf::from(".syntext"), PathBuf::from("."))
     }
 }
 
@@ -158,7 +211,9 @@ pub struct SearchMatch {
 }
 
 /// Search options.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+#[derive(Default)]
 pub struct SearchOptions {
     /// Glob pattern to restrict search to matching paths.
     pub path_filter: Option<String>,
@@ -181,6 +236,13 @@ pub struct SearchOptions {
     /// re-scans `line_content` to count per-line occurrences. Default `false`
     /// (populate), so existing callers are unaffected.
     pub skip_line_content: bool,
+    /// Force deterministic result ordering across `rayon` worker thread
+    /// scheduling differences (default: `false`). When `true`, the per-file
+    /// early-exit based on `max_results` is disabled so that the candidate set
+    /// is always fully resolved before truncation, producing identical output
+    /// regardless of thread interleaving. Costs latency on large result sets.
+    /// Replaces the `SYNTEXT_DETERMINISTIC` environment variable.
+    pub deterministic: bool,
     /// For testing/oracle: bypass query routing and force a full scan.
     #[cfg(any(test, feature = "oracle"))]
     pub force_full_scan: bool,
@@ -304,5 +366,19 @@ impl std::error::Error for IndexError {
             IndexError::Io(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use std::sync::Arc;
+
+    #[test]
+    fn index_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        // Static assertions: if these fail to compile, a refactor has made
+        // Index or IndexSnapshot !Send or !Sync, a regression for embedders.
+        assert_send_sync::<crate::index::Index>();
+        assert_send_sync::<Arc<crate::index::snapshot::IndexSnapshot>>();
     }
 }

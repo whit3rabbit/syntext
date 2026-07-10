@@ -22,10 +22,8 @@ fn query_latency_bench(c: &mut Criterion) {
     // #7: -l/-L path skips the per-matched-line byte copy. Comparing this to
     // `literal_common` (which populates line_content) on the same common token
     // is the before/after for the skip optimization.
-    let skip_opts = syntext::SearchOptions {
-        skip_line_content: true,
-        ..Default::default()
-    };
+    let mut skip_opts = syntext::SearchOptions::default();
+    skip_opts.skip_line_content = true;
     group.bench_function("literal_common_skip_content", |b| {
         b.iter(|| {
             black_box(index.search("parse_query", &skip_opts).unwrap().len());

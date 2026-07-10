@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use syntext::index::overlay::{compute_delete_set, OverlayView};
+use syntext::__internal::{compute_delete_set, OverlayView};
 use syntext::IndexError;
 
 /// Helper: build dirty file list with Arc<[u8]> content.
@@ -293,7 +293,7 @@ fn incremental_reuses_cached_grams() {
 }
 
 // ---------------------------------------------------------------------------
-// build_incremental_delta tests (Task 2)
+// build_incremental_delta tests
 // ---------------------------------------------------------------------------
 
 /// Delta path: unchanged files keep their exact old doc_ids when base_doc_count is stable.

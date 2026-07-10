@@ -41,8 +41,7 @@ pub(super) fn apply_post_filters(
                 let spec_depth = explicit_specs
                     .iter()
                     .filter(|spec| {
-                        spec.rel_path.as_os_str().is_empty()
-                            || m.path.starts_with(&spec.rel_path)
+                        spec.rel_path.as_os_str().is_empty() || m.path.starts_with(&spec.rel_path)
                     })
                     .map(|spec| spec.rel_path.components().count())
                     .max()

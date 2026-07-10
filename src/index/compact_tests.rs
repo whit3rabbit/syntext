@@ -189,7 +189,10 @@ fn plan_triggers_full_renumber_on_file_id_bloat() {
         added.insert(PathBuf::from("a.rs"));
         pi = PathIndex::build_incremental(&pi, &removed, &added);
     }
-    assert!(pi.next_file_id() > 1024, "file_id high-water mark should bloat");
+    assert!(
+        pi.next_file_id() > 1024,
+        "file_id high-water mark should bloat"
+    );
     assert_eq!(pi.live_path_count(), 1, "live path count stays constant");
 
     let bloated = new_snapshot(

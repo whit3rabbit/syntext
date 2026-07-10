@@ -9,16 +9,21 @@ use crate::path_util::path_bytes;
 use crate::{Config, IndexError};
 
 // Re-export for render submodules that import via `crate::cli::search::collect_scoped_paths`.
-pub(super) use super::scope::collect_scoped_paths;
 use super::post_filter::apply_post_filters;
 use super::render::build_effective_pattern;
-use super::scope::{
-    explicit_path_specs, search_options, sort_and_dedup_matches,
-};
+pub(super) use super::scope::collect_scoped_paths;
+use super::scope::{explicit_path_specs, search_options, sort_and_dedup_matches};
 
 pub(super) use super::search_args::SearchArgs;
 
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
+    // Reject malformed -g/--glob specs before touching the index: a bad glob
+    // otherwise degrades to a silent never-match filter (zero results, no error).
+    if let Err((spec, msg)) = super::scope::validate_globs(&args.globs) {
+        eprintln!("st: invalid glob '{spec}': {msg}");
+        return 2;
+    }
+
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         // Only a missing index is eligible for fallback; a corrupt index or lock
@@ -80,13 +85,17 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
         ));
     }
 
-    let results = match run_search(index, config, args) {
+    let outcome = match run_search(index, config, args) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("st: {e}");
             return 2;
         }
     };
+    // Verified content of matched files, reused by content renderers so they
+    // emit the bytes that matched instead of re-reading churned files.
+    let files = outcome.files;
+    let results = outcome.matches;
     let elapsed = search_start.elapsed();
     if output_args.search_stats {
         let matched_files: std::collections::BTreeSet<_> =
@@ -127,7 +136,8 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
     }
 
     if results.is_empty() && output_args.json {
-        if let Err(err) = super::render::render_json(index, config, &results, &output_args) {
+        if let Err(err) = super::render::render_json(index, config, &results, &files, &output_args)
+        {
             return handle_output(err);
         }
         return 1;
@@ -195,20 +205,22 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
     let has_context = output_args.after_context > 0 || output_args.before_context > 0;
 
     let render = if output_args.json {
-        super::render::render_json(index, config, &results, &output_args)
+        super::render::render_json(index, config, &results, &files, &output_args)
     } else if output_args.vimgrep {
         super::render::render_vimgrep(config, &results, &output_args)
     } else if output_args.only_matching {
-        super::render::render_only_matching(config, &results, &output_args)
+        super::render::render_only_matching(config, &results, &files, &output_args)
     } else if has_context {
-        super::render::render_with_context(config, &results, &output_args)
+        super::render::render_with_context(config, &results, &files, &output_args)
     } else if output_args.heading {
         super::render::render_heading(&results, &output_args)
     } else {
         super::render::render_flat(&results, &output_args)
     };
 
-    if let Err(err) = render { return handle_output(err); }
+    if let Err(err) = render {
+        return handle_output(err);
+    }
 
     0
 }
@@ -218,19 +230,31 @@ fn handle_output_code(result: io::Result<i32>) -> i32 {
 }
 
 fn handle_output(err: io::Error) -> i32 {
-    if err.kind() == io::ErrorKind::BrokenPipe { 0 } else { eprintln!("st: {err}"); 2 }
+    if err.kind() == io::ErrorKind::BrokenPipe {
+        0
+    } else {
+        eprintln!("st: {err}");
+        2
+    }
 }
 
 pub(super) fn run_search(
     index: &Index,
     config: &Config,
     args: &SearchArgs,
-) -> Result<Vec<crate::SearchMatch>, crate::IndexError> {
+) -> Result<crate::search::SearchOutcome, crate::IndexError> {
+    use crate::search::{MatchedFile, SearchOutcome};
+    use std::collections::HashMap;
+
     // Explicit symbol lookup (--sym). Bypasses content routing entirely; the flag
-    // only exists when the symbols feature is built.
+    // only exists when the symbols feature is built. No content map (renderers
+    // fall back to disk reads for the rare symbol/refs case).
     #[cfg(feature = "symbols")]
     if let Some(name) = &args.sym {
-        return index.search_symbols(name, args.sym_kind.as_deref());
+        return Ok(SearchOutcome {
+            matches: index.search_symbols(name, args.sym_kind.as_deref())?,
+            files: HashMap::new(),
+        });
     }
     // Find-references (--refs): resolve the name via the symbol index, then run
     // a word-boundary case-sensitive content search. Results are real content
@@ -239,7 +263,10 @@ pub(super) fn run_search(
     if let Some(name) = &args.refs {
         let explicit_specs = explicit_path_specs(&config.repo_root, &args.paths);
         let results = index.search_references(name, args.sym_kind.as_deref())?;
-        return Ok(apply_post_filters(results, args, &explicit_specs));
+        return Ok(SearchOutcome {
+            matches: apply_post_filters(results, args, &explicit_specs),
+            files: HashMap::new(),
+        });
     }
     let (routing_pattern, verify_pattern) = build_effective_pattern(args);
     let explicit_specs = explicit_path_specs(&config.repo_root, &args.paths);
@@ -254,16 +281,28 @@ pub(super) fn run_search(
         }
         opts
     };
-    let results = if explicit_specs.is_empty() {
-        index.search(&routing_pattern, &make_opts(None))?
-    } else {
-        let mut merged = Vec::new();
-        for spec in &explicit_specs {
-            merged.extend(index.search(&routing_pattern, &make_opts(Some(spec.path_filter())))?);
-        }
-        sort_and_dedup_matches(merged)
-    };
-    Ok(apply_post_filters(results, args, &explicit_specs))
+    let (results, files): (Vec<crate::SearchMatch>, HashMap<PathBuf, MatchedFile>) =
+        if explicit_specs.is_empty() {
+            let out = index.search_with_content(&routing_pattern, &make_opts(None))?;
+            (out.matches, out.files)
+        } else {
+            let mut merged = Vec::new();
+            let mut files: HashMap<PathBuf, MatchedFile> = HashMap::new();
+            for spec in &explicit_specs {
+                let out = index
+                    .search_with_content(&routing_pattern, &make_opts(Some(spec.path_filter())))?;
+                merged.extend(out.matches);
+                // First-wins: specs are normally disjoint scopes, and
+                // sort_and_dedup_matches collapses any overlap; a file's content
+                // is identical across specs within one snapshot generation.
+                for (p, mf) in out.files {
+                    files.entry(p).or_insert(mf);
+                }
+            }
+            (sort_and_dedup_matches(merged), files)
+        };
+    Ok(SearchOutcome {
+        matches: apply_post_filters(results, args, &explicit_specs),
+        files,
+    })
 }
-
-

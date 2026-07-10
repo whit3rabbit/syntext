@@ -143,7 +143,10 @@ impl super::Index {
                         // a single bad path cannot wedge the whole update.
                         if let Err(e) = self.notify_change(&resolved) {
                             if self.config.verbose {
-                                eprintln!("syntext: warning: skip changed file {}: {e}", path.display());
+                                eprintln!(
+                                    "syntext: warning: skip changed file {}: {e}",
+                                    path.display()
+                                );
                             }
                             skipped += 1;
                         } else {
@@ -168,7 +171,10 @@ impl super::Index {
                     Err(_) => {
                         if let Err(e) = self.notify_change(&abs) {
                             if self.config.verbose {
-                                eprintln!("syntext: warning: skip changed file {}: {e}", path.display());
+                                eprintln!(
+                                    "syntext: warning: skip changed file {}: {e}",
+                                    path.display()
+                                );
                             }
                             skipped += 1;
                         } else {
@@ -184,7 +190,10 @@ impl super::Index {
                 // when git re-reports it changed. The race is self-healing.
                 if let Err(e) = self.notify_delete(&abs) {
                     if self.config.verbose {
-                        eprintln!("syntext: warning: skip deleted file {}: {e}", path.display());
+                        eprintln!(
+                            "syntext: warning: skip deleted file {}: {e}",
+                            path.display()
+                        );
                     }
                     skipped += 1;
                 } else {
@@ -222,7 +231,9 @@ impl super::Index {
     ) -> Result<(Vec<SearchMatch>, freshness::UpdateOutcome), IndexError> {
         let outcome = self
             .update_from_git(limits)
-            .unwrap_or(freshness::UpdateOutcome::NoChanges { detect_elapsed_ms: 0 });
+            .unwrap_or(freshness::UpdateOutcome::NoChanges {
+                detect_elapsed_ms: 0,
+            });
         let matches = self.search(pattern, opts)?;
         Ok((matches, outcome))
     }

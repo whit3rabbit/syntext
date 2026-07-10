@@ -14,10 +14,11 @@ use crate::{Config, IndexError};
 /// proceeds with the stale index -- a stale index can only miss matches,
 /// never report wrong ones, because the verifier re-reads real file bytes.
 ///
-/// Returns `true` when detection reported real staleness
-/// (`TooManyFiles`/`BudgetExceeded` with a positive estimate) regardless of
-/// `quiet`, so the caller can still spawn the detached catch-up even when
-/// the stderr notice itself is suppressed.
+/// Returns `true` when the index is behind and the detached catch-up should be
+/// spawned: the bounded pass hit its ceiling (`TooManyFiles`/`BudgetExceeded`/
+/// `OverlayFull` outcomes) or `OverlayFull` surfaced as an error (whose catch-up
+/// self-heals via inline rebuild). Returns `true` regardless of `quiet`, so the
+/// caller still spawns the catch-up when the stderr notice is suppressed.
 pub(super) fn run_bounded_auto_update(index: &Index, config: &Config, quiet: bool) -> bool {
     if !config.auto_update {
         return false;
@@ -81,13 +82,15 @@ pub(super) fn run_bounded_auto_update(index: &Index, config: &Config, quiet: boo
         }
         Err(IndexError::OverlayFull { .. }) => {
             if !quiet {
-                eprintln!("st: overlay full; run st index to rebuild");
+                eprintln!("st: overlay full; searching stale (run 'st update')");
             }
-            // Exit-code contract: the eprintln! above writes to stderr only.
-            // Like the other arms, this falls through to the search below,
-            // so the final exit code still reflects match/no-match/error
-            // from the (stale) index, not this update failure.
-            false
+            // Return true so the caller spawns the detached `st update` catch-up:
+            // its unbounded path self-heals OverlayFull via an inline rebuild
+            // (see index/update.rs), so the next search sees a fresh index.
+            // Exit-code contract: the eprintln! above writes to stderr only and
+            // this arm falls through to the search below, so the final exit code
+            // still reflects match/no-match/error from the (stale) index.
+            true
         }
         Err(_) => {
             // Other errors (e.g. Io): search stale silently.
@@ -108,6 +111,25 @@ pub(super) fn maybe_spawn_async_catchup(config: &Config) {
     if !config.auto_update_async_catchup {
         return;
     }
+    // Coarse TTL throttle, not a lock. Without it, N concurrent stale
+    // searches each spawn an `st update` that then retries the writer lock,
+    // stampeding one writer. The stamp collapses a burst into ~one catch-up per
+    // window; a slice can slip two through, which is harmless (the second just
+    // hits LockConflict and exits). Upgrade to a real lockfile only if bursts
+    // still stampede.
+    let stamp = config.index_dir.join("async-catchup-stamp");
+    if let Ok(meta) = std::fs::metadata(&stamp) {
+        if meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|e| e < std::time::Duration::from_secs(5))
+        {
+            return; // a recent catch-up already covers this window
+        }
+    }
+    // Touch the stamp before spawning so concurrent searches see it immediately.
+    let _ = std::fs::write(&stamp, b"");
     let Ok(exe) = std::env::current_exe() else {
         return;
     };

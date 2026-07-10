@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use crate::path_util::path_bytes;
 use crate::Config;
 
-use super::{compile_output_regex, ColorStyles};
 use super::color::write_styled;
+use super::{compile_output_regex, ColorStyles};
 use crate::cli::search::SearchArgs;
 
 pub(in crate::cli) fn render_count_matches(

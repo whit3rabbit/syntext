@@ -7,11 +7,11 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
+use super::color::write_styled;
 use super::{
-    compile_output_regex, group_matches_by_path, match_spans, read_matched_file,
+    compile_output_regex, group_matches_by_path, match_spans, matched_file_bytes,
     repo_canonical_root, write_formatted_line, ColorStyles,
 };
-use super::color::write_styled;
 use crate::cli::search::SearchArgs;
 
 /// Print matches with surrounding context lines to stdout.
@@ -21,11 +21,12 @@ use crate::cli::search::SearchArgs;
 pub(in crate::cli) fn render_with_context(
     config: &Config,
     matches: &[crate::SearchMatch],
+    files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
     args: &SearchArgs,
 ) -> io::Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    render_with_context_to(config, matches, args, &mut out)
+    render_with_context_to(config, matches, files, args, &mut out)
 }
 
 /// Write matches with surrounding context lines to any writer (used for testing).
@@ -35,6 +36,7 @@ pub(in crate::cli) fn render_with_context(
 pub(in crate::cli) fn render_with_context_to(
     config: &Config,
     matches: &[crate::SearchMatch],
+    files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
     args: &SearchArgs,
     out: &mut dyn std::io::Write,
 ) -> io::Result<()> {
@@ -48,18 +50,15 @@ pub(in crate::cli) fn render_with_context_to(
     let canonical_root = repo_canonical_root(config);
     // Only needed to compute match spans for highlighting; uncompiled when color
     // is off so non-colored context output pays no regex cost.
-    let re = args
-        .color
-        .then(|| compile_output_regex(args))
-        .transpose()?;
+    let re = args.color.then(|| compile_output_regex(args)).transpose()?;
     let styles = ColorStyles::default();
     let mut first_file = true;
     for (rel_path, match_lines) in &by_file {
-        let Some(raw_content) = read_matched_file(config, &canonical_root, rel_path, args.quiet)
+        let Some(file_content) =
+            matched_file_bytes(files, config, &canonical_root, rel_path, args.quiet)
         else {
             continue;
         };
-        let file_content = crate::index::normalize_encoding(&raw_content, config.verbose);
         // Keep the line-start byte offset alongside each line so -b/--byte-offset
         // can print it (json.rs keeps the same (line_start, line) pair).
         let mut file_lines: Vec<(usize, Vec<u8>)> = Vec::new();

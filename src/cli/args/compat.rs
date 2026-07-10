@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use clap::Args;
+use std::path::PathBuf;
 
 /// No-op or compatibility options to mirror ripgrep interface.
 #[derive(Args, Clone)]

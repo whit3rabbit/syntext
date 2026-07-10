@@ -24,13 +24,18 @@ use super::{
 /// set when edge-only grams would produce false negatives.
 #[derive(Debug, Clone, Default)]
 pub struct CoveringSet {
-    /// Grams with at least one real (interior or forced-edge) boundary.
-    /// These are reliably anchored and can safely narrow the candidate set
-    /// via AND semantics.
+    /// Grams whose BOTH boundaries are real (interior positions, or a
+    /// position-0/len endpoint whose byte is a forced boundary). Fully
+    /// anchored, so they can safely narrow the candidate set via AND
+    /// semantics. A gram with even one synthetic boundary is `optional`, not
+    /// required: e.g. for query `parse_query` the gram `parse` has a real
+    /// interior end (`_`) but a synthetic start, so it is optional -- treating
+    /// it as required would drop a doc that tokenizes `reparse_query` into
+    /// `reparse`/`query` and never emits gram `parse`.
     pub required: Vec<u64>,
-    /// Grams bounded entirely by synthetic boundaries (both position 0 and
-    /// len, with neither endpoint byte being a forced boundary).
-    /// Using these alone as an AND filter risks false negatives.
+    /// Grams with at least one synthetic boundary (a position-0/len endpoint
+    /// whose byte is not a forced boundary). Using these alone as an AND
+    /// filter risks false negatives on sub-token matches.
     pub optional: Vec<u64>,
 }
 
@@ -54,18 +59,18 @@ impl CoveringSet {
 /// consecutive-boundary span with length >= `MIN_GRAM_LEN`.
 ///
 /// Each gram is classified:
-/// - **required**: at least one boundary is real (interior position, or
-///   position 0/len with a forced-boundary byte).
-/// - **optional**: both boundaries are synthetic (position 0 and len,
-///   neither endpoint byte is a forced boundary).
+/// - **required**: BOTH boundaries are real (interior position, or position
+///   0/len with a forced-boundary byte).
+/// - **optional**: at least one boundary is synthetic (position 0 or len with
+///   a non-forced-boundary endpoint byte).
 ///
 /// Returns `None` if no grams of sufficient length exist (the entire query
 /// falls in sub-`MIN_GRAM_LEN` spans). Callers must fall back to full scan.
 ///
 /// # Example
 ///
-/// ```
-/// use syntext::tokenizer::build_covering;
+/// ```ignore
+/// use syntext::__internal::build_covering;
 ///
 /// // "parse_query" has one synthetic boundary for each gram (start/end of query)
 /// // so they are optional to prevent false negatives on sub-token matches.

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::hook::vendors::{AgentAction, InstallScope};
 use crate::cli::commands::{AgentCommand, AgentScope, InitArgs};
+use crate::hook::vendors::{AgentAction, InstallScope};
 
 pub(super) fn cmd_init(args: &InitArgs) -> i32 {
     if args.fsmonitor {

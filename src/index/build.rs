@@ -110,78 +110,79 @@ pub(super) fn build_index_from_file_list(
         let skipped_binary = &skipped_binary;
         let skipped_unreadable = &skipped_unreadable;
         let skipped_oversized_path = &skipped_oversized_path;
-        let map_fn = |(abs_path, rel_path, _): &(PathBuf, PathBuf, u64)| -> Option<(u64, Vec<u64>)> {
-            // Skip paths that overflow the segment's u16 path-length prefix
-            // before any doc_id is assigned. Doing it here (not in SegmentWriter)
-            // drops just this file instead of failing the batch.
-            if crate::path_util::path_bytes(rel_path).len() > u16::MAX as usize {
-                if verbose {
-                    eprintln!(
-                        "syntext: skipping {}: path exceeds u16::MAX bytes",
-                        rel_path.display()
-                    );
-                }
-                skipped_oversized_path.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-            // Security: close the TOCTOU window between enumerate_files()'s
-            // symlink resolution (symlink_metadata + canonicalize) and this
-            // read. open_readonly_nofollow blocks final-component substitution;
-            // verify_fd_matches_stat catches directory-component swaps.
-            let pre_meta = match std::fs::symlink_metadata(abs_path) {
-                Ok(m) => m,
-                Err(e) => {
+        let map_fn =
+            |(abs_path, rel_path, _): &(PathBuf, PathBuf, u64)| -> Option<(u64, Vec<u64>)> {
+                // Skip paths that overflow the segment's u16 path-length prefix
+                // before any doc_id is assigned. Doing it here (not in SegmentWriter)
+                // drops just this file instead of failing the batch.
+                if crate::path_util::path_bytes(rel_path).len() > u16::MAX as usize {
                     if verbose {
-                        eprintln!("syntext: skipping {}: stat: {e}", abs_path.display());
+                        eprintln!(
+                            "syntext: skipping {}: path exceeds u16::MAX bytes",
+                            rel_path.display()
+                        );
+                    }
+                    skipped_oversized_path.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                // Security: close the TOCTOU window between enumerate_files()'s
+                // symlink resolution (symlink_metadata + canonicalize) and this
+                // read. open_readonly_nofollow blocks final-component substitution;
+                // verify_fd_matches_stat catches directory-component swaps.
+                let pre_meta = match std::fs::symlink_metadata(abs_path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        if verbose {
+                            eprintln!("syntext: skipping {}: stat: {e}", abs_path.display());
+                        }
+                        skipped_unreadable.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                };
+                let mut file = match super::open_readonly_nofollow(abs_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        if verbose {
+                            eprintln!("syntext: skipping {}: open: {e}", abs_path.display());
+                        }
+                        skipped_unreadable.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                };
+                #[cfg(any(unix, windows))]
+                if !super::verify_fd_matches_stat(&file, &pre_meta) {
+                    skipped_unreadable.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                #[cfg(not(any(unix, windows)))]
+                let _ = &pre_meta;
+                let mut raw = Vec::new();
+                if let Err(e) = file.read_to_end(&mut raw) {
+                    if verbose {
+                        eprintln!("syntext: skipping {}: read: {e}", abs_path.display());
                     }
                     skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
-            };
-            let mut file = match super::open_readonly_nofollow(abs_path) {
-                Ok(f) => f,
-                Err(e) => {
-                    if verbose {
-                        eprintln!("syntext: skipping {}: open: {e}", abs_path.display());
-                    }
-                    skipped_unreadable.fetch_add(1, Ordering::Relaxed);
+                let content = crate::index::normalize_encoding(&raw, config.verbose);
+                if is_binary(&content) {
+                    skipped_binary.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
+                let hash = xxh64(content.as_ref(), 0);
+                // Dedup gram occurrences per file before pushing into the writer's
+                // postings Vec. Postings are doc-level (a gram is either present or
+                // absent in a given doc), so duplicates from build_all() are pure
+                // waste: they inflate the postings Vec across the whole batch and
+                // enlarge the sort in SegmentWriter::serialize(). For repetitive
+                // files (e.g. generated code, large switch statements) this can cut
+                // the per-file gram count substantially. The HashSet is dropped at
+                // the end of this closure, so peak memory only grows by one file's
+                // worth of distinct grams at a time.
+                let distinct: std::collections::HashSet<u64> =
+                    build_all(content.as_ref()).into_iter().collect();
+                Some((hash, distinct.into_iter().collect()))
             };
-            #[cfg(any(unix, windows))]
-            if !super::verify_fd_matches_stat(&file, &pre_meta) {
-                skipped_unreadable.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-            #[cfg(not(any(unix, windows)))]
-            let _ = &pre_meta;
-            let mut raw = Vec::new();
-            if let Err(e) = file.read_to_end(&mut raw) {
-                if verbose {
-                    eprintln!("syntext: skipping {}: read: {e}", abs_path.display());
-                }
-                skipped_unreadable.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-            let content = crate::index::normalize_encoding(&raw, config.verbose);
-            if is_binary(&content) {
-                skipped_binary.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-            let hash = xxh64(content.as_ref(), 0);
-            // Dedup gram occurrences per file before pushing into the writer's
-            // postings Vec. Postings are doc-level (a gram is either present or
-            // absent in a given doc), so duplicates from build_all() are pure
-            // waste: they inflate the postings Vec across the whole batch and
-            // enlarge the sort in SegmentWriter::serialize(). For repetitive
-            // files (e.g. generated code, large switch statements) this can cut
-            // the per-file gram count substantially. The HashSet is dropped at
-            // the end of this closure, so peak memory only grows by one file's
-            // worth of distinct grams at a time.
-            let distinct: std::collections::HashSet<u64> =
-                build_all(content.as_ref()).into_iter().collect();
-            Some((hash, distinct.into_iter().collect()))
-        };
         #[cfg(feature = "rayon")]
         let results: Vec<Option<(u64, Vec<u64>)>> = batch.par_iter().map(map_fn).collect();
         #[cfg(not(feature = "rayon"))]

@@ -8,21 +8,22 @@ use crate::path_util::path_bytes;
 use crate::search::lines::for_each_line;
 use crate::Config;
 
+use super::color::write_styled;
 use super::{
-    compile_output_regex, group_matches_by_path, read_matched_file, repo_canonical_root,
+    compile_output_regex, group_matches_by_path, matched_file_bytes, repo_canonical_root,
     write_formatted_line, ColorStyles,
 };
-use super::color::write_styled;
 use crate::cli::search::SearchArgs;
 
 pub(in crate::cli) fn render_only_matching(
     config: &Config,
     matches: &[crate::SearchMatch],
+    files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
     args: &SearchArgs,
 ) -> io::Result<()> {
     let re = compile_output_regex(args)?;
     if args.before_context > 0 || args.after_context > 0 {
-        return render_only_matching_with_context(config, matches, args, &re);
+        return render_only_matching_with_context(config, matches, files, args, &re);
     }
     let styles = ColorStyles::default();
     let stdout = io::stdout();
@@ -39,7 +40,12 @@ pub(in crate::cli) fn render_only_matching(
                 writeln!(out)?;
             }
             if !args.no_filename {
-                write_styled(&mut out, args.color, styles.path, path_bytes(&m.path).as_ref())?;
+                write_styled(
+                    &mut out,
+                    args.color,
+                    styles.path,
+                    path_bytes(&m.path).as_ref(),
+                )?;
                 if args.null {
                     out.write_all(b"\0")?;
                 } else {
@@ -104,6 +110,7 @@ fn apply_match_replace<'a>(
 fn render_only_matching_with_context(
     config: &Config,
     matches: &[crate::SearchMatch],
+    files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
     args: &SearchArgs,
     re: &regex::bytes::Regex,
 ) -> io::Result<()> {
@@ -120,11 +127,11 @@ fn render_only_matching_with_context(
     let canonical_root = repo_canonical_root(config);
 
     for (rel_path, match_lines) in &by_file {
-        let Some(raw_content) = read_matched_file(config, &canonical_root, rel_path, args.quiet)
+        let Some(file_content) =
+            matched_file_bytes(files, config, &canonical_root, rel_path, args.quiet)
         else {
             continue;
         };
-        let file_content = crate::index::normalize_encoding(&raw_content, config.verbose);
         // Keep the line-start byte offset for -b (see render_only_matching).
         let mut file_lines: Vec<(usize, Vec<u8>)> = Vec::new();
         for_each_line(file_content.as_ref(), |_, line_start, line| {
@@ -152,7 +159,12 @@ fn render_only_matching_with_context(
             }
         }
         if grouped_heading && !to_print.is_empty() && !args.no_filename {
-            write_styled(&mut out, args.color, styles.path, path_bytes(rel_path).as_ref())?;
+            write_styled(
+                &mut out,
+                args.color,
+                styles.path,
+                path_bytes(rel_path).as_ref(),
+            )?;
             if args.null {
                 out.write_all(b"\0")?;
             } else {

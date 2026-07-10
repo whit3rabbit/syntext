@@ -302,37 +302,18 @@ impl Index {
     fn classify_changed_file(&self, path: &Path) -> ChangedFileOutcome {
         let abs = self.config.repo_root.join(path);
 
-        // Canonicalize before opening to detect symlink swaps between
-        // notify_change() and commit_batch(). NotFound => vanished => deletion.
-        let resolved = match std::fs::canonicalize(&abs) {
-            Ok(p) => p,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return self.vanished(&abs),
-            Err(e) => return self.skip(&abs, &format!("canonicalize failed: {e}")),
+        // Open the changed file guaranteed-beneath the repo root: one
+        // openat2(RESOLVE_BENEATH) on Linux (atomic containment), else the
+        // portable canonicalize + stat + O_NOFOLLOW + fd-verify path. This
+        // replaces the inline symlink-swap guard that ran between
+        // notify_change() and commit_batch(). On failure, distinguish a file
+        // that genuinely vanished (record a deletion) from a transient error or
+        // a containment reject (keep the old doc) with a cheap existence probe.
+        let file = match io_util::open_beneath_fresh(&self.canonical_root, path) {
+            Some(f) => f,
+            None if !abs.exists() => return self.vanished(&abs),
+            None => return self.skip(&abs, "path changed or could not be securely opened"),
         };
-        if !resolved.starts_with(&self.canonical_root) {
-            return self.skip(&abs, "resolved path escapes repo root");
-        }
-
-        // Stat before open; after open, fstat the fd and compare dev+ino to
-        // catch directory-component symlink swaps in the window between
-        // canonicalize() and open() (O_NOFOLLOW blocks only the final component).
-        #[cfg(any(unix, windows))]
-        let pre_open_meta = match std::fs::metadata(&resolved) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return self.vanished(&abs),
-            Err(e) => return self.skip(&abs, &format!("metadata failed: {e}")),
-        };
-
-        let file = match io_util::open_readonly_nofollow(&resolved) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return self.vanished(&abs),
-            Err(e) => return self.skip(&abs, &format!("open failed: {e}")),
-        };
-
-        #[cfg(any(unix, windows))]
-        if !io_util::verify_fd_matches_stat(&file, &pre_open_meta) {
-            return self.skip(&abs, "path changed during open");
-        }
 
         // Bounded read (max_file_size + 1 sentinel) catches a file that grew
         // past the limit since notify_change(). saturating_add guards against

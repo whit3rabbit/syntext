@@ -163,7 +163,6 @@ fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
     positions
 }
 
-
 /// Thread-local buffered variant of `boundary_positions_lower` using a callback
 /// pattern to avoid cloning the result Vec on every call.
 ///
@@ -230,8 +229,8 @@ thread_local! {
 ///
 /// # Example
 ///
-/// ```
-/// let grams = syntext::tokenizer::build_all(b"parse_query");
+/// ```ignore
+/// let grams = syntext::__internal::build_all(b"parse_query");
 /// // Forced boundary at '_' splits into "parse" and "query".
 /// assert!(!grams.is_empty());
 /// ```

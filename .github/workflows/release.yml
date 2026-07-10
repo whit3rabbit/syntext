@@ -173,6 +173,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v8
         with:
           path: artifacts/
@@ -184,9 +186,19 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Extract release notes
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          python3 scripts/extract_release_notes.py "${VERSION}" > release_notes.md
+          echo "=== Extracted Release Notes ==="
+          cat release_notes.md
+          echo "==============================="
+
       - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
+          body_path: release_notes.md
           generate_release_notes: true
 
   publish-crate:

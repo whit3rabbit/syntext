@@ -169,7 +169,9 @@ impl MmapSegment {
             }
         }
         // In-memory segment, or the bulk read failed: fall back to per-doc reads.
-        (0..self.doc_count).map(|doc_id| self.get_doc(doc_id)).collect()
+        (0..self.doc_count)
+            .map(|doc_id| self.get_doc(doc_id))
+            .collect()
     }
 
     /// Read the whole doc-table region into a buffer via one positional read.

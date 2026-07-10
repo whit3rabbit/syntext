@@ -387,7 +387,14 @@ fn render_with_context_emits_separator_between_blocks() {
     };
 
     let mut buf = Vec::<u8>::new();
-    super::render::render_with_context_to(&config, &matches, &args, &mut buf).unwrap();
+    super::render::render_with_context_to(
+        &config,
+        &matches,
+        &std::collections::HashMap::new(),
+        &args,
+        &mut buf,
+    )
+    .unwrap();
     let output = String::from_utf8(buf).unwrap();
 
     // Should contain a -- separator between the two non-contiguous context blocks.
@@ -885,7 +892,10 @@ fn color_in_heading_wraps_header_path_line_and_match() {
     super::render::render_heading_to(&results, &args, &mut buf).unwrap();
     let out = String::from_utf8(buf).unwrap();
     // Heading colors the filename header, the per-line number, and the match.
-    assert!(out.contains("\x1b[35msrc/lib.rs\x1b[0m"), "header path: {out:?}");
+    assert!(
+        out.contains("\x1b[35msrc/lib.rs\x1b[0m"),
+        "header path: {out:?}"
+    );
     assert!(out.contains("\x1b[1;31mneedle\x1b[0m"), "match: {out:?}");
     assert!(out.contains("\x1b[32m1\x1b[0m"), "line number: {out:?}");
     drop(index);
@@ -902,7 +912,9 @@ fn noops_ignore_and_discovery_flags_are_accepted() {
         "pat",
     ])
     .unwrap();
-    assert!(cli.compat.no_ignore && cli.compat.no_ignore_vcs && cli.compat.hidden && cli.compat.follow);
+    assert!(
+        cli.compat.no_ignore && cli.compat.no_ignore_vcs && cli.compat.hidden && cli.compat.follow
+    );
 }
 
 #[test]
@@ -1073,7 +1085,12 @@ fn noops_diagnostics_config_flags_are_accepted() {
         "pat",
     ])
     .unwrap();
-    assert!(cli.compat.trace && cli.compat.no_messages && cli.compat.no_config && cli.compat.one_file_system);
+    assert!(
+        cli.compat.trace
+            && cli.compat.no_messages
+            && cli.compat.no_config
+            && cli.compat.one_file_system
+    );
 }
 
 #[test]
@@ -1451,7 +1468,10 @@ fn max_columns_skips_long_lines() {
         !output.contains("this_is_a_very_long"),
         "long line should be skipped"
     );
-    assert!(output.contains("[Omitted long matching line]"), "placeholder should be present");
+    assert!(
+        output.contains("[Omitted long matching line]"),
+        "placeholder should be present"
+    );
     drop(index);
 }
 
@@ -1503,7 +1523,14 @@ fn context_separator_custom_string() {
     };
 
     let mut buf = Vec::<u8>::new();
-    super::render::render_with_context_to(&config, &matches, &args, &mut buf).unwrap();
+    super::render::render_with_context_to(
+        &config,
+        &matches,
+        &std::collections::HashMap::new(),
+        &args,
+        &mut buf,
+    )
+    .unwrap();
     let output = String::from_utf8(buf).unwrap();
 
     assert!(
@@ -1647,9 +1674,7 @@ fn cmd_search_rejects_incompatible_symbol_flags() {
 
 #[test]
 fn trim_column_adjustment() {
-    let (_repo, _idx, config) = build_index_for_files(&[
-        ("a.rs", "   match_here\n"),
-    ]);
+    let (_repo, _idx, config) = build_index_for_files(&[("a.rs", "   match_here\n")]);
     let index = Index::open(config.clone()).unwrap();
 
     // 1. flat renderer --column
@@ -1679,21 +1704,29 @@ fn trim_column_adjustment() {
     let mut buf_vim = Vec::new();
     super::render::render_vimgrep_to(&results, &args_vim, &mut buf_vim).unwrap();
     let output_vim = String::from_utf8(buf_vim).unwrap();
-    assert!(output_vim.contains("a.rs:1:1:match_here\n"), "vimgrep output was: {:?}", output_vim);
+    assert!(
+        output_vim.contains("a.rs:1:1:match_here\n"),
+        "vimgrep output was: {:?}",
+        output_vim
+    );
 
     drop(index);
 }
 
 #[test]
 fn max_columns_placeholders() {
-    let (_repo, _idx, config) = build_index_for_files(&[
-        ("a.rs", "long_line_with_match_and_another_match\n"),
-    ]);
+    let (_repo, _idx, config) =
+        build_index_for_files(&[("a.rs", "long_line_with_match_and_another_match\n")]);
     let index = Index::open(config.clone()).unwrap();
-    let results = super::search::run_search(&index, &config, &super::search::SearchArgs {
-        pattern: "match".to_string(),
-        ..super::search::SearchArgs::default()
-    }).unwrap();
+    let results = super::search::run_search(
+        &index,
+        &config,
+        &super::search::SearchArgs {
+            pattern: "match".to_string(),
+            ..super::search::SearchArgs::default()
+        },
+    )
+    .unwrap();
 
     // 1. Column mode (should show count of matches on line)
     let args_col = super::search::SearchArgs {
@@ -1726,14 +1759,17 @@ fn max_columns_placeholders() {
 
 #[test]
 fn null_byte_path_separators() {
-    let (_repo, _idx, config) = build_index_for_files(&[
-        ("a.rs", "match\n"),
-    ]);
+    let (_repo, _idx, config) = build_index_for_files(&[("a.rs", "match\n")]);
     let index = Index::open(config.clone()).unwrap();
-    let results = super::search::run_search(&index, &config, &super::search::SearchArgs {
-        pattern: "match".to_string(),
-        ..super::search::SearchArgs::default()
-    }).unwrap();
+    let results = super::search::run_search(
+        &index,
+        &config,
+        &super::search::SearchArgs {
+            pattern: "match".to_string(),
+            ..super::search::SearchArgs::default()
+        },
+    )
+    .unwrap();
 
     // 1. Flat renderer with --null
     let args_flat = super::search::SearchArgs {
@@ -1743,7 +1779,7 @@ fn null_byte_path_separators() {
     };
     let mut buf_flat = Vec::new();
     super::render::render_flat_to(&results, &args_flat, &mut buf_flat).unwrap();
-    let expected_flat = b"a.rs\01:match\n";
+    let expected_flat = b"a.rs\x001:match\n";
     assert_eq!(buf_flat, expected_flat);
 
     // 2. Flat --column with --null
@@ -1755,7 +1791,7 @@ fn null_byte_path_separators() {
     };
     let mut buf_col = Vec::new();
     super::render::render_flat_to(&results, &args_col, &mut buf_col).unwrap();
-    let expected_col = b"a.rs\01:1:match\n";
+    let expected_col = b"a.rs\x001:1:match\n";
     assert_eq!(buf_col, expected_col);
 
     // 3. Vimgrep with --null
@@ -1767,7 +1803,7 @@ fn null_byte_path_separators() {
     };
     let mut buf_vim = Vec::new();
     super::render::render_vimgrep_to(&results, &args_vim, &mut buf_vim).unwrap();
-    let expected_vim = b"a.rs\01:1:match\n";
+    let expected_vim = b"a.rs\x001:1:match\n";
     assert_eq!(buf_vim, expected_vim);
 
     drop(index);

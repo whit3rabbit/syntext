@@ -231,56 +231,64 @@ pub(in crate::cli) fn read_matched_file(
     }
 }
 
+/// Encoding-normalized bytes of a matched file for rendering, preferring the
+/// content verified during search (`files`). Reusing those bytes keeps output
+/// consistent with the match snapshot when a file churns between search and
+/// render, and skips a redundant disk read + re-normalize. Falls back to the
+/// hardened disk read for paths absent from the map (symbol/refs searches carry
+/// no content map; also a defensive fallback). Returns `None` when the file is
+/// both absent from the map and unreadable.
+pub(in crate::cli) fn matched_file_bytes<'a>(
+    files: &'a std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
+    config: &Config,
+    canonical_root: &Path,
+    rel_path: &Path,
+    quiet: bool,
+) -> Option<std::borrow::Cow<'a, [u8]>> {
+    if let Some(mf) = files.get(rel_path) {
+        return Some(std::borrow::Cow::Borrowed(mf.normalized.as_ref()));
+    }
+    read_matched_file(config, canonical_root, rel_path, quiet).map(|raw| {
+        std::borrow::Cow::Owned(crate::index::normalize_encoding(&raw, config.verbose).into_owned())
+    })
+}
+
 pub(in crate::cli) fn read_repo_file_bytes(
     config: &Config,
     canonical_root: &Path,
     rel_path: &Path,
 ) -> io::Result<Vec<u8>> {
-    let abs_path = config.repo_root.join(rel_path);
-
-    // Verify containment under the repo root, matching the hardened open path
-    // in search/resolver.rs::resolve_doc. Without this, a symlink swap between
-    // index time and render time could redirect the second read outside the
-    // repo (information disclosure). `canonical_root` is computed once per
-    // render call by the caller. A NotFound (file vanished between match and
-    // render) surfaces as a normal io::Error to the caller.
-    let canonical = abs_path.canonicalize()?;
-    if !canonical.starts_with(canonical_root) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "resolved path escapes repo root",
-        ));
-    }
-
-    // Mitigate TOCTOU: stat before open, then verify fd matches the same inode.
-    // NOTE: This prevents final-component symlink swaps. A residual microsecond-scale
-    // TOCTOU window exists where an intermediate directory component could be swapped
-    // between canonicalize and metadata/open, which is acceptable in our single-user
-    // workstation threat model.
-    #[cfg(any(unix, windows))]
-    let pre_open_meta = std::fs::metadata(&canonical)?;
-    let file = crate::index::open_readonly_nofollow(&canonical)?;
-    #[cfg(any(unix, windows))]
-    if !crate::index::verify_fd_matches_stat(&file, &pre_open_meta) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "path changed during verification",
-        ));
-    }
+    // Open guaranteed-beneath the repo root: one openat2(RESOLVE_BENEATH) on
+    // Linux (atomic containment; closes the intermediate-component TOCTOU window
+    // a canonicalize-then-open sequence leaves open), else the portable
+    // canonicalize + stat + O_NOFOLLOW + fd-verify path. Without containment a
+    // symlink swap between index time and render time could redirect this second
+    // read outside the repo (information disclosure). On open failure, preserve
+    // the NotFound-vs-other distinction `read_matched_file` uses to choose
+    // silent-skip vs warn, probing existence only on the rare failure path.
+    let file = match crate::index::io_util::open_beneath_fresh(canonical_root, rel_path) {
+        Some(f) => f,
+        None => {
+            let abs_path = config.repo_root.join(rel_path);
+            return Err(if !abs_path.exists() {
+                io::Error::new(io::ErrorKind::NotFound, "matched file no longer exists")
+            } else {
+                io::Error::other("matched file could not be securely opened")
+            });
+        }
+    };
 
     // Bound the read at config.max_file_size (+1 sentinel) so a file that grew
     // to gigabytes between index time and render time cannot trigger an
     // unbounded read_to_end allocation. saturating_add guards against
     // max_file_size == u64::MAX (would otherwise wrap to 0 and read nothing).
-    // ErrorKind::Other (not FileTooLarge, which needs Rust 1.83) keeps the
-    // documented <1.74 MSRV; callers distinguish "grew" from "vanished" via
-    // read_matched_file rather than by error kind.
+    // The "grew" error is `other`, so read_matched_file warns rather than
+    // silently dropping it (only NotFound is silent).
     let mut reader = file.take(config.max_file_size.saturating_add(1));
     let mut raw_content = Vec::new();
     reader.read_to_end(&mut raw_content)?;
     if raw_content.len() as u64 > config.max_file_size {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "file grew beyond max_file_size since index time",
         ));
     }
@@ -322,6 +330,10 @@ pub(in crate::cli) fn compile_output_regex(args: &SearchArgs) -> io::Result<rege
     regex::bytes::RegexBuilder::new(pattern)
         .case_insensitive(args.ignore_case)
         .multi_line(true)
+        // Match the verifier's CRLF mode (see search/mod.rs) so submatch
+        // extraction agrees with the match decision: a `-x` match on a final
+        // line "parse\r" must yield the "parse" submatch, not an empty one.
+        .crlf(true)
         .size_limit(REGEX_SIZE_LIMIT)
         .dfa_size_limit(REGEX_SIZE_LIMIT)
         .build()

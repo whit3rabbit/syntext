@@ -26,10 +26,10 @@ use clap::Parser;
 
 pub use args::{Cli, ManageCommand};
 use bench::cmd_bench_search;
-use init::{cmd_agent, cmd_init};
 use config::resolve_config;
 #[cfg(test)]
 use config::{clamp_max_file_size, overlaps_sensitive_prefix, MAX_FILE_SIZE_CEILING};
+use init::{cmd_agent, cmd_init};
 use manage::{cmd_index, cmd_status, cmd_type_list, cmd_update, cmd_verify};
 use scope::cmd_files;
 use search::{cmd_search, SearchArgs};
@@ -189,6 +189,11 @@ pub fn run() -> i32 {
                     ig.display()
                 );
             }
+            if !cli.colors.is_empty() {
+                eprintln!(
+                    "st: --colors is not implemented; default match/path/line colors are used"
+                );
+            }
 
             // --smart-case: case-insensitive if the pattern has no uppercase
             // LITERAL characters.
@@ -214,10 +219,8 @@ pub fn run() -> i32 {
             // `--color=never` still wins, so `--pretty --color=never` is plain.
             let heading = cli.heading || cli.pretty;
             let line_number = cli.line_number > 0 || cli.pretty;
-            let color = render::resolve_color(
-                render::ColorWhen::parse(cli.color.as_deref()),
-                cli.pretty,
-            );
+            let color =
+                render::resolve_color(render::ColorWhen::parse(cli.color.as_deref()), cli.pretty);
 
             let ctx = cli.context.unwrap_or(0);
             let search_args = SearchArgs {
@@ -278,7 +281,6 @@ pub fn run() -> i32 {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests;

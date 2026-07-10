@@ -971,11 +971,10 @@ fn update_from_git_classifies_dangling_symlink_as_change_not_delete() {
     drop(index);
 }
 
-/// Bug 10 regression: a *bounded* `update_from_git` (the search hot path) must
-/// never do a synchronous full rebuild when the overlay would exceed its cap.
-/// It returns `OverlayFull` (so the caller searches stale and spawns the async
-/// catch-up) instead of blocking the latency budget on a `build_index`. The
-/// *unbounded* call (`st update`) still rebuilds inline.
+/// A *bounded* `update_from_git` (the search hot path) must never do a synchronous
+/// full rebuild when the overlay exceeds its cap. It returns `OverlayFull` to spawn
+/// an async catch-up instead of blocking search latency. The *unbounded* call
+/// (`st update`) still rebuilds inline.
 #[test]
 fn bounded_update_returns_overlay_full_without_inline_rebuild() {
     use crate::index::freshness::{UpdateLimits, UpdateOutcome};
@@ -1000,7 +999,7 @@ fn bounded_update_returns_overlay_full_without_inline_rebuild() {
 
     // Enough untracked files that the overlay would exceed 50% of the base
     // (build also indexes the repo's own tracked files), tripping OverlayFull.
-    let n_new = (base_docs as usize) + 4;
+    let n_new = base_docs + 4;
     for i in 0..n_new {
         std::fs::write(
             repo.path().join(format!("added_{i:04}.rs")),

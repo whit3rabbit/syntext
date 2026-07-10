@@ -1,0 +1,6 @@
+# Build with the latest stable toolchain, matching CI (dtolnay/rust-toolchain@stable).
+# The crate's MSRV floor is Cargo.toml `rust-version`; this only pins the
+# toolchain used to build/test/lint locally so it tracks the same channel as CI.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

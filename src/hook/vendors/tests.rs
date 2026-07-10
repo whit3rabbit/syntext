@@ -268,7 +268,12 @@ fn githooks_install_appends_to_existing_file_and_creates_new_one() {
         use std::os::unix::fs::PermissionsExt;
         for path in [&existing_path, &created_path] {
             let mode = fs::metadata(path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o111, 0o111, "{} should be executable", path.display());
+            assert_eq!(
+                mode & 0o111,
+                0o111,
+                "{} should be executable",
+                path.display()
+            );
         }
     }
 

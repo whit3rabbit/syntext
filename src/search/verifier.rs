@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use memchr::{memchr, memrchr, memchr_iter, memmem};
+use memchr::{memchr, memchr_iter, memmem, memrchr};
 use regex::bytes::Regex;
 
 use crate::index::is_binary;
@@ -75,7 +75,8 @@ pub fn verify_literal(
 
         // 3. Count newlines between last_newline_counted_up_to and line_start
         if line_start > last_newline_counted_up_to {
-            let newline_count = memchr_iter(b'\n', &content[last_newline_counted_up_to..line_start]).count();
+            let newline_count =
+                memchr_iter(b'\n', &content[last_newline_counted_up_to..line_start]).count();
             current_line_num += newline_count as u32;
             last_newline_counted_up_to = line_start;
         }
@@ -90,7 +91,11 @@ pub fn verify_literal(
             },
             byte_offset: match_start as u64,
             submatch_start: match_start - line_start,
-            submatch_end: (match_start + pattern.len()) - line_start,
+            // Clamp to line_content_end: a pattern ending in '\r' can match at
+            // end-of-line where the '\r' was trimmed from line_content, so the
+            // raw `match_start + pattern.len()` would run one byte past
+            // line_content and panic a `line_content[..submatch_end]` slice.
+            submatch_end: (match_start + pattern.len()).min(line_content_end) - line_start,
         });
 
         last_line_start = line_start;
@@ -161,7 +166,8 @@ pub fn verify_regex(
 
         // 3. Count newlines between last_newline_counted_up_to and line_start
         if line_start > last_newline_counted_up_to {
-            let newline_count = memchr_iter(b'\n', &content[last_newline_counted_up_to..line_start]).count();
+            let newline_count =
+                memchr_iter(b'\n', &content[last_newline_counted_up_to..line_start]).count();
             current_line_num += newline_count as u32;
             last_newline_counted_up_to = line_start;
         }
@@ -191,7 +197,12 @@ mod tests {
 
     #[test]
     fn literal_reports_match_start_offset() {
-        let matches = verify_literal("needle", Path::new("file.txt"), b"prefix needle suffix\n", false);
+        let matches = verify_literal(
+            "needle",
+            Path::new("file.txt"),
+            b"prefix needle suffix\n",
+            false,
+        );
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].byte_offset, 7);
         assert_eq!(matches[0].submatch_start, 7);
@@ -209,8 +220,32 @@ mod tests {
     }
 
     #[test]
+    fn literal_pattern_ending_in_cr_clamps_submatch_end() {
+        // Pattern ends in '\r' and matches right before the '\n'. The '\r' is
+        // trimmed from line_content, so submatch_end must clamp to
+        // line_content.len() instead of running one byte past (which would
+        // panic a `line_content[..submatch_end]` slice for library consumers).
+        let matches = verify_literal("abc\r", Path::new("f"), b"abc\r\n", false);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_content, b"abc");
+        assert!(
+            matches[0].submatch_end <= matches[0].line_content.len(),
+            "submatch_end {} must not exceed line_content len {}",
+            matches[0].submatch_end,
+            matches[0].line_content.len()
+        );
+        // The clamped span is still sliceable without panicking.
+        let _ = &matches[0].line_content[matches[0].submatch_start..matches[0].submatch_end];
+    }
+
+    #[test]
     fn crlf_offsets_include_line_break_bytes_before_match() {
-        let matches = verify_literal("needle", Path::new("file.txt"), b"one\r\ntwo needle\r\n", false);
+        let matches = verify_literal(
+            "needle",
+            Path::new("file.txt"),
+            b"one\r\ntwo needle\r\n",
+            false,
+        );
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line_number, 2);
         assert_eq!(matches[0].byte_offset, 9);
@@ -219,8 +254,8 @@ mod tests {
 
     #[test]
     fn literal_many_matches_across_and_clustered_on_lines() {
-        // Guards the watermark-bounded line-start scan (#9): correct line numbers
-        // and offsets when matches span many lines and cluster late in the file.
+        // Ensure correct line numbers and offsets when matches span many lines
+        // and cluster late in the file, verifying the line-start scan behavior.
         // Build 500 leading no-match lines, then a run of match lines.
         let mut content = Vec::new();
         for _ in 0..500 {

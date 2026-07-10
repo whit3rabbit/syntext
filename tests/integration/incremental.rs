@@ -940,8 +940,7 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
     }
 
     let search_with_cap = || {
-        st()
-            .arg("--repo-root")
+        st().arg("--repo-root")
             .arg(repo.path())
             .arg("--index-dir")
             .arg(index_dir.path())
@@ -971,8 +970,7 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
     // --quiet` catch-up. Poll with the default (unrestricted) config until
     // the content lands or a generous timeout elapses.
     let poll_search = |pattern: &str| {
-        st()
-            .arg("--repo-root")
+        st().arg("--repo-root")
             .arg(repo.path())
             .arg("--index-dir")
             .arg(index_dir.path())
@@ -1008,13 +1006,12 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
 }
 
 // ---------------------------------------------------------------------------
-// Bug 11: durable delta-segment updates on committed changes.
+// Durable delta-segment updates on committed changes.
 //
-// The core proof is CROSS-PROCESS durability: a HEAD move applied via
-// `rebuild_if_stale` must survive dropping the `Index` and reopening a fresh
-// one (the in-memory overlay does not survive a reopen, so anything visible
-// after reopen came off disk). These tests also guard the duplicate-match
-// regression that the persistent delete-set exists to prevent.
+// Verifies CROSS-PROCESS durability: a HEAD move applied via `rebuild_if_stale`
+// must survive dropping and reopening the `Index` (since the in-memory overlay
+// is empty on reopen). This also tests that the persistent delete-set prevents
+// duplicate matches from modified files.
 // ---------------------------------------------------------------------------
 
 /// A git repo + built index, with the paths needed to reopen a fresh `Index`.
@@ -1048,7 +1045,9 @@ impl DeltaFixture {
     fn reopen(self) -> (tempfile::TempDir, tempfile::TempDir, Index) {
         let config = self.config();
         let DeltaFixture {
-            repo, index_dir, index,
+            repo,
+            index_dir,
+            index,
         } = self;
         drop(index);
         let reopened = Index::open(config).expect("reopen");
@@ -1086,7 +1085,11 @@ fn delta_setup() -> DeltaFixture {
         ..Config::default()
     };
     let index = Index::build(config).expect("build");
-    DeltaFixture { repo, index_dir, index }
+    DeltaFixture {
+        repo,
+        index_dir,
+        index,
+    }
 }
 
 /// A committed MODIFY is durable across processes, old content is gone, and the
@@ -1106,8 +1109,15 @@ fn committed_modify_visible_cross_process() {
     assert!(stats.is_some(), "HEAD moved, so an update must have run");
 
     let (_repo, _index_dir, index) = fx.reopen();
-    assert_eq!(search(&index, "new_beta_marker").len(), 1, "new content found once");
-    assert!(search(&index, "old_alpha_marker").is_empty(), "old content gone");
+    assert_eq!(
+        search(&index, "new_beta_marker").len(),
+        1,
+        "new content found once"
+    );
+    assert!(
+        search(&index, "old_alpha_marker").is_empty(),
+        "old content gone"
+    );
     // shared_token is in the live file exactly once; the stale base doc must be
     // hidden by the persistent delete-set or it would match a second time.
     assert_eq!(
@@ -1132,8 +1142,16 @@ fn committed_add_visible_cross_process() {
 
     fx.index.rebuild_if_stale().expect("rebuild_if_stale");
     let (_repo, _index_dir, index) = fx.reopen();
-    assert_eq!(search(&index, "brand_new_marker").len(), 1, "added file found");
-    assert_eq!(search(&index, "old_alpha_marker").len(), 1, "original still found");
+    assert_eq!(
+        search(&index, "brand_new_marker").len(),
+        1,
+        "added file found"
+    );
+    assert_eq!(
+        search(&index, "old_alpha_marker").len(),
+        1,
+        "original still found"
+    );
     drop(index);
 }
 
@@ -1156,7 +1174,11 @@ fn committed_delete_gone_cross_process() {
         search(&index, "old_alpha_marker").is_empty(),
         "deleted file's content must be gone across processes"
     );
-    assert_eq!(search(&index, "keep_marker").len(), 1, "kept file still found");
+    assert_eq!(
+        search(&index, "keep_marker").len(),
+        1,
+        "kept file still found"
+    );
     drop(index);
 }
 
@@ -1201,7 +1223,7 @@ fn corrupt_deletes_idx_fails_closed() {
 /// sidecar), not a full rebuild (which would collapse back to one segment).
 #[test]
 fn delta_appends_segment_not_full_rebuild() {
-    use syntext::index::manifest::Manifest;
+    use syntext::__internal::Manifest;
     let fx = delta_setup();
     let before = Manifest::load(fx.index_dir.path()).unwrap();
     assert_eq!(before.segments.len(), 1, "one file -> one base segment");
@@ -1227,7 +1249,7 @@ fn delta_appends_segment_not_full_rebuild() {
 /// drops superseded docs and clears the delete-set sidecar.
 #[test]
 fn many_deltas_trigger_compaction_reset() {
-    use syntext::index::manifest::Manifest;
+    use syntext::__internal::Manifest;
     let fx = delta_setup();
     let cap = fx.config().max_segments; // default 10
 
@@ -1251,12 +1273,108 @@ fn many_deltas_trigger_compaction_reset() {
     // Latest content is correct and de-duplicated after compaction.
     let (_repo, _index_dir, index) = fx.reopen();
     let last = cap + 2;
-    assert_eq!(search(&index, &format!("gen_marker_{last}")).len(), 1, "latest found once");
-    assert!(search(&index, "gen_marker_0").is_empty(), "earliest superseded content gone");
+    assert_eq!(
+        search(&index, &format!("gen_marker_{last}")).len(),
+        1,
+        "latest found once"
+    );
+    assert!(
+        search(&index, "gen_marker_0").is_empty(),
+        "earliest superseded content gone"
+    );
     assert_eq!(
         search(&index, "shared_token").len(),
         1,
         "exactly one live doc for the repeatedly-modified file"
+    );
+    drop(index);
+}
+
+fn search_with_opts(index: &Index, pattern: &str, opts: SearchOptions) -> Vec<(String, u32)> {
+    index
+        .search(pattern, &opts)
+        .unwrap()
+        .into_iter()
+        .map(|m| (m.path.to_string_lossy().into_owned(), m.line_number))
+        .collect()
+}
+
+/// Regression test: paths.idx mismatch after delta flush doesn't cause silent false negatives.
+#[test]
+fn test_paths_idx_mismatch_cross_process() {
+    let fx = delta_setup();
+    // Add a new file src/helper.rs
+    fs::write(
+        fx.repo.path().join("src/helper.rs"),
+        "fn helper_function() {}\n",
+    )
+    .unwrap();
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-m", "add helper", "--no-gpg-sign"]);
+
+    let stats = fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+    assert!(stats.is_some(), "HEAD moved, update should run");
+
+    // Reopen index (this loads paths.idx from disk)
+    let (_repo, _index_dir, index) = fx.reopen();
+
+    // Verify search with a type filter still finds the helper file!
+    let mut opts = SearchOptions::default();
+    opts.file_type = Some("rs".to_string());
+    let results = search_with_opts(&index, "helper_function", opts);
+    assert_eq!(
+        results.len(),
+        1,
+        "helper_function must be found with type filter"
+    );
+    drop(index);
+}
+
+/// Regression test: gapped overlay doc_ids don't corrupt delta segment positional doc table.
+#[test]
+fn test_gapped_overlay_doc_ids_cross_process() {
+    let fx = delta_setup();
+
+    // 1. First commit_batch: modify src/main.rs (creates overlay doc id)
+    fs::write(
+        fx.repo.path().join("src/main.rs"),
+        "fn modified_once() { let x = 1; }\n",
+    )
+    .unwrap();
+    fx.index
+        .notify_change(&fx.repo.path().join("src/main.rs"))
+        .unwrap();
+    fx.index.commit_batch().unwrap();
+
+    // 2. Second commit_batch: modify src/main.rs again (creating gap in overlay doc ids)
+    fs::write(
+        fx.repo.path().join("src/main.rs"),
+        "fn modified_twice() { let x = 2; }\n",
+    )
+    .unwrap();
+    fx.index
+        .notify_change(&fx.repo.path().join("src/main.rs"))
+        .unwrap();
+    // This second commit_batch will evict the previous overlay doc id and assign a new one, leaving a gap!
+    fx.index.commit_batch().unwrap();
+
+    // Now commit to git and run rebuild_if_stale to trigger delta flush of this gapped overlay!
+    fx.git(&["commit", "-am", "twice", "--no-gpg-sign"]);
+    let stats = fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+    assert!(stats.is_some(), "HEAD moved, update should run");
+
+    // Reopen index
+    let (_repo, _index_dir, index) = fx.reopen();
+
+    // Search for the twice modified content and verify it matches exactly once
+    assert_eq!(
+        search(&index, "modified_twice").len(),
+        1,
+        "should find modified_twice"
+    );
+    assert!(
+        search(&index, "modified_once").is_empty(),
+        "old modification is gone"
     );
     drop(index);
 }

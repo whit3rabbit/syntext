@@ -10,8 +10,7 @@ use crate::Config;
 
 use super::{
     compile_output_regex, group_matches_by_path, json_data, json_elapsed, json_line_message,
-    json_stats, json_submatches, read_matched_file, repo_canonical_root,
-    write_json_line,
+    json_stats, json_submatches, matched_file_bytes, repo_canonical_root, write_json_line,
 };
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
@@ -57,6 +56,7 @@ pub(in crate::cli) fn render_json(
     index: &Index,
     config: &Config,
     matches: &[crate::SearchMatch],
+    files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
     args: &SearchArgs,
 ) -> io::Result<()> {
     let total_start = Instant::now();
@@ -78,11 +78,18 @@ pub(in crate::cli) fn render_json(
 
     for (path, match_lines) in &by_file {
         let file_start = Instant::now();
-        let Some(raw_content) = read_matched_file(config, &canonical_root, path, args.quiet) else {
+        let Some(file_content) =
+            matched_file_bytes(files, config, &canonical_root, path, args.quiet)
+        else {
             continue;
         };
-        total_bytes_searched += raw_content.len();
-        let file_content = crate::index::normalize_encoding(&raw_content, config.verbose);
+        // Raw (pre-normalize) length for bytes_searched; falls back to the
+        // normalized length when the file came from the disk-read path.
+        let raw_len = files
+            .get(path)
+            .map(|mf| mf.raw_len as usize)
+            .unwrap_or(file_content.len());
+        total_bytes_searched += raw_len;
         let mut file_lines: Vec<(usize, usize, Vec<u8>)> = Vec::new();
         for_each_line(file_content.as_ref(), |line_num, line_start, line| {
             file_lines.push((line_num as usize, line_start, line.to_vec()))
@@ -142,7 +149,7 @@ pub(in crate::cli) fn render_json(
                     file_start.elapsed(),
                     1,
                     1,
-                    raw_content.len(),
+                    file_content.len(),
                     file_bytes_printed,
                     file_matched_lines,
                     file_total_matches

@@ -7,6 +7,32 @@ use crate::index::Index;
 use crate::query::literal_grams;
 use crate::Config;
 
+// Test-only ergonomics: let a `SearchOutcome` be used directly as its match
+// slice (`&outcome`, `.len()`, `.iter()`) and be iterated. Kept out of the
+// prod module so `search/mod.rs` stays lean; nothing outside tests needs them.
+impl std::ops::Deref for SearchOutcome {
+    type Target = Vec<SearchMatch>;
+    fn deref(&self) -> &Self::Target {
+        &self.matches
+    }
+}
+
+impl IntoIterator for SearchOutcome {
+    type Item = SearchMatch;
+    type IntoIter = std::vec::IntoIter<SearchMatch>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.matches.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a SearchOutcome {
+    type Item = &'a SearchMatch;
+    type IntoIter = std::slice::Iter<'a, SearchMatch>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.matches.iter()
+    }
+}
+
 #[test]
 fn fallback_path_filter_uses_same_glob_semantics() {
     let opts = SearchOptions {
@@ -17,6 +43,7 @@ fn fallback_path_filter_uses_same_glob_semantics() {
         case_insensitive: false,
         verify_pattern: None,
         skip_line_content: false,
+        deterministic: false,
         #[cfg(any(test, feature = "oracle"))]
         force_full_scan: false,
     };

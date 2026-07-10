@@ -6,9 +6,9 @@
 
 use tempfile::TempDir;
 
+use syntext::__internal::regex_decompose::decompose;
+use syntext::__internal::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
 use syntext::index::Index;
-use syntext::query::regex_decompose::decompose;
-use syntext::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
 use syntext::Config;
 
 // ---------------------------------------------------------------------------
@@ -307,6 +307,36 @@ fn route_case_insensitive_optional_only_literal_is_full_scan() {
     );
 }
 
+/// A regex escaped-backslash-then-`n` (`\\n`, i.e. a literal backslash followed
+/// by the letter n) is NOT a newline and must route, not error. This is what a
+/// fixed string like `C:\new` becomes after `regex::escape`, and what the review
+/// case `foo\\nbar` is. The old `contains("\\n")` string guard wrongly rejected
+/// both because their source text contains the two bytes `\` `n`. Only a raw
+/// newline byte, or a genuine `\n` regex newline escape, may be rejected.
+#[test]
+fn route_backslash_n_is_not_a_newline() {
+    // `foo\\nbar` as a regex: literal `\`, then `nbar`. No newline -> Ok.
+    assert!(
+        route_query(r"foo\\nbar", false).is_ok(),
+        "escaped-backslash-then-n must not be treated as a literal newline"
+    );
+    // The escaped form of the fixed string `C:\new` (`C:\\new`) -> Ok.
+    assert!(
+        route_query(r"C:\\new", false).is_ok(),
+        "regex-escaped `C:\\new` must route, not error"
+    );
+    // A raw newline byte is still rejected.
+    assert!(
+        route_query("a\nb", false).is_err(),
+        "a raw newline byte must still be rejected"
+    );
+    // A genuine `\n` regex newline escape is still rejected (HIR check).
+    assert!(
+        route_query(r"a\nb", false).is_err(),
+        "a `\\n` regex newline escape must still be rejected"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // EH-0001: literal-substring false negatives from synthetic token-edge grams
 // ---------------------------------------------------------------------------
@@ -382,7 +412,7 @@ fn eh0001_literal_parse_insertion_order_independent() {
 /// (unanchored) and produce zero required grams.
 #[test]
 fn eh0001_build_covering_classifies_parse_as_optional_only() {
-    let covering = syntext::tokenizer::build_covering(b"parse").unwrap();
+    let covering = syntext::__internal::build_covering(b"parse").unwrap();
     assert!(
         covering.required.is_empty(),
         "parse has no interior boundaries: all grams must be optional"
@@ -398,7 +428,7 @@ fn eh0001_build_covering_classifies_parse_as_optional_only() {
 /// because each has a synthetic boundary (start or end of query).
 #[test]
 fn eh0001_build_covering_classifies_parse_query_as_optional() {
-    let covering = syntext::tokenizer::build_covering(b"parse_query").unwrap();
+    let covering = syntext::__internal::build_covering(b"parse_query").unwrap();
     assert!(
         covering.required.is_empty(),
         "parse_query has synthetic edges; grams must be optional"
@@ -414,7 +444,7 @@ fn eh0001_build_covering_classifies_parse_query_as_optional() {
 /// because both are anchored by forced boundaries (start, end, and middle are all '_').
 #[test]
 fn eh0001_build_covering_classifies_anchored_parse_query_as_required() {
-    let covering = syntext::tokenizer::build_covering(b"_parse_query_").unwrap();
+    let covering = syntext::__internal::build_covering(b"_parse_query_").unwrap();
     assert_eq!(
         covering.required.len(),
         2,
@@ -447,10 +477,8 @@ fn eh0001_case_insensitive_literal_finds_subtoken_reparse() {
         ..Config::default()
     };
     let index = Index::build(config).unwrap();
-    let opts = syntext::SearchOptions {
-        case_insensitive: true,
-        ..Default::default()
-    };
+    let mut opts = syntext::SearchOptions::default();
+    opts.case_insensitive = true;
     let results = index.search("parse", &opts).unwrap();
 
     let mut paths: Vec<String> = results
@@ -470,9 +498,24 @@ fn eh0001_case_insensitive_literal_finds_subtoken_reparse() {
 
 #[test]
 fn route_query_rejects_newlines() {
-    assert_eq!(route_query("foo\nbar", false).unwrap_err(), "literal \\n not allowed".to_string());
-    assert_eq!(route_query("foo\\nbar", false).unwrap_err(), "literal \\n not allowed".to_string());
-    assert_eq!(route_query("foo\\x0abar", false).unwrap_err(), "literal \\n not allowed".to_string());
-    assert_eq!(route_query("foo\\u000abar", false).unwrap_err(), "literal \\n not allowed".to_string());
-    assert_eq!(route_query("foo\\u{a}bar", false).unwrap_err(), "literal \\n not allowed".to_string());
+    assert_eq!(
+        route_query("foo\nbar", false).unwrap_err(),
+        "literal \\n not allowed".to_string()
+    );
+    assert_eq!(
+        route_query("foo\\nbar", false).unwrap_err(),
+        "literal \\n not allowed".to_string()
+    );
+    assert_eq!(
+        route_query("foo\\x0abar", false).unwrap_err(),
+        "literal \\n not allowed".to_string()
+    );
+    assert_eq!(
+        route_query("foo\\u000abar", false).unwrap_err(),
+        "literal \\n not allowed".to_string()
+    );
+    assert_eq!(
+        route_query("foo\\u{a}bar", false).unwrap_err(),
+        "literal \\n not allowed".to_string()
+    );
 }

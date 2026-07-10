@@ -13,7 +13,10 @@ use crate::Config;
 use super::color::{write_highlighted, write_styled, write_styled_num};
 use super::{compile_output_regex, match_spans, write_formatted_line, ColorStyles, SearchArgs};
 
-pub(in crate::cli) fn render_flat(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
+pub(in crate::cli) fn render_flat(
+    matches: &[crate::SearchMatch],
+    args: &SearchArgs,
+) -> io::Result<()> {
     render_flat_to(matches, args, &mut io::stdout().lock())
 }
 
@@ -30,7 +33,7 @@ pub(in crate::cli) fn render_flat_to(
     let styles = ColorStyles::default();
     for m in matches {
         let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
-        let line = apply_output_modifiers(&raw, &m.line_content, args);
+        let line = apply_output_modifiers(&raw, &m.line_content, re.as_ref(), args);
         if args.byte_offset {
             // rg prints the 0-based byte offset of the line start, not the
             // match. submatch_start is the match column within the line.
@@ -48,7 +51,9 @@ pub(in crate::cli) fn render_flat_to(
                 write_styled_num(out, args.color, styles.line, m.line_number as usize)?;
                 write!(out, ":")?;
             }
-            let col = (m.submatch_start + 1).saturating_sub(line.trimmed_bytes);
+            let col = (m.submatch_start + 1)
+                .saturating_sub(line.trimmed_bytes)
+                .max(1);
             write!(out, "{col}:")?;
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;
@@ -73,7 +78,10 @@ pub(in crate::cli) fn render_flat_to(
     Ok(())
 }
 
-pub(in crate::cli) fn render_heading(matches: &[crate::SearchMatch], args: &SearchArgs) -> io::Result<()> {
+pub(in crate::cli) fn render_heading(
+    matches: &[crate::SearchMatch],
+    args: &SearchArgs,
+) -> io::Result<()> {
     render_heading_to(matches, args, &mut io::stdout().lock())
 }
 
@@ -82,7 +90,10 @@ pub(in crate::cli) fn render_heading_to(
     args: &SearchArgs,
     out: &mut dyn Write,
 ) -> io::Result<()> {
-    let re = if args.replace.is_some() || args.color {
+    // --column also needs the regex to count matches for the long-line
+    // placeholder ([Omitted long line with N matches]); include it so the count
+    // is exact instead of falling back to 1.
+    let re = if args.replace.is_some() || args.color || args.column {
         Some(compile_output_regex(args)?)
     } else {
         None
@@ -103,7 +114,7 @@ pub(in crate::cli) fn render_heading_to(
             current_path = Some(m.path.clone());
         }
         let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
-        let line = apply_output_modifiers(&raw, &m.line_content, args);
+        let line = apply_output_modifiers(&raw, &m.line_content, re.as_ref(), args);
         let spans = match_spans(re.as_ref(), &line.content);
         if args.byte_offset {
             // rg prints the 0-based byte offset of the line start, not the
@@ -115,7 +126,9 @@ pub(in crate::cli) fn render_heading_to(
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;
         } else if args.column {
-            let col = (m.submatch_start + 1).saturating_sub(line.trimmed_bytes);
+            let col = (m.submatch_start + 1)
+                .saturating_sub(line.trimmed_bytes)
+                .max(1);
             write_styled_num(out, args.color, styles.line, m.line_number as usize)?;
             write!(out, ":{col}:")?;
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
@@ -152,7 +165,7 @@ pub(in crate::cli) fn render_vimgrep_to(
             args.replace.as_deref(),
             &m.line_content,
         );
-        let line = apply_output_modifiers(&raw, &m.line_content, args);
+        let line = apply_output_modifiers(&raw, &m.line_content, Some(&re), args);
         let spans = match_spans(Some(&re), &line.content);
         for hit in re.find_iter(&m.line_content) {
             if hit.start() == hit.end() {
@@ -162,7 +175,7 @@ pub(in crate::cli) fn render_vimgrep_to(
             // --replace is a display transform, so with -r the printed content is
             // replaced but the column still points at the pre-replacement match.
             let col = hit.start() + 1; // 1-based
-            let col = col.saturating_sub(line.trimmed_bytes);
+            let col = col.saturating_sub(line.trimmed_bytes).max(1);
             if args.byte_offset {
                 // Line-start offset, matching render_flat_to/render_heading_to
                 // and rg (byte-offset without -o is the line start, not the
@@ -203,13 +216,17 @@ struct OutputLine<'a> {
     is_omitted: bool,
 }
 
-fn get_omitted_placeholder(line_content: &[u8], args: &SearchArgs) -> Vec<u8> {
+fn get_omitted_placeholder(
+    line_content: &[u8],
+    count_re: Option<&regex::bytes::Regex>,
+    args: &SearchArgs,
+) -> Vec<u8> {
     if args.column || args.vimgrep {
-        let count = if let Ok(re) = compile_output_regex(args) {
-            re.find_iter(line_content).count()
-        } else {
-            1
-        };
+        // Reuse the caller's already-compiled output regex; recompiling here
+        // would rebuild the regex for every long line in this per-line hot path.
+        // count_re is None only when no output regex was needed, in which case
+        // fall back to 1 (matching the prior on-compile-failure behavior).
+        let count = count_re.map_or(1, |re| re.find_iter(line_content).count());
         format!("[Omitted long line with {count} matches]").into_bytes()
     } else {
         b"[Omitted long matching line]".to_vec()
@@ -220,6 +237,7 @@ fn get_omitted_placeholder(line_content: &[u8], args: &SearchArgs) -> Vec<u8> {
 fn apply_output_modifiers<'a>(
     line: &'a [u8],
     line_content_for_placeholder: &[u8],
+    count_re: Option<&regex::bytes::Regex>,
     args: &SearchArgs,
 ) -> OutputLine<'a> {
     let mut trimmed_bytes = 0;
@@ -235,7 +253,7 @@ fn apply_output_modifiers<'a>(
     };
     if let Some(max) = args.max_columns {
         if trimmed.len() > max {
-            let placeholder = get_omitted_placeholder(line_content_for_placeholder, args);
+            let placeholder = get_omitted_placeholder(line_content_for_placeholder, count_re, args);
             return OutputLine {
                 content: std::borrow::Cow::Owned(placeholder),
                 trimmed_bytes: 0,

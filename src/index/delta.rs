@@ -21,15 +21,11 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use super::{delta_apply, helpers, Index};
-use crate::git_util::is_safe_git_path;
+use crate::git_util::{is_hex_commit, is_safe_git_path};
 use crate::index::freshness::FreshnessError;
 use crate::index::manifest::Manifest;
 use crate::path_util::{normalize_to_forward_slashes, path_from_bytes};
 use crate::IndexError;
-
-fn is_hex_commit(s: &str) -> bool {
-    (40..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
 
 /// Upper bound on files in a single delta apply. A larger commit (bulk import,
 /// vendored tree) falls back to a full rebuild, which is cheaper than appending
@@ -204,7 +200,13 @@ pub(super) fn is_ancestor(git: &Path, repo_root: &Path, base: &str, head: &str) 
     Command::new(git)
         .arg("-C")
         .arg(repo_root)
-        .args(["merge-base", "--is-ancestor", "--end-of-options", base, head])
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            base,
+            head,
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

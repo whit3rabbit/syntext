@@ -20,7 +20,7 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 - **Never put full file paths in documents.** Always use relative paths when referencing internal files. When referencing external repositories, use links to the original Git repository and lock it to a specific version or tag when possible.
 - **Windows Compatibility & Testing**:
     - **Explicitly `drop(index)`**: Always call `drop(index)` at the end of tests that use `Index::open` or `Index::build`. Windows prevents deleting temporary directories or renaming files if file handles (locks) or memory maps are still active.
-    - **Avoid `io::Error::other`**: Use `io::Error::new(io::ErrorKind::Other, ...)` for compatibility with Rust versions < 1.74.
+    - **MSRV is 1.89** (`Cargo.toml` `rust-version`; toolchain pinned to `stable` via `rust-toolchain.toml`, matching CI). `io::Error::other(...)` is fine (stable since 1.87) and is the form clippy prefers; the old `io::Error::new(io::ErrorKind::Other, ...)` still works but triggers `clippy::io_other_error`.
     - **Directory `sync_all`**: Do not call `sync_all()` on directory handles on Windows; it is not supported and returns `Access is denied`. Use `#[cfg(not(windows))]`.
     - **Git Binary**: Use platform-aware resolution (searching for `git.exe` on Windows) in `helpers.rs`.
     - **Forward-slash path normalization**: All paths stored in segments must use forward slashes (`/`). Use `path_util::normalize_to_forward_slashes()` at ingestion boundaries. Byte-level matching in `path/filter.rs` and `path/mod.rs` splits on `b'/'` only.
@@ -98,17 +98,9 @@ See `install.sh` at the repo root for platform detection logic (macOS: Homebrew 
 
 ## Releasing
 
-When cutting a release, bump the version in all of these together:
+For the complete release checklist and instructions on how releases are automated and verified, see [docs/RELEASE.md](docs/RELEASE.md).
 
-- `Cargo.toml` `version` (and regenerate `Cargo.lock` with any cargo command).
-- `install.sh` `SYNTEXT_VERSION` default (and the comment on the line above it).
-  Update it once the tag's release artifacts are published, since the installer
-  downloads `v${SYNTEXT_VERSION}` binaries; pointing it at a version with no
-  published binaries breaks `curl | sh` installs.
-- `CHANGELOG.md`: move `[Unreleased]` to the new `[x.y.z] - YYYY-MM-DD` section.
-
-Then commit (`release: vX.Y.Z`), tag `vX.Y.Z`, and push both the branch and the
-tag. The tag triggers `release.yml` to build and publish binaries.
+When cutting a release, make sure to follow the checklist in `docs/RELEASE.md`. The release workflow builds binaries and publishes them to crates.io and GitHub Releases, automatically extracting release notes from `CHANGELOG.md`.
 
 ## Commands
 

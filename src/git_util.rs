@@ -6,6 +6,13 @@
 
 use std::path::{Path, PathBuf};
 
+/// True if `s` is a plausible git object id: 40 (SHA-1) to 64 (SHA-256) hex
+/// digits. Shared by the delta path (`index::delta`) and `st status`
+/// (`cli::manage`) so both validate manifest `base_commit` identically.
+pub(crate) fn is_hex_commit(s: &str) -> bool {
+    (40..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Walk PATH for a file named `filename`, canonicalizing the first match.
 /// Returns `None` if no matching file is found.
 /// Skips directories (e.g. a dir named "git" on PATH) via `is_file()`.

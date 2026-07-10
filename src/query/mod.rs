@@ -88,18 +88,12 @@ pub enum QueryRoute {
 fn hir_contains_literal_newline(hir: &regex_syntax::hir::Hir) -> bool {
     use regex_syntax::hir::HirKind;
     match hir.kind() {
-        HirKind::Literal(lit) => {
-            lit.0.contains(&b'\n')
-        }
+        HirKind::Literal(lit) => lit.0.contains(&b'\n'),
         HirKind::Concat(subs) | HirKind::Alternation(subs) => {
             subs.iter().any(hir_contains_literal_newline)
         }
-        HirKind::Repetition(rep) => {
-            hir_contains_literal_newline(&rep.sub)
-        }
-        HirKind::Capture(cap) => {
-            hir_contains_literal_newline(&cap.sub)
-        }
+        HirKind::Repetition(rep) => hir_contains_literal_newline(&rep.sub),
+        HirKind::Capture(cap) => hir_contains_literal_newline(&cap.sub),
         _ => false,
     }
 }
@@ -114,7 +108,12 @@ fn hir_contains_literal_newline(hir: &regex_syntax::hir::Hir) -> bool {
 /// path (see `Index::search_symbols`), so `sym:`/`def:`/`ref:` are ordinary
 /// searchable text.
 pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, String> {
-    if pattern.contains('\n') || pattern.contains("\\n") {
+    // Only a raw newline byte is rejected here. A literal can't smuggle one in
+    // (`is_literal` rejects `\`), and a genuine `\n` escape in a regex is caught
+    // precisely by `hir_contains_literal_newline` on the parsed HIR below. The
+    // old `contains("\\n")` substring test wrongly rejected backslash-then-`n`
+    // sequences that never denote a newline (e.g. `-F 'C:\new'`, regex `foo\\nbar`).
+    if pattern.contains('\n') {
         return Err("literal \\n not allowed".to_string());
     }
 

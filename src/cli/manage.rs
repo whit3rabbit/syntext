@@ -79,29 +79,44 @@ pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
     let git = crate::git_util::resolve_git_binary();
     let mut base_stale_msg = None;
     let behind = if let Some(ref base) = s.base_commit {
-        let canonical_root = std::fs::canonicalize(&config.repo_root).unwrap_or_else(|_| config.repo_root.clone());
-        if let Ok(output) = std::process::Command::new(&git)
-            .arg("-C")
-            .arg(&canonical_root)
-            .args(["rev-list", "--count", &format!("{base}..HEAD")])
-            .output()
-        {
-            if output.status.success() {
-                let n = String::from_utf8_lossy(&output.stdout).trim().parse::<usize>().unwrap_or(0);
-                if n > 0 {
-                    base_stale_msg = Some(format!("stale base, behind HEAD by {n} commit(s)"));
+        if crate::git_util::is_hex_commit(base) {
+            let canonical_root = std::fs::canonicalize(&config.repo_root)
+                .unwrap_or_else(|_| config.repo_root.clone());
+            if let Ok(output) = std::process::Command::new(&git)
+                .arg("-C")
+                .arg(&canonical_root)
+                .args([
+                    "rev-list",
+                    "--count",
+                    "--end-of-options",
+                    &format!("{base}..HEAD"),
+                ])
+                .output()
+            {
+                if output.status.success() {
+                    let n = String::from_utf8_lossy(&output.stdout)
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap_or(0);
+                    if n > 0 {
+                        base_stale_msg = Some(format!("stale base, behind HEAD by {n} commit(s)"));
+                    }
+                    Some(n)
+                } else {
+                    // rev-list only fails when `base` is not a resolvable ref
+                    // (gc'd, shallow clone, or repo_root is no longer a git repo).
+                    // A merely non-ancestor HEAD still succeeds, so do not claim
+                    // "non-ancestor" here.
+                    base_stale_msg = Some(
+                        "stale base, base commit not found (cannot compare to HEAD)".to_string(),
+                    );
+                    None
                 }
-                Some(n)
             } else {
-                // rev-list only fails when `base` is not a resolvable ref
-                // (gc'd, shallow clone, or repo_root is no longer a git repo).
-                // A merely non-ancestor HEAD still succeeds, so do not claim
-                // "non-ancestor" here.
-                base_stale_msg =
-                    Some("stale base, base commit not found (cannot compare to HEAD)".to_string());
                 None
             }
         } else {
+            base_stale_msg = Some("stale base, invalid base commit hash in manifest".to_string());
             None
         }
     } else {
@@ -213,9 +228,15 @@ fn try_update_once(config: Config, quiet: bool) -> Result<i32, IndexError> {
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
                 let msg = if full {
-                    format!("st: rebuilt index ({} document(s), HEAD changed)", stats.total_documents)
+                    format!(
+                        "st: rebuilt index ({} document(s), HEAD changed)",
+                        stats.total_documents
+                    )
                 } else {
-                    format!("st: applied delta update ({} document(s), HEAD changed)", stats.total_documents)
+                    format!(
+                        "st: applied delta update ({} document(s), HEAD changed)",
+                        stats.total_documents
+                    )
                 };
                 if let Err(err) = writeln!(out, "{}", msg) {
                     return Ok(handle_output(err));
@@ -305,7 +326,10 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
                 attempt += 1;
                 let delay = base_delay * (1 << (attempt - 1));
                 if config.verbose && !quiet {
-                    eprintln!("st update: lock conflict, retrying in {}ms...", delay.as_millis());
+                    eprintln!(
+                        "st update: lock conflict, retrying in {}ms...",
+                        delay.as_millis()
+                    );
                 }
                 std::thread::sleep(delay);
             }

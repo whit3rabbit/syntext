@@ -210,12 +210,10 @@ fn syntext_matches(
         Some(g) => (Some(g.to_string()), None),
         None => (None, None),
     };
-    let opts = SearchOptions {
-        case_insensitive,
-        path_filter,
-        file_type,
-        ..SearchOptions::default()
-    };
+    let mut opts = SearchOptions::default();
+    opts.case_insensitive = case_insensitive;
+    opts.path_filter = path_filter;
+    opts.file_type = file_type;
     let results = index.search(pattern, &opts).expect("search failed");
     results
         .into_iter()

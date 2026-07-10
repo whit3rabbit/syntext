@@ -136,8 +136,8 @@ fn search_references_dedups_multiple_hits_per_line() {
     drop(idx);
 }
 
-/// Bug 3 regression: the symbol index must stay correct after incremental
-/// commits, not just full builds. Add + edit + delete flow through commit_batch.
+/// The symbol index must stay correct after incremental commits, not just full builds.
+/// Add, edit, and delete operations must correctly propagate through `commit_batch`.
 #[test]
 fn symbol_index_maintained_incrementally() {
     let dir = TempDir::new().unwrap();

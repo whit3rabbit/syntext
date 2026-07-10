@@ -15,6 +15,8 @@ mod resolver;
 /// Tiered verifier using literal search (memchr) and regex engines.
 pub mod verifier;
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -47,6 +49,26 @@ pub(crate) const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
 
 use verifier::{verify_literal, verify_regex};
 
+/// Verified content for a file that produced at least one match, captured
+/// exactly as the verifier saw it. Lets renderers emit the bytes that matched
+/// instead of re-reading (and possibly re-normalizing differently, or missing)
+/// a file that churned between search and render.
+#[derive(Clone)]
+pub(crate) struct MatchedFile {
+    /// Encoding-normalized bytes the verifier matched against.
+    pub normalized: Arc<[u8]>,
+    /// On-disk raw byte length (pre-normalize) for `bytes_searched`.
+    pub raw_len: u64,
+}
+
+/// Search matches plus the verified content of every file that produced one.
+/// `files` is populated only when content capture is requested; it always
+/// contains an entry for each path present in `matches`.
+pub(crate) struct SearchOutcome {
+    pub matches: Vec<SearchMatch>,
+    pub files: HashMap<PathBuf, MatchedFile>,
+}
+
 /// Run a search against the given snapshot.
 ///
 /// Called by `Index::search()`. Returns matches sorted by path, then line number.
@@ -57,6 +79,21 @@ pub fn search(
     pattern: &str,
     opts: &SearchOptions,
 ) -> Result<Vec<SearchMatch>, IndexError> {
+    Ok(search_with_content(snap, config, canonical_root, pattern, opts, false)?.matches)
+}
+
+/// Like [`search`], but also returns the verified content of matched files when
+/// `capture_content` is true. Renderers that re-read file bytes use this to stay
+/// consistent with the match snapshot. When `capture_content` is false, the
+/// returned `files` map is empty and no content is retained.
+pub(crate) fn search_with_content(
+    snap: Arc<IndexSnapshot>,
+    config: &Config,
+    canonical_root: &std::path::Path,
+    pattern: &str,
+    opts: &SearchOptions,
+    capture_content: bool,
+) -> Result<SearchOutcome, IndexError> {
     #[cfg(any(test, feature = "oracle"))]
     let route = if opts.force_full_scan {
         QueryRoute::FullScan
@@ -82,6 +119,13 @@ pub fn search(
         let re = RegexBuilder::new(verify_pattern)
             .case_insensitive(opts.case_insensitive)
             .multi_line(true)
+            // CRLF mode: `^`/`$` treat a bare `\r` (and `\r\n`) as a line
+            // terminator, matching the oracle's `rg --crlf`. Makes `-x parse`
+            // match a final line "parse\r" (`$` matches zero-width before the
+            // `\r`, so line_content stays "parse" and the span guard holds). A
+            // dangling odd byte in truncated UTF-16 decodes to U+FFFD, not `\r`
+            // (see index/encoding.rs), so it stays content and does not match.
+            .crlf(true)
             .size_limit(REGEX_SIZE_LIMIT)
             .dfa_size_limit(REGEX_SIZE_LIMIT)
             .build()
@@ -113,9 +157,7 @@ pub fn search(
             // falls back to scan instead of materializing a huge posting list.
             // Decomposed regex trees (non-literal) use the index directly.
             let selective = match query {
-                GramQuery::Grams(grams) if !grams.is_empty() => {
-                    should_use_index(grams, &snap)?
-                }
+                GramQuery::Grams(grams) if !grams.is_empty() => should_use_index(grams, &snap)?,
                 _ => true,
             };
             if !selective {
@@ -132,25 +174,9 @@ pub fn search(
         _ => all_doc_ids(&snap),
     };
 
-    // Optional selectivity diagnostics (SYNTEXT_LOG_SELECTIVITY=1).
-    if std::env::var_os("SYNTEXT_LOG_SELECTIVITY").is_some() {
-        let total = snap.all_doc_ids().len() as usize;
-        let pct = if total > 0 {
-            candidates.len() as f64 / total as f64 * 100.0
-        } else {
-            0.0
-        };
-        eprintln!(
-            "selectivity: {:.2}% ({}/{}) route={:?} pattern={:?}",
-            pct,
-            candidates.len(),
-            total,
-            route,
-            pattern
-        );
-    }
-
-    let glob_cache = snap.glob_cache.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let glob_cache = snap
+        .glob_cache
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let path_filter_bitmap = build_filter(
         &snap.path_index,
         opts.file_type.as_deref(),
@@ -169,21 +195,24 @@ pub fn search(
     // counter reaches the limit. Relaxed ordering is intentional: a few extra
     // files may be processed near the boundary, which is acceptable since the
     // final truncate enforces the hard limit.
-    let deterministic = std::env::var("SYNTEXT_DETERMINISTIC")
-        .ok()
-        .is_some_and(|v| v == "1");
+    let deterministic = opts.deterministic;
     let match_count = AtomicUsize::new(0);
-    let do_match = |&global_id: &u32| -> Option<Vec<SearchMatch>> {
+    // Repo-root anchor for the Linux openat2 fast path, opened once per search
+    // and shared read-only across the parallel candidates (None off Linux, on
+    // an openat2-less kernel, or under SYNTEXT_NO_OPENAT2).
+    let root_fd = crate::index::io_util::open_root_dirfd(canonical_root);
+    let do_match = |&global_id: &u32| -> Option<FileResult> {
         // Early-exit: skip expensive I/O once we already have enough matches.
         if let Some(limit) = opts.max_results {
             if !deterministic && match_count.load(Ordering::Relaxed) >= limit {
                 return None;
             }
         }
-        let (rel_path, content) = resolve_doc(
+        let (rel_path, content, raw_len) = resolve_doc(
             &snap,
             global_id,
             canonical_root,
+            root_fd.as_ref(),
             config.max_file_size,
             config.verbose,
         )?;
@@ -237,22 +266,71 @@ pub fn search(
                 match_count.fetch_add(file_matches.len(), Ordering::Relaxed);
             }
         }
-        Some(file_matches)
+        // Capture verified content only for files that actually matched, and
+        // only when a content renderer will consume it (an Arc::clone, no copy).
+        let file = if capture_content && !file_matches.is_empty() {
+            Some((
+                rel_path,
+                MatchedFile {
+                    normalized: Arc::clone(&content),
+                    raw_len,
+                },
+            ))
+        } else {
+            None
+        };
+        Some(FileResult {
+            file,
+            matches: file_matches,
+        })
     };
     #[cfg(feature = "rayon")]
-    let all_matches: Vec<SearchMatch> = candidates
-        .par_iter()
-        .filter_map(do_match)
-        .flatten()
-        .collect();
+    let per_file: Vec<FileResult> = if let Some(ref pool) = config.thread_pool {
+        pool.install(|| candidates.par_iter().filter_map(do_match).collect())
+    } else {
+        candidates.par_iter().filter_map(do_match).collect()
+    };
     #[cfg(not(feature = "rayon"))]
-    let all_matches: Vec<SearchMatch> = candidates.iter().filter_map(do_match).flatten().collect();
+    let per_file: Vec<FileResult> = candidates.iter().filter_map(do_match).collect();
+
+    // Content capture is the exception, not the rule: every plain `Index::search`
+    // passes `capture_content=false`. Only pay for the path->content map (and its
+    // per-file merge) when a renderer will consume it; otherwise flatten the
+    // matches straight through as the pre-capture code did.
+    let mut files: HashMap<PathBuf, MatchedFile> = HashMap::new();
+    let all_matches: Vec<SearchMatch> = if capture_content {
+        let mut acc = Vec::new();
+        for fr in per_file {
+            if let Some((path, mf)) = fr.file {
+                files.insert(path, mf);
+            }
+            acc.extend(fr.matches);
+        }
+        acc
+    } else {
+        per_file.into_iter().flat_map(|fr| fr.matches).collect()
+    };
 
     let mut matches = sort_matches(all_matches);
     if let Some(max) = opts.max_results {
         matches.truncate(max);
+        // Truncation can drop whole files; prune their captured content so we
+        // don't pin bytes for files that won't be rendered (e.g. `-m 1` over a
+        // 10k-file result set).
+        if capture_content {
+            let live: std::collections::HashSet<&Path> =
+                matches.iter().map(|m| m.path.as_path()).collect();
+            files.retain(|p, _| live.contains(p.as_path()));
+        }
     }
-    Ok(matches)
+    Ok(SearchOutcome { matches, files })
+}
+
+/// Per-candidate result: the file's verified content (when captured) plus its
+/// matches. Merged after the parallel pass into the final `SearchOutcome`.
+struct FileResult {
+    file: Option<(PathBuf, MatchedFile)>,
+    matches: Vec<SearchMatch>,
 }
 
 /// Sort matches by path (lexicographic), then by line number ascending.

@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
+use proptest::prelude::*;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
-use serde_json::Value;
 use tempfile::TempDir;
-use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Base64 Decoder (dependency-free)
@@ -17,7 +17,7 @@ pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     for (i, &c) in TABLE.iter().enumerate() {
         map[c as usize] = i as u8;
     }
-    
+
     let mut out = Vec::new();
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -29,7 +29,7 @@ pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
         if i + 4 > bytes.len() {
             return Err("truncated base64".to_string());
         }
-        let chunk = &bytes[i..i+4];
+        let chunk = &bytes[i..i + 4];
         let mut val = 0u32;
         let mut padding = 0;
         for (j, &c) in chunk.iter().enumerate().take(4) {
@@ -92,9 +92,14 @@ pub fn normalize_ndjson(stdout: &[u8]) -> Result<BTreeSet<CanonicalMatch>, Strin
         if line.is_empty() {
             continue;
         }
-        let val: Value = serde_json::from_slice(line)
-            .map_err(|e| format!("invalid JSON line: {}, err: {}", String::from_utf8_lossy(line), e))?;
-        
+        let val: Value = serde_json::from_slice(line).map_err(|e| {
+            format!(
+                "invalid JSON line: {}, err: {}",
+                String::from_utf8_lossy(line),
+                e
+            )
+        })?;
+
         if val.get("type").and_then(|v| v.as_str()) == Some("match") {
             let data = val.get("data").ok_or("match record missing data")?;
             let path_val = data.get("path").ok_or("match record missing path")?;
@@ -104,24 +109,28 @@ pub fn normalize_ndjson(stdout: &[u8]) -> Result<BTreeSet<CanonicalMatch>, Strin
             if path_normalized.starts_with("./") {
                 path_normalized = path_normalized[2..].to_string();
             }
-            
-            let line_num = data.get("line_number")
-                .and_then(|v| v.as_u64())
-                .ok_or("match record missing or invalid line_number")? as usize;
+
+            let line_num =
+                data.get("line_number")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("match record missing or invalid line_number")? as usize;
 
             // Line text is intentionally NOT captured for Tier A/B comparison
             // (see the CanonicalMatch doc): st and rg render non-UTF-8 lines
             // differently even when they agree on the match.
-            let submatches_arr = data.get("submatches")
+            let submatches_arr = data
+                .get("submatches")
                 .and_then(|v| v.as_array())
                 .ok_or("match record missing or invalid submatches")?;
-                
+
             let mut submatches = Vec::new();
             for sub in submatches_arr {
-                let start = sub.get("start")
-                    .and_then(|v| v.as_u64())
-                    .ok_or("submatch missing or invalid start")? as usize;
-                let end = sub.get("end")
+                let start =
+                    sub.get("start")
+                        .and_then(|v| v.as_u64())
+                        .ok_or("submatch missing or invalid start")? as usize;
+                let end = sub
+                    .get("end")
                     .and_then(|v| v.as_u64())
                     .ok_or("submatch missing or invalid end")? as usize;
                 let m_val = sub.get("match").ok_or("submatch missing match")?;
@@ -133,7 +142,7 @@ pub fn normalize_ndjson(stdout: &[u8]) -> Result<BTreeSet<CanonicalMatch>, Strin
                 });
             }
             submatches.sort();
-            
+
             matches.insert(CanonicalMatch {
                 path: path_normalized,
                 line_number: line_num,
@@ -264,9 +273,9 @@ fn generate_file_content() -> impl Strategy<Value = Vec<u8>> {
         Just(b")".to_vec()),
         Just(b";".to_vec()),
     ];
-    
-    let text_strategy = prop::collection::vec((word_strategy, sep_strategy), 5..30)
-        .prop_map(|pairs| {
+
+    let text_strategy =
+        prop::collection::vec((word_strategy, sep_strategy), 5..30).prop_map(|pairs| {
             let mut buf = Vec::new();
             for (w, s) in pairs {
                 buf.extend(w);
@@ -274,7 +283,7 @@ fn generate_file_content() -> impl Strategy<Value = Vec<u8>> {
             }
             buf
         });
-        
+
     prop_oneof![
         text_strategy.clone(),
         Just(Vec::new()),
@@ -336,17 +345,38 @@ pub fn generate_corpus() -> impl Strategy<Value = Vec<(String, Vec<u8>)>> {
 
 pub fn generate_query(corpus: &[(String, Vec<u8>)]) -> impl Strategy<Value = String> {
     let mut candidates = Vec::new();
-    
+
     for (_, content) in corpus {
         if !content.is_empty() {
             let s = String::from_utf8_lossy(content);
             let chars: Vec<char> = s.chars().collect();
             if chars.len() >= 5 {
                 for i in 0..(chars.len() - 5).min(10) {
-                    let sub: String = chars[i..i+5].iter().collect();
-                    let cleaned: String = sub.chars().filter(|&c| {
-                        !matches!(c, '.' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '^' | '$' | '\\' | '\r' | '\n' | '\0')
-                    }).collect();
+                    let sub: String = chars[i..i + 5].iter().collect();
+                    let cleaned: String = sub
+                        .chars()
+                        .filter(|&c| {
+                            !matches!(
+                                c,
+                                '.' | '*'
+                                    | '+'
+                                    | '?'
+                                    | '['
+                                    | ']'
+                                    | '{'
+                                    | '}'
+                                    | '('
+                                    | ')'
+                                    | '|'
+                                    | '^'
+                                    | '$'
+                                    | '\\'
+                                    | '\r'
+                                    | '\n'
+                                    | '\0'
+                            )
+                        })
+                        .collect();
                     if !cleaned.trim().is_empty() {
                         candidates.push(cleaned);
                     }
@@ -354,11 +384,11 @@ pub fn generate_query(corpus: &[(String, Vec<u8>)]) -> impl Strategy<Value = Str
             }
         }
     }
-    
+
     if candidates.is_empty() {
         candidates.push("parse".to_string());
     }
-    
+
     let candidates_len = candidates.len();
     let candidates_clone = candidates.clone();
     let index_strategy = 0..candidates_len;
@@ -434,10 +464,7 @@ pub fn generate_flags() -> impl Strategy<Value = Vec<&'static str>> {
         1 => prop::sample::select(output_pool).prop_map(Some),
     ];
 
-    let other_strat = prop::collection::vec(
-        prop::sample::select(pool),
-        0..=2,
-    );
+    let other_strat = prop::collection::vec(prop::sample::select(pool), 0..=2);
 
     (output_strat, other_strat).prop_map(|(output_flag, mut other_flags)| {
         // Remove -w if -x is already present and vice versa
@@ -515,7 +542,11 @@ pub fn compare_rendered_output(
 ) -> Result<(), String> {
     let normalize_line = |line: &str| -> String {
         // Strip leading "./" from paths
-        let line = if line.starts_with("./") { &line[2..] } else { line };
+        let line = if line.starts_with("./") {
+            &line[2..]
+        } else {
+            line
+        };
         // Strip trailing \r
         let line = line.trim_end_matches('\r');
         match tier {
@@ -555,8 +586,16 @@ pub fn compare_rendered_output(
              Lines only in st:\n{}\n\
              Lines only in rg:\n{}",
             tier,
-            only_st.iter().map(|s| format!("  {s}")).collect::<Vec<_>>().join("\n"),
-            only_rg.iter().map(|s| format!("  {s}")).collect::<Vec<_>>().join("\n"),
+            only_st
+                .iter()
+                .map(|s| format!("  {s}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            only_rg
+                .iter()
+                .map(|s| format!("  {s}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
         ));
     }
     Ok(())
@@ -587,26 +626,42 @@ pub fn run_differential_with_tier_c_raw(
 
     run_cmd(temp.path(), "git", &["init"])?;
     run_cmd(temp.path(), "git", &["config", "user.name", "oracle"])?;
-    run_cmd(temp.path(), "git", &["config", "user.email", "oracle@example.com"])?;
+    run_cmd(
+        temp.path(),
+        "git",
+        &["config", "user.email", "oracle@example.com"],
+    )?;
 
     // .gitignore must be committed so both st (git-walk) and rg (ignore logic) respect it.
     std::fs::write(temp.path().join(".gitignore"), b".syntext/\n.git/\n")
         .map_err(|e| format!("failed to write gitignore: {}", e))?;
 
     run_cmd(temp.path(), "git", &["add", "."])?;
-    run_cmd(temp.path(), "git", &["commit", "-m", "initial", "--no-gpg-sign"])?;
+    run_cmd(
+        temp.path(),
+        "git",
+        &["commit", "-m", "initial", "--no-gpg-sign"],
+    )?;
 
     let st_bin = env!("CARGO_BIN_EXE_st");
     let index_dir = temp.path().join(".syntext");
     run_cmd(
         temp.path(),
         st_bin,
-        &["--repo-root", temp.path().to_str().unwrap(), "--index-dir", index_dir.to_str().unwrap(), "index"],
+        &[
+            "--repo-root",
+            temp.path().to_str().unwrap(),
+            "--index-dir",
+            index_dir.to_str().unwrap(),
+            "index",
+        ],
     )?;
 
     let mut st_args = vec![
-        "--repo-root", temp.path().to_str().unwrap(),
-        "--index-dir", index_dir.to_str().unwrap(),
+        "--repo-root",
+        temp.path().to_str().unwrap(),
+        "--index-dir",
+        index_dir.to_str().unwrap(),
     ];
     // Add output format flags from caller; default to --json unless a Tier C flag is present
     let tier = TierC::detect(flags);
@@ -623,10 +678,7 @@ pub fn run_differential_with_tier_c_raw(
         .output()
         .map_err(|e| format!("failed to run st: {}", e))?;
 
-    let mut rg_args = vec![
-        "--hidden",
-        "--crlf",
-    ];
+    let mut rg_args = vec!["--hidden", "--crlf"];
     if tier.is_none() {
         rg_args.push("--json");
     }
@@ -647,16 +699,30 @@ pub fn run_differential_with_tier_c_raw(
     let st_code = st_output.status.code().unwrap_or(-1);
     let rg_code = rg_output.status.code().unwrap_or(-1);
 
-    let st_norm = if st_code == 0 { 0 } else if st_code == 1 { 1 } else { 2 };
-    let rg_norm = if rg_code == 0 { 0 } else if rg_code == 1 { 1 } else { 2 };
+    let st_norm = if st_code == 0 {
+        0
+    } else if st_code == 1 {
+        1
+    } else {
+        2
+    };
+    let rg_norm = if rg_code == 0 {
+        0
+    } else if rg_code == 1 {
+        1
+    } else {
+        2
+    };
 
     if st_norm != rg_norm {
         return Err(format!(
             "Exit code mismatch (normalised): st={} (raw={}), rg={} (raw={}).\n\
              st stderr: {}\n\
              rg stderr: {}",
-            st_norm, st_code,
-            rg_norm, rg_code,
+            st_norm,
+            st_code,
+            rg_norm,
+            rg_code,
             String::from_utf8_lossy(&st_output.stderr),
             String::from_utf8_lossy(&rg_output.stderr),
         ));
@@ -670,10 +736,20 @@ pub fn run_differential_with_tier_c_raw(
     // Tier A + B via NDJSON normalizer
     let has_invert_match = flags.iter().any(|&f| f == "-v" || f == "--invert-match");
 
-    let st_matches = normalize_ndjson(&st_output.stdout)
-        .map_err(|e| format!("st NDJSON parse error: {}, stdout: {}", e, String::from_utf8_lossy(&st_output.stdout)))?;
-    let rg_matches = normalize_ndjson(&rg_output.stdout)
-        .map_err(|e| format!("rg NDJSON parse error: {}, stdout: {}", e, String::from_utf8_lossy(&rg_output.stdout)))?;
+    let st_matches = normalize_ndjson(&st_output.stdout).map_err(|e| {
+        format!(
+            "st NDJSON parse error: {}, stdout: {}",
+            e,
+            String::from_utf8_lossy(&st_output.stdout)
+        )
+    })?;
+    let rg_matches = normalize_ndjson(&rg_output.stdout).map_err(|e| {
+        format!(
+            "rg NDJSON parse error: {}, stdout: {}",
+            e,
+            String::from_utf8_lossy(&rg_output.stdout)
+        )
+    })?;
 
     for m in &rg_matches {
         if !st_matches.contains(m) {
@@ -717,7 +793,7 @@ pub fn run_differential_with_tier_c(
         eprintln!("ORIGINAL TEST FAILURE DETECTED: {}", e);
         eprintln!("Shrinking failure...");
         let (min_corpus, min_query, min_flags) = shrink_differential(corpus, query, flags);
-        
+
         let min_flags_refs: Vec<&str> = min_flags.iter().map(|s| s.as_str()).collect();
         let final_err = run_differential_with_tier_c_raw(&min_corpus, &min_query, &min_flags_refs)
             .err()
@@ -748,7 +824,7 @@ pub fn run_differential_with_tier_c(
              ================================================================================",
             corpus_str, min_query, min_flags, final_err
         );
-        
+
         return Err(formatted_repro);
     }
     Ok(())
@@ -828,7 +904,7 @@ pub fn shrink_differential(
             while offset + chunk_size <= current_content.len() {
                 let mut test_content = current_content.clone();
                 test_content.drain(offset..offset + chunk_size);
-                
+
                 let mut test_corpus = min_corpus.clone();
                 test_corpus[file_idx] = (path.clone(), test_content.clone());
 
@@ -866,17 +942,17 @@ pub fn save_regression_fixture(
     query: &str,
     flags: &[String],
 ) -> Result<(), String> {
-    use std::fs;
     use std::collections::hash_map::DefaultHasher;
+    use std::fs;
     use std::hash::{Hash, Hasher};
-    use syntext::base64::encode as base64_encode;
+    use syntext::__internal::encode as base64_encode;
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let regressions_dir = std::path::Path::new(manifest_dir)
         .join("tests")
         .join("oracle")
         .join("regressions");
-    
+
     fs::create_dir_all(&regressions_dir)
         .map_err(|e| format!("failed to create regressions dir: {e}"))?;
 
@@ -948,7 +1024,11 @@ mod tests {
         let repo = TempDir::new().unwrap();
         std::fs::create_dir_all(repo.path().join("src/nested")).unwrap();
         std::fs::write(repo.path().join("src/main.rs"), b"fn old_marker() {}\n").unwrap();
-        std::fs::write(repo.path().join("src/nested/helper.rs"), b"fn helper() {}\n").unwrap();
+        std::fs::write(
+            repo.path().join("src/nested/helper.rs"),
+            b"fn helper() {}\n",
+        )
+        .unwrap();
 
         // Simulate metadata directories that must NOT be copied into the
         // snapshot: real .git internals and a co-located index dir.

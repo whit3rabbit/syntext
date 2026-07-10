@@ -95,7 +95,8 @@ impl Index {
         let mut prev_segment_end: u32 = 0;
 
         for seg_ref in &manifest.segments {
-            let mut seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty() {
+            let mut seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty()
+            {
                 // v3: split .dict + .post files. Validate both filenames.
                 for filename in [&seg_ref.dict_filename, &seg_ref.post_filename] {
                     if filename.contains('/')
@@ -293,13 +294,13 @@ impl Index {
         // or post-compaction index with no deletes, where empty is correct.
         let delete_set = match &manifest.overlay_deletes_file {
             None => RoaringBitmap::new(),
-            Some(name) => super::deletes_idx::read_deletes_idx(&config.index_dir, name).map_err(
-                |e| {
+            Some(name) => {
+                super::deletes_idx::read_deletes_idx(&config.index_dir, name).map_err(|e| {
                     IndexError::CorruptIndex(format!(
                         "delete-set sidecar {name} unreadable ({e}); run `st index` to rebuild"
                     ))
-                },
-            )?,
+                })?
+            }
         };
 
         let snapshot = Arc::new(snapshot::new_snapshot(

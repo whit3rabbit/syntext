@@ -92,7 +92,7 @@ pub(super) fn cmd_bench_search(
         };
 
         let count = match run_search(&index, &config, &args) {
-            Ok(r) => r.len(),
+            Ok(r) => r.matches.len(),
             Err(e) => {
                 eprintln!("st bench-search: {e}");
                 return 2;

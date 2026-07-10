@@ -70,6 +70,7 @@ impl std::fmt::Display for FreshnessError {
 
 /// Outcome of an `update_from_git` call on the index.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum UpdateOutcome {
     /// Successfully applied `files` changed-file notifications. `skipped` is
     /// the count of detected changes that could not be applied (path escaped

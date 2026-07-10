@@ -71,8 +71,7 @@ impl From<SegmentMeta> for SegmentRef {
 /// On-disk manifest describing the current index state.
 ///
 /// Persisted as `manifest.json` via atomic write-then-rename so readers never
-/// see a partially-written file. The `opstamp` field is reserved for
-/// ordering concurrent writers in future phases.
+/// see a partially-written file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     /// Format version; must equal `FORMAT_VERSION` (currently 1).
@@ -81,11 +80,8 @@ pub struct Manifest {
     pub base_commit: Option<String>,
     /// All active base segments; GC removes any `.seg` files not listed here.
     pub segments: Vec<SegmentRef>,
-    /// Generation counter for overlay crash recovery. Reserved for future use;
-    /// always written as 0 by the current implementation. On-disk generation
-    /// files described in research.md §12 are not yet written (deferred to a
-    /// later milestone). Do not remove: older manifest files include this field
-    /// and removing it would silently corrupt them during deserialization.
+    /// Generation counter for overlay crash recovery (reserved, currently 0).
+    /// Kept for backward compatibility with older manifest files.
     pub overlay_gen: u64,
     /// Filename of the on-disk overlay gram index, if present.
     pub overlay_file: Option<String>,
@@ -95,7 +91,7 @@ pub struct Manifest {
     pub total_files_indexed: u32,
     /// Unix timestamp (seconds) when this manifest was first created.
     pub created_at: u64,
-    /// Operation stamp for future concurrent-write ordering (currently 0).
+    /// Operation stamp for concurrent-write ordering (reserved, currently 0).
     pub opstamp: u64,
     /// Calibrated index vs. full-scan crossover fraction (0.0–1.0).
     /// `None` means this index was built without calibration; callers should

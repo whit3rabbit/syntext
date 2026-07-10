@@ -67,7 +67,8 @@ pub(super) fn flush_overlay_as_delta(
     // sets take the full-rebuild path instead of arriving here.
     let overlay_doc_count = snapshot.overlay.docs.len() as u32;
     if overlay_doc_count > 0 {
-        let mut docs: Vec<&crate::index::overlay::OverlayDoc> = snapshot.overlay.docs.iter().collect();
+        let mut docs: Vec<&crate::index::overlay::OverlayDoc> =
+            snapshot.overlay.docs.iter().collect();
         // SegmentWriter requires strictly-increasing doc_ids; overlay ids are a
         // contiguous range above the base (assigned from base_doc_id_limit), so
         // sorting yields a gap-free ascending run.
@@ -77,7 +78,12 @@ pub(super) fn flush_overlay_as_delta(
         let mut writer = SegmentWriter::with_capacity(docs.len(), 120);
         for doc in &docs {
             let content_hash = xxh64(doc.content.as_ref(), 0);
-            writer.add_document(doc.doc_id, &doc.path, content_hash, doc.content.len() as u64);
+            writer.add_document(
+                doc.doc_id,
+                &doc.path,
+                content_hash,
+                doc.content.len() as u64,
+            );
             // Re-derive distinct grams from the in-memory content (no disk
             // re-read, no TOCTOU); matches build.rs's dedup.
             let distinct: std::collections::HashSet<u64> =
@@ -102,11 +108,29 @@ pub(super) fn flush_overlay_as_delta(
         Some(name)
     };
 
-    // Refresh paths.idx from the snapshot's already-incremental path index
-    // (commit_batch removed deleted paths and added new ones), so a reopen with
-    // a matching version sees the correct path set for `--files`/path filters.
+    // Refresh paths.idx so a reopen with a matching version sees the correct
+    // path set for `--files`/path filters. The snapshot's path index came from
+    // `build_incremental`, which preserves STABLE (tombstoned, non-positional)
+    // file_ids; but the paths.idx on-disk format assumes POSITIONAL file_ids
+    // (file_id == index in the sorted path list, which is how the sidecar's
+    // extension/component bitmaps are keyed and how `read_paths_idx` reassigns
+    // ids). Persisting the stable-id index directly would round-trip to an
+    // internally inconsistent PathIndex (bitmaps referencing ids that no longer
+    // match path positions), corrupting `--files`/path-filter results after a
+    // cross-process reopen. So rebuild a positional index over the live path
+    // set (already sorted+deduped by build_incremental) before writing. This is
+    // safe because on reopen `base_doc_to_file_id` is re-derived from the loaded
+    // index by path lookup, so the writer's in-memory stable ids need not
+    // survive to disk.
+    let live_paths: Vec<std::path::PathBuf> = snapshot
+        .path_index
+        .paths
+        .iter()
+        .map(|p| p.to_path_buf())
+        .collect();
+    let positional_index = crate::path::PathIndex::build(&live_paths);
     let mut paths_idx_ok = false;
-    if let Err(e) = paths_idx::write_paths_idx(&config.index_dir, &snapshot.path_index) {
+    if let Err(e) = paths_idx::write_paths_idx(&config.index_dir, &positional_index) {
         if config.verbose {
             eprintln!("syntext: warning: could not write paths.idx cache: {e}");
         }

@@ -51,8 +51,8 @@ fn round_trip_with_docs_and_grams() {
 
 #[test]
 fn iter_docs_matches_per_doc_get_doc() {
-    // #5: the bulk single-read iter_docs() must be byte-for-byte equivalent to
-    // calling get_doc(0..doc_count) one at a time, on the pread-backed open path.
+    // The bulk single-read `iter_docs()` must be byte-for-byte equivalent to
+    // calling `get_doc()` for each document sequentially on the pread-backed open path.
     let dir = TempDir::new().unwrap();
     let mut writer = SegmentWriter::new();
     let paths = [
@@ -63,7 +63,12 @@ fn iter_docs_matches_per_doc_get_doc() {
         "x.py",
     ];
     for (i, p) in paths.iter().enumerate() {
-        writer.add_document(i as u32, Path::new(p), 0x1000 + i as u64, (i as u64 + 1) * 10);
+        writer.add_document(
+            i as u32,
+            Path::new(p),
+            0x1000 + i as u64,
+            (i as u64 + 1) * 10,
+        );
     }
     let meta = writer.write_to_dir(dir.path()).unwrap();
     let dict_path = dir.path().join(&meta.dict_filename);
@@ -76,7 +81,11 @@ fn iter_docs_matches_per_doc_get_doc() {
     for local_id in 0..seg.doc_count {
         let one = seg.get_doc(local_id);
         let many = &bulk[local_id as usize];
-        assert_eq!(one.is_some(), many.is_some(), "presence differs at {local_id}");
+        assert_eq!(
+            one.is_some(),
+            many.is_some(),
+            "presence differs at {local_id}"
+        );
         if let (Some(a), Some(b)) = (one, many) {
             assert_eq!(a.doc_id, b.doc_id);
             assert_eq!(a.path, b.path);
@@ -395,8 +404,13 @@ fn structural_open_tolerates_corrupt_postings_byte_without_panic() {
         "Full verification must reject a flipped postings byte"
     );
 
-    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Structural, DictVerify::Structural)
-            .unwrap();
+    let seg = MmapSegment::open_split(
+        &dict_path,
+        &post_path,
+        PostVerify::Structural,
+        DictVerify::Structural,
+    )
+    .unwrap();
     // Bounds-checked parsing: lookups may return None or a wrong-but-safe
     // posting list; the call itself must not panic.
     let _ = seg.lookup_gram(0x1111);
@@ -597,7 +611,12 @@ fn v2_posting_offset_below_postings_start_returns_none() {
 fn write_multi_entry_segment(dir: &Path) -> SegmentMeta {
     let mut writer = SegmentWriter::new();
     for i in 0..8u32 {
-        writer.add_document(i, Path::new(&format!("src/file_{i}.rs")), 0x1000 + i as u64, 50);
+        writer.add_document(
+            i,
+            Path::new(&format!("src/file_{i}.rs")),
+            0x1000 + i as u64,
+            50,
+        );
         writer.add_gram_posting(0xA000_0000_0000_0000 + i as u64, i);
     }
     writer.write_to_dir(dir).unwrap()
@@ -640,13 +659,8 @@ fn dict_verify_full_detects_flipped_byte_structural_open_tolerates() {
     // st verify (Config::verify_on_open -> DictVerify::Full at open time)
     // must reject the same file.
     assert!(
-        MmapSegment::open_split(
-            &dict_path,
-            &post_path,
-            PostVerify::Full,
-            DictVerify::Full,
-        )
-        .is_err(),
+        MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full, DictVerify::Full,)
+            .is_err(),
         "DictVerify::Full open must detect the flipped content byte"
     );
 
@@ -694,13 +708,8 @@ fn default_open_structural_tolerates_corrupt_dict_tail_but_verify_catches_it() {
     .expect("default (structural) open must tolerate a corrupt content tail byte");
 
     assert!(
-        MmapSegment::open_split(
-            &dict_path,
-            &post_path,
-            PostVerify::Full,
-            DictVerify::Full,
-        )
-        .is_err(),
+        MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full, DictVerify::Full,)
+            .is_err(),
         "DictVerify::Full must detect the corrupt tail byte"
     );
     assert!(

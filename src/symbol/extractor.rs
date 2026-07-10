@@ -268,7 +268,10 @@ pub fn heuristic_extract(content: &[u8]) -> Vec<ExtractedSymbol> {
         let name = cap[1].to_string();
         // Find line number by counting newlines before match start.
         let byte_pos = cap.get(0).map(|m| m.start()).unwrap_or(0);
-        let newlines = text[last_pos..byte_pos].bytes().filter(|&b| b == b'\n').count() as u32;
+        let newlines = text[last_pos..byte_pos]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count() as u32;
         let line = last_line + newlines;
         last_pos = byte_pos;
         last_line = line;

@@ -17,14 +17,13 @@ use crate::path_util::path_bytes;
 /// Component-based path and type index.
 ///
 /// Built once during `Index::build()` from the full sorted list of indexed paths.
-/// Queried by `filter.rs` (Phase 6) to produce a `RoaringBitmap` of candidate file_ids.
+/// Queried by `filter.rs` to produce a `RoaringBitmap` of candidate file_ids.
 #[derive(Clone)]
 pub struct PathIndex {
-    /// All indexed paths, sorted lexicographically. `file_id = position`.
+    /// All indexed paths, sorted lexicographically.
     ///
-    /// Each unique path is interned once as an `Arc<Path>` and that same
-    /// allocation is shared by `path_to_file_id`'s keys and `file_id_to_path`,
-    /// so the path string is stored once, not three times (interning, #17).
+    /// Each unique path is interned as an `Arc<Path>` and shared between
+    /// `path_to_file_id` and `file_id_to_path` to avoid duplicate string allocations.
     pub paths: Vec<Arc<Path>>,
     /// Exact path -> file_id for O(1) lookups. Keys share the interned
     /// `Arc<Path>` from `paths` (no separate copy of the path string).

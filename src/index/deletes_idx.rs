@@ -88,7 +88,10 @@ impl std::fmt::Display for SidecarError {
                 write!(f, "deletes.idx checksum does not match its contents")
             }
             SidecarError::BadFilename => {
-                write!(f, "deletes.idx filename in manifest is not a plain filename")
+                write!(
+                    f,
+                    "deletes.idx filename in manifest is not a plain filename"
+                )
             }
             SidecarError::Bitmap(e) => write!(f, "deletes.idx has a corrupt roaring bitmap: {e}"),
         }

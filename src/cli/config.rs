@@ -76,6 +76,8 @@ pub(super) fn resolve_config(cli: &Cli) -> Config {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(150),
         auto_update_async_catchup,
+        #[cfg(feature = "rayon")]
+        thread_pool: None,
     }
 }
 
@@ -129,7 +131,8 @@ pub(super) fn detect_repo_root() -> Option<PathBuf> {
 
 /// Reject `index_dir` values that overlap known-sensitive system path prefixes.
 ///
-/// `--index-dir` / `SYNTEXT_INDEX_DIR` is passed directly to
+/// `--index-dir` (or `SYNTEXT_INDEX_DIR` environment variable, which is parsed
+/// by Clap and populated into the CLI args) is passed directly to
 /// `fs::create_dir_all` + `fs::set_permissions(0o700)` in `build_index`.
 /// If the value is sourced from untrusted input (e.g., a CI artifact field)
 /// and `st index` runs as root, a value like `/etc` would `chmod 0700 /etc`,
