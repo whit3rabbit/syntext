@@ -3,6 +3,7 @@
 //! Enabled only with `--features symbols`. Build populates the DB;
 //! `search()` queries it and returns `SearchMatch` results.
 
+/// Tree-sitter symbol parsing and extraction.
 pub mod extractor;
 
 use std::path::{Path, PathBuf};
@@ -62,27 +63,28 @@ impl SymbolIndex {
         Ok(())
     }
 
-    /// Delete all symbols for the given file_ids (used before re-indexing).
+    /// Delete all symbols for the given repo-relative paths (used before
+    /// re-indexing a changed file, or to evict a deleted one).
     ///
-    /// Batches deletes in chunks of 999 to stay within SQLite's default
-    /// SQLITE_MAX_VARIABLE_NUMBER limit.
-    pub fn delete_for_files(&self, file_ids: &[u32]) -> Result<(), IndexError> {
-        if file_ids.is_empty() {
+    /// Incremental maintenance keys on `path` rather than `file_id`: `search`
+    /// only ever reads `path`/`line`/`name`, and the commit path deals in paths,
+    /// so path-keying avoids threading a deleted file's stale doc_id. Batches in
+    /// chunks of 999 to stay within SQLite's default SQLITE_MAX_VARIABLE_NUMBER.
+    pub fn delete_for_paths(&self, paths: &[&str]) -> Result<(), IndexError> {
+        if paths.is_empty() {
             return Ok(());
         }
         const SQLITE_MAX_PARAMS: usize = 999;
-        // Do not recover from a poisoned mutex: the connection may hold an open
-        // transaction or have inconsistent prepared-statement cache state, and
-        // reusing it risks silent symbol index corruption.
+        // Do not recover from a poisoned mutex (same rationale as delete_for_paths).
         let conn = self
             .conn
             .lock()
             .map_err(|_| IndexError::CorruptIndex("symbol db mutex poisoned".into()))?;
-        for chunk in file_ids.chunks(SQLITE_MAX_PARAMS) {
+        for chunk in paths.chunks(SQLITE_MAX_PARAMS) {
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!("DELETE FROM symbols WHERE file_id IN ({placeholders})");
+            let sql = format!("DELETE FROM symbols WHERE path IN ({placeholders})");
             let params: Vec<&dyn rusqlite::ToSql> =
-                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
             conn.execute(&sql, params.as_slice())
                 .map_err(|e| IndexError::CorruptIndex(format!("symbol delete: {e}")))?;
         }
@@ -95,7 +97,7 @@ impl SymbolIndex {
         if symbols.is_empty() {
             return Ok(());
         }
-        // Do not recover from a poisoned mutex (same rationale as delete_for_files).
+        // Do not recover from a poisoned mutex (same rationale as delete_for_paths).
         let mut conn = self
             .conn
             .lock()
@@ -134,6 +136,12 @@ impl SymbolIndex {
     ///
     /// Optionally filter by `kind` (e.g., "function", "struct").
     ///
+    /// # Returned `SearchMatch` semantics
+    ///
+    /// Symbol results are lookups, not content matches: `line_content` holds the
+    /// symbol NAME (not the source line) and `byte_offset`/`submatch_*` are
+    /// zeroed. See the construction site below for the full field mapping.
+    ///
     /// Security audit (SQL injection): all user-supplied values (`name_query`,
     /// `kind_filter`) are bound via `rusqlite::params!` positional placeholders
     /// (`?1`, `?2`). The only dynamic SQL is the branch selecting one of two
@@ -150,7 +158,7 @@ impl SymbolIndex {
             return Ok(Vec::new());
         }
 
-        // Do not recover from a poisoned mutex (same rationale as delete_for_files).
+        // Do not recover from a poisoned mutex (same rationale as delete_for_paths).
         let conn = self
             .conn
             .lock()
@@ -232,6 +240,17 @@ impl SymbolIndex {
                 {
                     return None;
                 }
+                // SearchMatch field semantics for symbol results (NOT a grep hit):
+                //   - line_content: the symbol NAME, not the source line.
+                //   - line_number:  1-based definition line (valid).
+                //   - byte_offset, submatch_start, submatch_end: all ZERO
+                //     (placeholder; there is no within-line match span).
+                // Renderers that consume these fields for grep-style output
+                // (`--json` submatches, `--column`, `--byte-offset`) will emit
+                // zeroed/empty fields for `sym:`/`def:`/`ref:` queries. This is
+                // intentional for v1: symbol search is a lookup, not a content
+                // match. A future version may populate line_content from disk to
+                // give renderers a real line to display.
                 Some(SearchMatch {
                     path: pb,
                     line_number: line,
@@ -349,18 +368,3 @@ mod tests {
     }
 }
 
-/// Parse a symbol search prefix (`sym:`, `def:`, `ref:`) from a pattern.
-///
-/// Returns `(name_query, kind_filter)` if the pattern has a symbol prefix, else `None`.
-pub fn parse_symbol_prefix(pattern: &str) -> Option<(String, Option<SymbolKind>)> {
-    if let Some(rest) = pattern.strip_prefix("sym:") {
-        return Some((rest.to_string(), None));
-    }
-    if let Some(rest) = pattern.strip_prefix("def:") {
-        return Some((rest.to_string(), Some(SymbolKind::Function)));
-    }
-    if let Some(rest) = pattern.strip_prefix("ref:") {
-        return Some((rest.to_string(), None));
-    }
-    None
-}

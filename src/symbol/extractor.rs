@@ -3,7 +3,18 @@
 //! Tier 1 (tree-sitter): Rust, Python, JavaScript, TypeScript, Go, Java, C, C++.
 //! Tier 3 (heuristic regex): all other languages, or when tree-sitter fails.
 
+use std::sync::OnceLock;
+
 use tree_sitter::{Language, Node, Parser};
+
+/// Maximum recursion depth for the tree-sitter AST walk.
+///
+/// `catch_unwind` does NOT catch stack overflow (it aborts the process), so an
+/// explicit depth cap is the only way to bound stack usage on adversarial or
+/// minified inputs that produce very deep parse trees. 500 is comfortably above
+/// any realistic nesting in supported languages while staying well within the
+/// default 8 MB main-thread stack on every supported platform.
+const MAX_WALK_DEPTH: usize = 500;
 
 /// The structural kind of an extracted symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,12 +125,18 @@ fn ts_extract(content: &[u8], language: Language) -> Vec<ExtractedSymbol> {
         None => return heuristic_extract(content),
     };
     let mut symbols = Vec::new();
-    walk_node(tree.root_node(), content, false, &mut symbols);
+    // Start at depth 1 so MAX_WALK_DEPTH bounds the number of nested frames.
+    walk_node(tree.root_node(), content, false, 1, &mut symbols);
     symbols
 }
 
 /// Recursively walk tree-sitter nodes, collecting definition sites.
-fn walk_node(node: Node, src: &[u8], in_impl: bool, out: &mut Vec<ExtractedSymbol>) {
+///
+/// `depth` bounds the recursion: once it exceeds [`MAX_WALK_DEPTH`] the walker
+/// stops descending, turning a potential stack-overflow crash (which
+/// `catch_unwind` cannot intercept — it aborts the process) into a silently
+/// truncated symbol list for that one pathological file.
+fn walk_node(node: Node, src: &[u8], in_impl: bool, depth: usize, out: &mut Vec<ExtractedSymbol>) {
     let kind = node.kind();
     let inside_impl = in_impl
         || kind == "impl_item"
@@ -148,10 +165,15 @@ fn walk_node(node: Node, src: &[u8], in_impl: bool, out: &mut Vec<ExtractedSymbo
         }
     }
 
+    // Stop descending past the depth cap. Symbols already collected at this
+    // level are kept; only deeper nesting is skipped for this subtree.
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
     let count = node.child_count();
     for i in 0..count {
         if let Some(child) = node.child(i as u32) {
-            walk_node(child, src, inside_impl, out);
+            walk_node(child, src, inside_impl, depth + 1, out);
         }
     }
 }
@@ -218,19 +240,26 @@ fn definition_rule(node: Node, in_impl: bool) -> Option<(SymbolKind, &'static st
 /// Tier 3: regex-based heuristic for unsupported languages.
 ///
 /// Matches common definition patterns. Results are marked `approximate: true`.
+///
+/// The regex is compiled once and cached in a `OnceLock`; without caching it
+/// would be recompiled per file, which is a measurable chunk of symbol-build
+/// time on a large polyglot repo.
 pub fn heuristic_extract(content: &[u8]) -> Vec<ExtractedSymbol> {
     let text = match std::str::from_utf8(content) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
 
-    // Pattern: optional visibility/async, definition keyword, identifier
-    let re = match regex::Regex::new(
-        r"(?m)^\s*(?:pub\s+)?(?:async\s+)?(?:def|fn|func|function|class|struct|enum|trait|interface|type)\s+([A-Za-z_]\w*)",
-    ) {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
+    // Pattern: optional visibility/async, definition keyword, identifier.
+    // The pattern is a static literal that cannot fail to compile, so
+    // get_or_init + unwrap is sound and avoids the unstable get_or_try_init.
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?m)^\s*(?:pub\s+)?(?:async\s+)?(?:def|fn|func|function|class|struct|enum|trait|interface|type)\s+([A-Za-z_]\w*)",
+        )
+        .expect("heuristic symbol regex must compile")
+    });
 
     let mut symbols = Vec::new();
     for cap in re.captures_iter(text) {
