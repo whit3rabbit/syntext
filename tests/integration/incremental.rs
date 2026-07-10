@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use syntext::index::Index;
 use syntext::{Config, IndexError, SearchOptions};
@@ -390,9 +390,11 @@ fn delete_path_with_parent_component_outside_repo_rejected() {
 // Security: file size enforcement during commit
 // ---------------------------------------------------------------------------
 
-/// Files exceeding max_file_size are rejected during commit_batch.
+/// Files exceeding max_file_size are excluded during commit_batch (not a hard
+/// error), matching how binary files are handled, so one oversized file cannot
+/// wedge the incremental pipeline.
 #[test]
-fn large_file_rejected_during_commit() {
+fn large_file_excluded_during_commit() {
     let repo = tempfile::TempDir::new().unwrap();
     let index_dir = tempfile::TempDir::new().unwrap();
 
@@ -413,11 +415,20 @@ fn large_file_rejected_during_commit() {
 
     index.notify_change(&big_path).unwrap();
     let result = commit_batch_result(&index);
-    match result {
-        Err(IndexError::FileTooLarge { .. }) => {}
-        Err(other) => panic!("expected FileTooLarge, got: {other}"),
-        Ok(()) => panic!("oversized file should fail commit"),
-    }
+    assert!(
+        result.is_ok(),
+        "oversized file must be excluded, not fail commit: {result:?}"
+    );
+
+    let snap = index.snapshot();
+    assert!(
+        !snap
+            .path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("src/big.rs")),
+        "oversized file should not appear in the path index after commit"
+    );
     drop(index);
 }
 
@@ -689,4 +700,309 @@ fn concurrent_reads_during_commit_batch() {
 
     let index = Arc::try_unwrap(index).unwrap_or_else(|_| panic!("other Arcs still alive"));
     drop(index);
+}
+
+// ---------------------------------------------------------------------------
+// Bounded auto-update: a failed/over-budget update must not lose changes
+// ---------------------------------------------------------------------------
+
+/// `update_from_git` returning `TooManyFiles` must bail out before queuing or
+/// applying anything: `pending_edits` stays at 0 and the new content stays
+/// invisible. The detected changes are not lost, though — a second call with
+/// a raised `max_files` applies the same changes and the next search finds
+/// the previously-detected content (RequeueGuard covers the OverlayFull/error
+/// case the same way; see `commit_batch_failure_requeues_pending_edits` in
+/// `src/index/tests.rs` for that half of the contract).
+#[test]
+fn too_many_files_leaves_index_stale_then_raised_limit_applies_changes() {
+    use syntext::index::freshness::{UpdateLimits, UpdateOutcome};
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+
+    fs::write(repo.path().join("a.rs"), "fn original_marker() {}\n").unwrap();
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // 3 new untracked files exceed a max_files cap of 1.
+    for i in 0..3 {
+        fs::write(
+            repo.path().join(format!("new_{i}.rs")),
+            format!("fn too_many_marker_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let low_limits = UpdateLimits {
+        max_files: Some(1),
+        budget_ms: None,
+    };
+    let outcome = index
+        .update_from_git(low_limits)
+        .expect("update_from_git must not error on a healthy git repo");
+    match outcome {
+        UpdateOutcome::TooManyFiles { files_behind, .. } => {
+            assert_eq!(files_behind, 3, "all 3 new files should be counted");
+        }
+        other => panic!("expected TooManyFiles, got {other:?}"),
+    }
+
+    // Nothing was queued: TooManyFiles bails before the notify_change loop.
+    assert_eq!(
+        index.stats().pending_edits,
+        0,
+        "TooManyFiles must bail before queuing any edit"
+    );
+    // Nothing was applied: the new content is not yet searchable.
+    assert!(
+        search(&index, "too_many_marker_0").is_empty(),
+        "new content must stay invisible while the update is over budget"
+    );
+
+    // A second call with a raised max_files applies all 3 changes: the
+    // detected files were never lost, just deferred.
+    let high_limits = UpdateLimits {
+        max_files: Some(10),
+        budget_ms: None,
+    };
+    let outcome2 = index
+        .update_from_git(high_limits)
+        .expect("update_from_git must succeed once max_files covers the change set");
+    match outcome2 {
+        UpdateOutcome::Updated { files, skipped, .. } => {
+            assert_eq!(files, 3, "all 3 previously-deferred files should apply");
+            assert_eq!(skipped, 0);
+        }
+        other => panic!("expected Updated, got {other:?}"),
+    }
+
+    // The next search finds the previously-queued (deferred) content.
+    for i in 0..3 {
+        assert!(
+            !search(&index, &format!("too_many_marker_{i}")).is_empty(),
+            "new_{i}.rs content should be searchable after the raised-limit update"
+        );
+    }
+    drop(index);
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end freshness: real `st` binary, auto-update-on-search
+// ---------------------------------------------------------------------------
+
+/// A new untracked file created after `st index` becomes searchable on the
+/// very next `st` search invocation, with no explicit `st update` and no
+/// library-level `notify_change` call in between. This exercises the actual
+/// auto-update-on-search path (git-based change detection bounded by
+/// `auto_update_budget_ms` / `auto_update_max_files`, enabled by default),
+/// end-to-end through the real CLI binary rather than the `Index` API.
+#[test]
+fn untracked_file_found_on_next_search_via_auto_update() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join("a.rs"), "fn original_marker() {}\n").unwrap();
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    let st = || std::process::Command::new(env!("CARGO_BIN_EXE_st"));
+
+    let index_output = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index_dir.path())
+        .args(["index", "--quiet"])
+        .output()
+        .expect("run st index");
+    assert_eq!(
+        index_output.status.code(),
+        Some(0),
+        "st index failed: {}",
+        String::from_utf8_lossy(&index_output.stderr)
+    );
+
+    // Create a new, untracked file after the index was built. No `st update`
+    // and no `notify_change` are issued: the next search alone must catch it.
+    fs::write(repo.path().join("b.rs"), "fn untracked_marker_xyz() {}\n").unwrap();
+
+    let search_output = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index_dir.path())
+        .args(["-q", "untracked_marker_xyz"])
+        .output()
+        .expect("run st search");
+    assert_eq!(
+        search_output.status.code(),
+        Some(0),
+        "next `st` search should find the untracked file via auto-update; stderr: {}",
+        String::from_utf8_lossy(&search_output.stderr)
+    );
+}
+
+/// A "branch switch" that changes more files than `auto_update_max_files`
+/// permits must leave the search stale with a staleness notice on stderr
+/// (rather than block the search on an unbounded git-detection pass), but the
+/// detached async catch-up (`st update --quiet`, spawned unbounded per
+/// `catchup::maybe_spawn_async_catchup`) must land in the background so a
+/// later search finds the content without ever running `st update` by hand.
+/// Only the triggering search uses the restrictive
+/// `SYNTEXT_AUTO_UPDATE_MAX_FILES=1` cap; the polling searches below use the
+/// default (unrestricted) config, matching real usage where a caller doesn't
+/// re-apply a synthetic cap on every subsequent invocation. Note this means a
+/// poll's own in-band bounded auto-update (default cap of 200, well over the
+/// 3-file delta here) could in principle also apply the change directly, not
+/// just the async child -- both paths converge on the same on-disk state, so
+/// either landing satisfies "the following search finds the content".
+/// Re-applying the restrictive cap on every poll was tried and rejected: each
+/// poll would then also report `TooManyFiles` and spawn its own competing
+/// async child, and the resulting concurrent `st update` processes never
+/// converge (verified manually while writing this test).
+#[test]
+fn branch_switch_stale_then_caught_up_via_async_update() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = tempfile::TempDir::new().unwrap();
+
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    fs::write(repo.path().join("a.rs"), "fn original_marker() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    let st = || std::process::Command::new(env!("CARGO_BIN_EXE_st"));
+
+    let index_output = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index_dir.path())
+        .args(["index", "--quiet"])
+        .output()
+        .expect("run st index");
+    assert_eq!(
+        index_output.status.code(),
+        Some(0),
+        "st index failed: {}",
+        String::from_utf8_lossy(&index_output.stderr)
+    );
+
+    // Simulate a branch switch that brings in 3 new untracked files, which
+    // exceeds a max_files cap of 1.
+    for i in 0..3 {
+        fs::write(
+            repo.path().join(format!("branch_new_{i}.rs")),
+            format!("fn branch_switch_marker_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let search_with_cap = || {
+        st()
+            .arg("--repo-root")
+            .arg(repo.path())
+            .arg("--index-dir")
+            .arg(index_dir.path())
+            .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "1")
+            .arg("branch_switch_marker_0")
+            .output()
+            .expect("run st search")
+    };
+
+    // First search: the 3-file delta exceeds the cap, so the search's own
+    // bounded auto-update reports TooManyFiles, prints the staleness notice,
+    // and the new content is not yet visible.
+    let first = search_with_cap();
+    assert_eq!(
+        first.status.code(),
+        Some(1),
+        "stale search should report no match yet (index not updated in-band); stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_stderr = String::from_utf8_lossy(&first.stderr);
+    assert!(
+        first_stderr.contains("files behind") && first_stderr.contains("searching stale"),
+        "expected a staleness notice on stderr, got: {first_stderr}"
+    );
+
+    // The staleness notice also spawned a detached, unbounded `st update
+    // --quiet` catch-up. Poll with the default (unrestricted) config until
+    // the content lands or a generous timeout elapses.
+    let poll_search = |pattern: &str| {
+        st()
+            .arg("--repo-root")
+            .arg(repo.path())
+            .arg("--index-dir")
+            .arg(index_dir.path())
+            .args(["-q", pattern])
+            .output()
+            .expect("run st search")
+    };
+    let poll_until_found = |pattern: &str, timeout: Duration| -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if poll_search(pattern).status.code() == Some(0) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+
+    assert!(
+        poll_until_found("branch_switch_marker_0", Duration::from_secs(20)),
+        "async catch-up should eventually make branch_switch_marker_0 searchable"
+    );
+
+    // All 3 files from the branch switch should now be visible, not just the
+    // one polled above: the async catch-up is unbounded (max_files: None),
+    // so it applies the whole change set in one pass.
+    for i in 1..3 {
+        assert!(
+            poll_until_found(&format!("branch_switch_marker_{i}"), Duration::from_secs(5)),
+            "branch_switch_marker_{i} should be searchable after the async catch-up lands"
+        );
+    }
 }

@@ -4,8 +4,12 @@
 //! contribute grams. This is not a bug -- it is required for correctness.
 //! Requiring "foo" grams would produce false negatives for inputs like "bazbar".
 
+use tempfile::TempDir;
+
+use syntext::index::Index;
 use syntext::query::regex_decompose::decompose;
 use syntext::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
+use syntext::Config;
 
 // ---------------------------------------------------------------------------
 // GramQuery::simplify tests
@@ -258,10 +262,10 @@ fn route_full_scan_for_dot_star() {
 fn route_case_insensitive_literal_not_literal_route() {
     // Case-insensitive search can't use memmem, but long literals should still
     // extract covering grams from the lowercased index.
-    let route = route_query("parse_query", true).unwrap();
+    let route = route_query("_parse_query_", true).unwrap();
     assert!(
         matches!(route, QueryRoute::IndexedRegex(_)),
-        "case-insensitive long literal should use IndexedRegex, got {:?}",
+        "case-insensitive anchored long literal should use IndexedRegex, got {:?}",
         route
     );
 }
@@ -285,4 +289,181 @@ fn route_case_insensitive_short_literal_falls_back_to_full_scan() {
         "short case-insensitive literal should fall back to FullScan, got {:?}",
         route
     );
+}
+
+/// Case-insensitive literal whose only grams are optional (synthetic-edge,
+/// unanchored) must route to FullScan, not IndexedRegex(Grams(...)). ANDing the
+/// optional gram silently drops documents where the match is sub-token
+/// (e.g. `-i parse` missing `reparse` when another file emits `parse` as a
+/// token-aligned gram). FullScan lets the case-insensitive regex verifier see
+/// every candidate. Regression for the case-insensitive AND-intersection bug.
+#[test]
+fn route_case_insensitive_optional_only_literal_is_full_scan() {
+    let route = route_query("parse", true).unwrap();
+    assert!(
+        matches!(route, QueryRoute::FullScan),
+        "case-insensitive 'parse' (optional-only grams) must route to FullScan, got {:?}",
+        route
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EH-0001: literal-substring false negatives from synthetic token-edge grams
+// ---------------------------------------------------------------------------
+
+/// A literal query for "parse" must find files containing sub-token matches
+/// like "reparse", not just files where "parse" is a token-aligned gram.
+#[test]
+fn eh0001_literal_parse_finds_subtoken_reparse() {
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    // File A: "reparse" — parse appears as a substring (not token-aligned).
+    std::fs::write(repo.path().join("a.rs"), "fn reparse() {}\n").unwrap();
+    // File B: "parse" — parse IS token-aligned.
+    std::fs::write(repo.path().join("b.rs"), "fn parse() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+    let results = index.search("parse", &Default::default()).unwrap();
+
+    let mut paths: Vec<String> = results
+        .iter()
+        .map(|m| m.path.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    paths.sort();
+    paths.dedup();
+
+    assert_eq!(
+        paths,
+        vec!["a.rs", "b.rs"],
+        "literal 'parse' must find both 'reparse' (a.rs) and 'parse' (b.rs)"
+    );
+    drop(index);
+}
+
+/// Insertion order must not affect results: whether reparse or parse is
+/// indexed first, both files must appear.
+#[test]
+fn eh0001_literal_parse_insertion_order_independent() {
+    for first in &["reparse", "parse"] {
+        let repo = TempDir::new().unwrap();
+        let index_dir = TempDir::new().unwrap();
+
+        // Index the files in a known order within a single build.
+        let content_a = if *first == "reparse" {
+            "fn reparse() {}\nfn parse_it() {}\n"
+        } else {
+            "fn parse() {}\nfn reparsing() {}\n"
+        };
+        std::fs::write(repo.path().join("lib.rs"), content_a).unwrap();
+
+        let config = Config {
+            index_dir: index_dir.path().to_path_buf(),
+            repo_root: repo.path().to_path_buf(),
+            ..Config::default()
+        };
+        let index = Index::build(config).unwrap();
+        let results = index.search("parse", &Default::default()).unwrap();
+
+        assert!(
+            !results.is_empty(),
+            "parse must produce results regardless of insertion order (tried {first} first)"
+        );
+        drop(index);
+    }
+}
+
+/// build_covering("parse") must classify its single gram as optional
+/// (unanchored) and produce zero required grams.
+#[test]
+fn eh0001_build_covering_classifies_parse_as_optional_only() {
+    let covering = syntext::tokenizer::build_covering(b"parse").unwrap();
+    assert!(
+        covering.required.is_empty(),
+        "parse has no interior boundaries: all grams must be optional"
+    );
+    assert_eq!(
+        covering.optional.len(),
+        1,
+        "parse must produce exactly one optional gram"
+    );
+}
+
+/// build_covering("parse_query") must classify both grams as optional
+/// because each has a synthetic boundary (start or end of query).
+#[test]
+fn eh0001_build_covering_classifies_parse_query_as_optional() {
+    let covering = syntext::tokenizer::build_covering(b"parse_query").unwrap();
+    assert!(
+        covering.required.is_empty(),
+        "parse_query has synthetic edges; grams must be optional"
+    );
+    assert_eq!(
+        covering.optional.len(),
+        2,
+        "parse_query must produce exactly two optional grams"
+    );
+}
+
+/// build_covering("_parse_query_") must classify both grams as required
+/// because both are anchored by forced boundaries (start, end, and middle are all '_').
+#[test]
+fn eh0001_build_covering_classifies_anchored_parse_query_as_required() {
+    let covering = syntext::tokenizer::build_covering(b"_parse_query_").unwrap();
+    assert_eq!(
+        covering.required.len(),
+        2,
+        "anchored parse_query must produce required grams"
+    );
+    assert!(
+        covering.optional.is_empty(),
+        "anchored parse_query should not have optional grams"
+    );
+}
+
+/// Case-insensitive counterpart of `eh0001_literal_parse_finds_subtoken_reparse`.
+/// `-i parse` must find `reparse` (sub-token) even when another file emits the
+/// `parse` gram token-aligned. Previously the case-insensitive route AND-intersected
+/// the optional `parse` gram, returned a non-empty single-doc candidate set, and
+/// silently dropped the sub-token file.
+#[test]
+fn eh0001_case_insensitive_literal_finds_subtoken_reparse() {
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    // a.rs: `parse` appears only as a sub-token of `reparse`.
+    std::fs::write(repo.path().join("a.rs"), "fn reparse() {}\n").unwrap();
+    // b.rs: `PARSE` lowercases to the token-aligned `parse` gram.
+    std::fs::write(repo.path().join("b.rs"), "fn PARSE() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+    let opts = syntext::SearchOptions {
+        case_insensitive: true,
+        ..Default::default()
+    };
+    let results = index.search("parse", &opts).unwrap();
+
+    let mut paths: Vec<String> = results
+        .iter()
+        .map(|m| m.path.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    paths.sort();
+    paths.dedup();
+
+    assert_eq!(
+        paths,
+        vec!["a.rs", "b.rs"],
+        "case-insensitive 'parse' must find both reparse (a.rs) and PARSE (b.rs)"
+    );
+    drop(index);
 }

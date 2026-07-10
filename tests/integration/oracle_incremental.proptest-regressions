@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 71af9cd2830c41b6bda49bad6f37e4607a228435f35d90075ff274a9b86fa734 # shrinks to (mutations, query) = ([CreateFile { path: "docs/notes.md", content: [102, 110, 32, 112, 97, 114, 115, 101, 95, 113, 117, 101, 114, 121, 40, 41, 32, 123, 125, 10] }, CreateFile { path: "src/lib.rs", content: [102, 110, 32, 112, 97, 114, 115, 101, 95, 113, 117, 101, 114, 121, 40, 41, 32, 123, 125, 10] }, GrowPastLimit { path: "src/main.rs" }, ModifyFile { path: "src/main.rs", content: [102, 110, 32, 112, 97, 114, 115, 101, 95, 113, 117, 101, 114, 121, 40, 41, 32, 123, 125, 10] }], "parse")

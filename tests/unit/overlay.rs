@@ -484,7 +484,7 @@ fn commit_does_not_clone_base_doc_to_file_id() {
     let index = Index::build(config).unwrap();
 
     let snap_before = index.snapshot();
-    let ptr_before = Arc::as_ptr(&snap_before.base_doc_to_file_id);
+    let ptr_before = Arc::as_ptr(&snap_before.base_doc_to_file_id());
 
     let new_file = repo.path().join("new.rs");
     std::fs::write(&new_file, b"fn beta() {}\n").unwrap();
@@ -492,7 +492,7 @@ fn commit_does_not_clone_base_doc_to_file_id() {
     index.commit_batch().unwrap();
 
     let snap_after = index.snapshot();
-    let ptr_after = Arc::as_ptr(&snap_after.base_doc_to_file_id);
+    let ptr_after = Arc::as_ptr(&snap_after.base_doc_to_file_id());
     assert_eq!(
         ptr_before, ptr_after,
         "base_doc_to_file_id Arc must be shared across commits"

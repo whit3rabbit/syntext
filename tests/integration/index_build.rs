@@ -535,6 +535,177 @@ fn utf16_le_via_incremental_commit_is_searchable() {
 }
 
 // ---------------------------------------------------------------------------
+// EH-0009: paths.idx sidecar (checksummed cache of the PathIndex)
+// ---------------------------------------------------------------------------
+
+/// After `st index` (i.e. `Index::build`), `paths.idx` must exist in the
+/// index dir so subsequent `open()` calls can skip rebuilding the PathIndex
+/// from segment doc tables.
+#[test]
+fn build_writes_paths_idx_sidecar_to_index_dir() {
+    let index_dir = TempDir::new().unwrap();
+    let config = make_config(&index_dir);
+    drop(Index::build(config).expect("build should succeed"));
+
+    assert!(
+        index_dir.path().join("paths.idx").exists(),
+        "st index must write a paths.idx sidecar to the index dir"
+    );
+}
+
+/// If `paths.idx` is corrupted (single flipped byte, failing its checksum),
+/// `Index::open` must not error or panic: it falls back to rebuilding the
+/// `PathIndex` from segment doc tables, and search results must be identical
+/// to a normal, uncorrupted open.
+#[test]
+fn open_falls_back_and_still_searches_correctly_when_paths_idx_is_corrupted() {
+    let index_dir = TempDir::new().unwrap();
+    let config = make_config(&index_dir);
+    drop(Index::build(config.clone()).expect("build should succeed"));
+
+    let paths_idx = index_dir.path().join("paths.idx");
+    assert!(paths_idx.exists(), "paths.idx must exist after build");
+
+    // Flip a single byte well inside the file (past the fixed header) so the
+    // checksum check (not just a header sanity check) is what rejects it.
+    let mut bytes = std::fs::read(&paths_idx).unwrap();
+    let flip_at = bytes.len() / 2;
+    bytes[flip_at] ^= 0xFF;
+    std::fs::write(&paths_idx, &bytes).unwrap();
+
+    // open() must succeed (not error/panic) despite the corrupted sidecar.
+    let index = Index::open(config).expect("open must fall back, not fail, on corrupt paths.idx");
+
+    let opts = SearchOptions::default();
+    let results = index
+        .search("parse_query", &opts)
+        .expect("search must succeed after fallback rebuild");
+    assert!(
+        !results.is_empty(),
+        "fixture invariant: parse_query should appear in at least one file; \
+         corrupted paths.idx fallback must still return correct results"
+    );
+
+    // file_type scoping (which reads PathIndex extension bitmaps) must also
+    // still work correctly off the rebuilt (not sidecar-loaded) PathIndex.
+    let py_opts = SearchOptions {
+        file_type: Some("py".to_string()),
+        ..SearchOptions::default()
+    };
+    let py_results = index
+        .search("parse_query", &py_opts)
+        .expect("scoped search must succeed after fallback rebuild");
+    assert!(
+        !py_results.is_empty(),
+        "fallback-rebuilt PathIndex must still support file_type scoping"
+    );
+    for m in &py_results {
+        assert!(
+            m.path.to_string_lossy().ends_with(".py"),
+            "file_type=py returned non-.py file after fallback: {}",
+            m.path.display()
+        );
+    }
+    drop(index);
+}
+
+/// Reduce a `SearchMatch` to a tuple of its comparable fields, so two result
+/// sets can be diffed with plain `assert_eq!` regardless of `SearchMatch`
+/// deriving `PartialEq`.
+fn match_key(m: &syntext::SearchMatch) -> (std::path::PathBuf, u32, Vec<u8>, u64, usize, usize) {
+    (
+        m.path.clone(),
+        m.line_number,
+        m.line_content.clone(),
+        m.byte_offset,
+        m.submatch_start,
+        m.submatch_end,
+    )
+}
+
+/// Search results must be identical whether `PathIndex` was loaded from the
+/// `paths.idx` sidecar or rebuilt from segment doc tables: the sidecar is a
+/// pure performance cache and must never change what a query returns.
+#[test]
+fn search_results_identical_from_sidecar_and_from_rebuilt_path_index() {
+    let index_dir = TempDir::new().unwrap();
+    let config = make_config(&index_dir);
+    drop(Index::build(config.clone()).expect("build should succeed"));
+
+    let paths_idx = index_dir.path().join("paths.idx");
+    assert!(paths_idx.exists(), "paths.idx must exist after build");
+
+    // Run each query twice: once against an index that loads the sidecar,
+    // once (after removing it) against an index forced to rebuild PathIndex
+    // from segment doc tables.
+    let queries: &[SearchOptions] = &[
+        SearchOptions::default(),
+        SearchOptions {
+            file_type: Some("py".to_string()),
+            ..SearchOptions::default()
+        },
+        SearchOptions {
+            path_filter: Some("*.rs".to_string()),
+            ..SearchOptions::default()
+        },
+    ];
+    let terms = ["parse_query", "def ", "fn "];
+
+    let mut from_sidecar = Vec::new();
+    {
+        let index = Index::open(config.clone()).expect("open with sidecar present must succeed");
+        for term in terms {
+            for opts in queries {
+                let mut results: Vec<_> = index
+                    .search(term, opts)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(match_key)
+                    .collect();
+                results.sort();
+                from_sidecar.push(results);
+            }
+        }
+        drop(index);
+    }
+
+    std::fs::remove_file(&paths_idx).expect("must be able to remove paths.idx to force rebuild");
+
+    let mut from_rebuild = Vec::new();
+    {
+        let index =
+            Index::open(config.clone()).expect("open with sidecar missing must fall back and succeed");
+        for term in terms {
+            for opts in queries {
+                let mut results: Vec<_> = index
+                    .search(term, opts)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(match_key)
+                    .collect();
+                results.sort();
+                from_rebuild.push(results);
+            }
+        }
+        drop(index);
+    }
+
+    assert_eq!(
+        from_sidecar, from_rebuild,
+        "search results must be identical whether PathIndex came from paths.idx \
+         or was rebuilt from segment doc tables"
+    );
+    // Fixture invariant: at least one of the query/term combinations above
+    // must actually return results, otherwise this test would trivially pass
+    // by comparing empty result sets.
+    assert!(
+        from_sidecar.iter().any(|r| !r.is_empty()),
+        "fixture invariant: at least one query must return results for this \
+         comparison to be meaningful"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // T048: v3 two-file segment format end-to-end integration
 // ---------------------------------------------------------------------------
 

@@ -138,6 +138,95 @@ fn status_json_is_machine_readable() {
     assert_eq!(value["index_dir"], index.path().display().to_string());
 }
 
+#[test]
+fn status_reports_files_behind_for_untracked_files() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/main.rs"),
+        "fn main() { println!(\"x\"); }\n",
+    );
+
+    // Initialize a git repo and commit the initial file so the index has a
+    // base commit to compare against.
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), index.path());
+
+    // Create 3 untracked files after the index was built: the index should
+    // now be 3 files behind the working tree.
+    write_text(&repo.path().join("new_a.rs"), "fn a() {}\n");
+    write_text(&repo.path().join("new_b.rs"), "fn b() {}\n");
+    write_text(&repo.path().join("new_c.rs"), "fn c() {}\n");
+
+    let json_output = run_repo(repo.path(), index.path(), &["status", "--json"]);
+    assert_eq!(json_output.status.code(), Some(0));
+    let value: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    assert_eq!(
+        value["files_behind"].as_u64(),
+        Some(3),
+        "files_behind should count the 3 new untracked files, got {value}"
+    );
+
+    let text_output = run_repo(repo.path(), index.path(), &["status"]);
+    assert_eq!(text_output.status.code(), Some(0));
+    let text = stdout_text(&text_output);
+    assert!(
+        text.lines().any(|line| line.starts_with("Behind:") && line.contains('3')),
+        "text status output should show a files-behind line with count 3, got:\n{text}"
+    );
+}
+
+#[test]
+fn status_exits_zero_and_reports_files_behind_without_git_repo() {
+    // No `git init`: st status must still succeed, reporting files_behind
+    // as unknown/0 rather than erroring the command.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/main.rs"),
+        "fn main() { println!(\"x\"); }\n",
+    );
+    build_index(repo.path(), index.path());
+
+    let json_output = run_repo(repo.path(), index.path(), &["status", "--json"]);
+    assert_eq!(
+        json_output.status.code(),
+        Some(0),
+        "status --json must exit 0 in a non-git directory"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    // A non-git directory makes every git detection command exit non-zero,
+    // which is treated as "no changes found" (0), not an error (null would
+    // only occur if the git binary itself could not be resolved at all).
+    let behind = value["files_behind"].as_u64();
+    assert!(
+        behind == Some(0) || value["files_behind"].is_null(),
+        "files_behind should be unknown/0 without a git repo, got {value}"
+    );
+
+    let text_output = run_repo(repo.path(), index.path(), &["status"]);
+    assert_eq!(
+        text_output.status.code(),
+        Some(0),
+        "status text output must exit 0 in a non-git directory"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn status_json_escapes_special_characters_in_index_dir() {
@@ -1317,6 +1406,119 @@ fn files_flag_lists_indexed_paths() {
 }
 
 #[test]
+fn files_flag_lists_freshly_created_untracked_file_without_manual_update() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+
+    fs::write(repo.path().join("a.rs"), "fn hello() {}\n").unwrap();
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    // Write a new untracked file after the index was built. No `st update`
+    // is run before the `--files` call below: the bounded auto-update in
+    // `cmd_files` (routed through `catchup::run_bounded_auto_update`, the
+    // same helper `cmd_search` uses) must pick it up via git detection.
+    fs::write(repo.path().join("b.rs"), "fn brand_new_file() {}\n").unwrap();
+
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index_dir)
+        .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        .arg("--files")
+        // Filter by extension via --glob; positionals to --files are path scope
+        // (rg semantics), not globs, so `*.rs` as a bare arg would match nothing.
+        .arg("--glob")
+        .arg("*.rs")
+        .output()
+        .expect("run st --files");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = fix_path(stdout_text(&out));
+    assert!(
+        stdout.contains("b.rs"),
+        "expected freshly created b.rs to be listed by --files without a manual `st update`, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn invert_match_reflects_freshly_created_untracked_file_without_manual_update() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+
+    fs::write(repo.path().join("a.rs"), "fn hello() {}\n").unwrap();
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    // Write a new untracked file after the index was built. No `st update`
+    // is run before the `-v` (invert-match) call below: the bounded
+    // auto-update in `render_invert_match` (routed through
+    // `catchup::run_bounded_auto_update`, the same helper `cmd_search` and
+    // `cmd_files` use) must pick it up via git detection so the scoped-path
+    // walk includes it.
+    fs::write(repo.path().join("b.rs"), "fn brand_new_file() {}\n").unwrap();
+
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index_dir)
+        .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        .arg("-v")
+        .arg("-l")
+        .arg("needle")
+        .arg("b.rs")
+        .output()
+        .expect("run st -v -l");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = fix_path(stdout_text(&out));
+    assert_eq!(
+        stdout, "b.rs\n",
+        "expected freshly created b.rs to be listed by invert-match without a manual `st update`, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
 fn type_list_prints_known_types() {
     let out = run(&["--type-list"]);
     assert_eq!(out.status.code(), Some(0));
@@ -1382,12 +1584,7 @@ fn fallback_to_ripgrep_when_index_missing() {
         .output()
         .expect("run st");
 
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stderr:\n{}",
-        stderr_text(&out)
-    );
+    assert_eq!(out.status.code(), Some(0), "stderr:\n{}", stderr_text(&out));
     assert!(
         stdout_text(&out).contains("FALLBACKNEEDLE"),
         "expected rg result on stdout:\n{}",
@@ -1419,4 +1616,818 @@ fn missing_index_without_optin_errors_with_guidance() {
     let err = stderr_text(&out);
     assert!(err.contains("no index found"), "stderr:\n{err}");
     assert!(err.contains("SYNTEXT_FALLBACK_RG"), "stderr:\n{err}");
+}
+
+#[test]
+fn auto_update_over_max_files_emits_notice_and_searches_normally() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+
+    let a_path = repo.path().join("a.rs");
+    fs::write(&a_path, "fn hello() {}\n").unwrap();
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    // Write 4 files to exceed the auto-update limit of 2.
+    for i in 0..4 {
+        fs::write(
+            repo.path().join(format!("mod_{i}.rs")),
+            format!("fn mod_{i}() {{ /* marker_{i} */ }}\n"),
+        )
+        .unwrap();
+    }
+
+    // Run st search with SYNTEXT_AUTO_UPDATE_MAX_FILES=2 and the async
+    // catch-up disabled, so this test only observes the synchronous notice
+    // (the spawn itself is covered by its own test below).
+    // Stderr should contain the exact staleness notice, and nothing about it
+    // should leak into stdout.
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index_dir)
+        .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "2")
+        .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        .arg("hello")
+        .output()
+        .expect("run st");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = stdout_text(&out);
+    let stderr = stderr_text(&out);
+    assert!(
+        stdout.contains("fn hello()"),
+        "expected stdout to contain results, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("files behind") && !stdout.contains("searching stale"),
+        "notice must not leak into stdout, got: {}",
+        stdout
+    );
+    assert!(
+        stderr.contains(
+            "st: index is ~4 files behind; searching stale (run 'st update')"
+        ),
+        "expected stderr to contain warning notice, got: {}",
+        stderr
+    );
+
+    // Now run with --quiet, warning should be suppressed and stderr should be empty.
+    let out_quiet = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index_dir)
+        .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "2")
+        .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        .arg("--quiet")
+        .arg("hello")
+        .output()
+        .expect("run st");
+
+    assert_eq!(out_quiet.status.code(), Some(0));
+    let stderr_quiet = stderr_text(&out_quiet);
+    assert!(
+        stderr_quiet.is_empty(),
+        "expected stderr to be empty under --quiet, got: {}",
+        stderr_quiet
+    );
+}
+
+/// Resolves the real `git` binary from `PATH` so the logging shim below can
+/// exec through to it and preserve real detection behavior.
+#[cfg(unix)]
+mod git_shim_support {
+    pub(super) fn resolve_real_git() -> Option<String> {
+        let path_var = std::env::var("PATH").ok()?;
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("git");
+            if candidate.is_file() {
+                return candidate.to_str().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+}
+
+/// Counts complete lines in `path`, treating a missing file as zero.
+#[cfg(unix)]
+fn count_lines(path: &Path) -> usize {
+    match fs::read_to_string(path) {
+        Ok(s) => s.lines().count(),
+        Err(_) => 0,
+    }
+}
+
+/// End-to-end proof that a stale search spawns a detached `st update --quiet`
+/// catch-up: the spawned child runs its own three git detection commands
+/// (`diff HEAD`, `diff --cached`, `ls-files --others`), which is observable
+/// as extra lines appended to a logging `git` shim's log file after the
+/// parent search has already returned. This sidesteps the separate,
+/// documented limitation that overlay/pending updates from `commit_batch`
+/// are process-local only (see `Manifest::overlay_gen`'s doc comment) --
+/// this test only proves the detached process is spawned and does real git
+/// work, not that its edits are visible to a later process.
+#[cfg(unix)]
+#[test]
+fn stale_search_spawns_async_catchup_git_child() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+
+    write_text(&repo.path().join("a.rs"), "fn hello() {}\n");
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    for i in 0..4 {
+        write_text(
+            &repo.path().join(format!("mod_{i}.rs")),
+            &format!("fn mod_{i}() {{ /* marker_{i} */ }}\n"),
+        );
+    }
+
+    let real_git = git_shim_support::resolve_real_git().unwrap_or_else(|| "git".to_string());
+    let bin_dir = tempfile::TempDir::new().unwrap();
+    let log_path = bin_dir.path().join("git_invocations.log");
+    let shim = bin_dir.path().join("git");
+    write_text(
+        &shim,
+        &format!(
+            "#!/bin/sh\necho \"$@\" >> \"{log}\"\nexec \"{real}\" \"$@\"\n",
+            log = log_path.display(),
+            real = real_git
+        ),
+    );
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let shim_path = format!("{}:{}", bin_dir.path().display(), real_path);
+
+    // Default config: auto_update_async_catchup is true, so this triggers
+    // the detached `st update --quiet` spawn once results are printed. The
+    // parent's own bounded detection contributes exactly 3 log lines.
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index_dir)
+        .env("PATH", &shim_path)
+        .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "2")
+        // The logging shim adds a `/bin/sh` fork per git call; give detection
+        // a generous budget so that overhead never trips BudgetExceeded and
+        // masks the TooManyFiles outcome this test depends on.
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
+        .arg("hello")
+        .output()
+        .expect("run st");
+    assert!(
+        stderr_text(&out).contains("files behind"),
+        "expected the initial search to report staleness, got: {}",
+        stderr_text(&out)
+    );
+
+    let parent_git_calls = count_lines(&log_path);
+    assert_eq!(
+        parent_git_calls, 3,
+        "expected exactly the parent's 3 detection calls before any catch-up runs"
+    );
+
+    // Poll the log file until the detached child's own (unlimited)
+    // `update_from_git` has logged all 3 of its git detection calls. Waiting
+    // for the full count (not just "more than before") means the child's
+    // slowest work is done by the time this function returns, so it is much
+    // less likely to still be forking git subprocesses -- and competing for
+    // process-table slots -- while the next test in this binary starts.
+    let mut saw_child_git_calls = false;
+    for _ in 0..50 {
+        if count_lines(&log_path) >= parent_git_calls + 3 {
+            saw_child_git_calls = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        saw_child_git_calls,
+        "expected the detached `st update` child to run its own git detection within 5s; log:\n{}",
+        fs::read_to_string(&log_path).unwrap_or_default()
+    );
+    // Give the child a little more time to finish `commit_batch` (no further
+    // git calls, just file I/O) and exit before this test's TempDir is
+    // dropped out from under it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+}
+
+/// `SYNTEXT_NO_ASYNC_UPDATE=1` must suppress the spawn entirely: no extra
+/// git invocations ever show up in the shim log beyond the parent's own 3,
+/// even after waiting past the window the spawn test uses to detect them.
+#[cfg(unix)]
+#[test]
+fn no_async_update_env_suppresses_the_spawn() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+
+    write_text(&repo.path().join("a.rs"), "fn hello() {}\n");
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    for i in 0..4 {
+        write_text(
+            &repo.path().join(format!("mod_{i}.rs")),
+            &format!("fn mod_{i}() {{ /* marker_{i} */ }}\n"),
+        );
+    }
+
+    let real_git = git_shim_support::resolve_real_git().unwrap_or_else(|| "git".to_string());
+    let bin_dir = tempfile::TempDir::new().unwrap();
+    let log_path = bin_dir.path().join("git_invocations.log");
+    let shim = bin_dir.path().join("git");
+    write_text(
+        &shim,
+        &format!(
+            "#!/bin/sh\necho \"$@\" >> \"{log}\"\nexec \"{real}\" \"$@\"\n",
+            log = log_path.display(),
+            real = real_git
+        ),
+    );
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let shim_path = format!("{}:{}", bin_dir.path().display(), real_path);
+
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index_dir)
+        .env("PATH", &shim_path)
+        .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "2")
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
+        .arg("hello")
+        .output()
+        .expect("run st");
+    assert!(
+        stderr_text(&out).contains("files behind"),
+        "expected the notice on the initial stale search"
+    );
+
+    let parent_git_calls = count_lines(&log_path);
+    assert_eq!(parent_git_calls, 3, "expected only the parent's 3 detection calls");
+
+    // Wait past the window the spawn test uses, then confirm no extra calls
+    // ever landed: the count must stay pinned at exactly 3.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(
+        count_lines(&log_path),
+        3,
+        "no background `st update` should have run under SYNTEXT_NO_ASYNC_UPDATE=1"
+    );
+}
+
+#[test]
+fn hook_rewritten_command_auto_updates_and_searches() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+
+    let a_path = repo.path().join("a.rs");
+    fs::write(&a_path, "fn hello() {}\n").unwrap();
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    // Now write a new unindexed/untracked file with a unique pattern.
+    let b_path = repo.path().join("b.rs");
+    fs::write(&b_path, "fn hook_unindexed_marker() {}\n").unwrap();
+
+    // Prepare hook stdin JSON
+    let hook_input = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "rg hook_unindexed_marker",
+            "description": "search"
+        },
+        "cwd": repo.path()
+    });
+
+    // Run __hook claude
+    let mut child = st()
+        .arg("__hook")
+        .arg("claude")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    use std::io::Write;
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(hook_input.to_string().as_bytes())
+        .unwrap();
+    // Close stdin so the hook's read-to-EOF sees EOF. Claude Code closes the
+    // hook's stdin after sending the JSON payload; without this the hook
+    // blocks forever on read_to_string and the test deadlocks on read_to_end.
+    drop(child.stdin.take());
+    let mut output_bytes = Vec::new();
+    child
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_to_end(&mut output_bytes)
+        .unwrap();
+    let exit_code = child.wait().unwrap().code();
+    assert_eq!(exit_code, Some(0));
+
+    let hook_output: serde_json::Value = serde_json::from_slice(&output_bytes).unwrap();
+    let rewritten_cmd = hook_output["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap();
+
+    // The rewritten command has the form: "/path/to/st hook_unindexed_marker"
+    let parts: Vec<&str> = rewritten_cmd.split_whitespace().collect();
+    assert!(!parts.is_empty());
+
+    let mut run_cmd = Command::new(parts[0]);
+    run_cmd.current_dir(repo.path());
+    for arg in &parts[1..] {
+        let clean_arg = arg.trim_matches('\'').trim_matches('"');
+        run_cmd.arg(clean_arg);
+    }
+
+    let search_output = run_cmd.output().unwrap();
+    assert_eq!(search_output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&search_output.stdout);
+    assert!(
+        stdout.contains("b.rs"),
+        "expected b.rs in results, got: {}",
+        stdout
+    );
+    assert!(stdout.contains("hook_unindexed_marker"));
+}
+
+/// Auto-update failures must be invisible to search output: `cmd_search`
+/// treats a broken git binary the same as "no changes detected" and falls
+/// back to the stale (but still correct) index. This test forces git
+/// resolution to find a bogus `git` (via a `PATH` override pointing at a
+/// script that always exits non-zero) and asserts the exit code and stdout
+/// are byte-identical to a run against a healthy git, for both a match and
+/// a no-match query. Stderr is intentionally not compared: the two runs are
+/// allowed to diverge there (see DIVERGENCES.md-style reasoning in
+/// `cmd_search`'s auto-update match arms).
+#[cfg(unix)]
+#[test]
+fn broken_git_binary_yields_identical_exit_code_and_stdout() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+
+    write_text(&repo.path().join("a.rs"), "fn broken_git_needle() {}\n");
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    // Bogus `git` that always fails to exec successfully: exercises the
+    // git-detection failure path inside `update_from_git` while the search
+    // itself must proceed unaffected.
+    let fake_bin = tempfile::TempDir::new().unwrap();
+    let fake_git = fake_bin.path().join("git");
+    write_text(&fake_git, "#!/bin/sh\nexit 1\n");
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    let broken_path = format!("{}:{}", fake_bin.path().display(), real_path);
+
+    let run_with_path = |query: &str, path: &str| {
+        st()
+            .arg("--repo-root")
+            .arg(repo.path())
+            .arg("--index-dir")
+            .arg(&index_dir)
+            .env("PATH", path)
+            .arg(query)
+            .output()
+            .expect("run st")
+    };
+
+    // Match case: healthy git vs. broken git must agree on exit code and stdout.
+    let healthy_match = run_with_path("broken_git_needle", &real_path);
+    let broken_match = run_with_path("broken_git_needle", &broken_path);
+    assert_eq!(healthy_match.status.code(), Some(0));
+    assert_eq!(broken_match.status.code(), Some(0));
+    assert_eq!(
+        healthy_match.stdout, broken_match.stdout,
+        "stdout must be byte-identical regardless of git health"
+    );
+
+    // No-match case: same invariant at exit code 1 / empty stdout.
+    let healthy_nomatch = run_with_path("no_such_needle_xyz", &real_path);
+    let broken_nomatch = run_with_path("no_such_needle_xyz", &broken_path);
+    assert_eq!(healthy_nomatch.status.code(), Some(1));
+    assert_eq!(broken_nomatch.status.code(), Some(1));
+    assert_eq!(healthy_nomatch.stdout, broken_nomatch.stdout);
+    assert!(broken_nomatch.stdout.is_empty());
+}
+
+/// `st update --quiet` is the command a git hook fires. A hook may run
+/// before the repo has ever been indexed (e.g. `post-checkout` right after
+/// clone), so a missing index must not make the hook noisy or fail loudly:
+/// documented hook-safe behavior is exit 0 with empty stderr.
+#[test]
+fn update_quiet_with_no_index_exits_zero_with_empty_stderr() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext-missing");
+
+    let output = run_repo(repo.path(), &index_dir, &["update", "--quiet"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "st update --quiet with no index must exit 0\nstderr:\n{}",
+        stderr_text(&output)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "st update --quiet with no index must produce no stderr, got: {}",
+        stderr_text(&output)
+    );
+}
+
+/// `st agent install githooks --project` / `show` / `uninstall` round-trip
+/// through the real git hooks directory of a temp git repo: install must
+/// write the marker-delimited block into all four hook files, show must
+/// report installed, and uninstall must strip the block back out.
+#[test]
+fn agent_githooks_install_show_uninstall_round_trip_in_temp_git_repo() {
+    let repo = tempfile::TempDir::new().unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+
+    let run_in_repo = |args: &[&str]| {
+        let mut cmd = st();
+        cmd.current_dir(repo.path()).args(args);
+        cmd.output().expect("run st agent")
+    };
+
+    let hooks_dir = repo.path().join(".git/hooks");
+    let hook_names = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
+
+    // Show before install: not installed.
+    let show_before = run_in_repo(&["agent", "show", "githooks", "--project"]);
+    assert_eq!(show_before.status.code(), Some(0));
+    assert!(
+        stdout_text(&show_before).contains("missing"),
+        "expected 'missing' before install, got: {}",
+        stdout_text(&show_before)
+    );
+
+    // Install.
+    let install = run_in_repo(&["agent", "install", "githooks", "--project"]);
+    assert_eq!(
+        install.status.code(),
+        Some(0),
+        "install failed\nstdout:\n{}\nstderr:\n{}",
+        stdout_text(&install),
+        stderr_text(&install)
+    );
+    for name in hook_names {
+        let content = fs::read_to_string(hooks_dir.join(name)).unwrap_or_default();
+        assert!(
+            content.contains("syntext-agent:githooks:start"),
+            "expected marker block in {name}, got: {content}"
+        );
+    }
+
+    // Show after install: installed.
+    let show_after = run_in_repo(&["agent", "show", "githooks", "--project"]);
+    assert_eq!(show_after.status.code(), Some(0));
+    assert!(
+        stdout_text(&show_after).contains("installed"),
+        "expected 'installed' after install, got: {}",
+        stdout_text(&show_after)
+    );
+
+    // Uninstall.
+    let uninstall = run_in_repo(&["agent", "uninstall", "githooks", "--project"]);
+    assert_eq!(
+        uninstall.status.code(),
+        Some(0),
+        "uninstall failed\nstdout:\n{}\nstderr:\n{}",
+        stdout_text(&uninstall),
+        stderr_text(&uninstall)
+    );
+    for name in hook_names {
+        let content = fs::read_to_string(hooks_dir.join(name)).unwrap_or_default();
+        assert!(
+            !content.contains("syntext-agent:githooks:start"),
+            "expected marker block removed from {name}, got: {content}"
+        );
+    }
+
+    // Show after uninstall: back to missing.
+    let show_final = run_in_repo(&["agent", "show", "githooks", "--project"]);
+    assert_eq!(show_final.status.code(), Some(0));
+    assert!(
+        stdout_text(&show_final).contains("missing"),
+        "expected 'missing' after uninstall, got: {}",
+        stdout_text(&show_final)
+    );
+}
+
+/// `st init --fsmonitor` must set `core.fsmonitor=true` in the enclosing git
+/// repository, asserted directly via a `git config --get` subprocess (not
+/// just the tool's own detection helper), and must never touch the setting
+/// when the flag is absent.
+///
+/// Manual residual: the interactive prompt path (offering to enable
+/// fsmonitor without the flag) is not exercised here; only the flag path is,
+/// since a real prompt requires a TTY this subprocess harness does not have.
+#[test]
+fn init_fsmonitor_flag_sets_core_fsmonitor_in_temp_repo() {
+    let repo = tempfile::TempDir::new().unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["init"])
+        .output()
+        .unwrap();
+
+    let git_config_fsmonitor = || {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["config", "--get", "core.fsmonitor"])
+            .output()
+            .unwrap()
+    };
+
+    // Baseline: unset before `st init` runs at all.
+    let before = git_config_fsmonitor();
+    assert!(
+        !before.status.success(),
+        "core.fsmonitor must be unset before st init runs"
+    );
+
+    // `st init` with no --fsmonitor must never set it (opt-in only).
+    let no_flag = Command::new(env!("CARGO_BIN_EXE_st"))
+        .current_dir(repo.path())
+        .args(["init"])
+        .output()
+        .expect("run st init");
+    assert_eq!(
+        no_flag.status.code(),
+        Some(0),
+        "st init failed\nstdout:\n{}\nstderr:\n{}",
+        stdout_text(&no_flag),
+        stderr_text(&no_flag)
+    );
+    let still_unset = git_config_fsmonitor();
+    assert!(
+        !still_unset.status.success(),
+        "core.fsmonitor must stay unset when --fsmonitor is not passed"
+    );
+
+    // `st init --fsmonitor` must set it.
+    let with_flag = Command::new(env!("CARGO_BIN_EXE_st"))
+        .current_dir(repo.path())
+        .args(["init", "--fsmonitor"])
+        .output()
+        .expect("run st init --fsmonitor");
+    assert_eq!(
+        with_flag.status.code(),
+        Some(0),
+        "st init --fsmonitor failed\nstdout:\n{}\nstderr:\n{}",
+        stdout_text(&with_flag),
+        stderr_text(&with_flag)
+    );
+    assert!(
+        stdout_text(&with_flag).contains("enabled core.fsmonitor"),
+        "expected confirmation message, got: {}",
+        stdout_text(&with_flag)
+    );
+    let after = git_config_fsmonitor();
+    assert!(
+        after.status.success(),
+        "core.fsmonitor must be set after st init --fsmonitor"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&after.stdout).trim(),
+        "true",
+        "core.fsmonitor must be set to true"
+    );
+}
+
+/// Installing the git hooks integration and then running a *real* `git
+/// commit` must actually trigger `st update` in the background via the
+/// installed post-commit hook, landing new content in the index with no
+/// explicit `st update` call from the test. The index is built with no
+/// `--index-dir` override so it resolves to the default `<repo>/.syntext`
+/// location, matching what the hook-triggered `st update` (invoked with no
+/// flags, cwd = repo root) will also resolve to. Polling searches disable
+/// their own in-band auto-update (`SYNTEXT_NO_AUTO_UPDATE=1`) so a positive
+/// result can only come from the hook's background update, not from the
+/// search's own bounded catch-up.
+#[test]
+fn githooks_post_commit_hook_triggers_background_update() {
+    let repo = tempfile::TempDir::new().unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    fs::write(repo.path().join("a.rs"), "fn original_marker() {}\n").unwrap();
+    git(&["add", "-A"]);
+    let initial_commit = git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+    assert!(
+        initial_commit.status.success(),
+        "initial commit failed: {}",
+        String::from_utf8_lossy(&initial_commit.stderr)
+    );
+
+    let run_in_repo = |args: &[&str]| {
+        let mut cmd = st();
+        cmd.current_dir(repo.path()).args(args);
+        cmd.output().expect("run st")
+    };
+
+    let index_build = run_in_repo(&["index", "--quiet"]);
+    assert_eq!(
+        index_build.status.code(),
+        Some(0),
+        "st index failed: {}",
+        stderr_text(&index_build)
+    );
+
+    let install = run_in_repo(&["agent", "install", "githooks", "--project"]);
+    assert_eq!(
+        install.status.code(),
+        Some(0),
+        "hook install failed: {}",
+        stderr_text(&install)
+    );
+    let post_commit_hook = repo.path().join(".git/hooks/post-commit");
+    assert!(
+        post_commit_hook.exists(),
+        "post-commit hook should exist after install"
+    );
+
+    // New file, staged and committed for real: the installed post-commit hook
+    // fires and spawns a detached `st update --quiet &`.
+    fs::write(
+        repo.path().join("hooked.rs"),
+        "fn githook_triggered_marker() {}\n",
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    let commit = git(&["commit", "-m", "add hooked file", "--no-gpg-sign"]);
+    assert!(
+        commit.status.success(),
+        "git commit (with post-commit hook installed) failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let poll_search = || {
+        let mut cmd = st();
+        cmd.current_dir(repo.path())
+            .env("SYNTEXT_NO_AUTO_UPDATE", "1")
+            .args(["-q", "githook_triggered_marker"]);
+        cmd.output().expect("run st search")
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut found = false;
+    while std::time::Instant::now() < deadline {
+        if poll_search().status.code() == Some(0) {
+            found = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        found,
+        "expected the post-commit hook's background `st update` to make \
+         githook_triggered_marker searchable within the timeout"
+    );
+
+    // Uninstall so the marker-delimited block doesn't linger past the test.
+    let uninstall = run_in_repo(&["agent", "uninstall", "githooks", "--project"]);
+    assert_eq!(
+        uninstall.status.code(),
+        Some(0),
+        "hook uninstall failed: {}",
+        stderr_text(&uninstall)
+    );
 }
