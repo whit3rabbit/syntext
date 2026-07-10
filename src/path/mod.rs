@@ -8,6 +8,7 @@ pub mod filter;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use roaring::RoaringBitmap;
 
@@ -20,9 +21,14 @@ use crate::path_util::path_bytes;
 #[derive(Clone)]
 pub struct PathIndex {
     /// All indexed paths, sorted lexicographically. `file_id = position`.
-    pub paths: Vec<PathBuf>,
-    /// Exact path -> file_id for O(1) lookups.
-    path_to_file_id: HashMap<PathBuf, u32>,
+    ///
+    /// Each unique path is interned once as an `Arc<Path>` and that same
+    /// allocation is shared by `path_to_file_id`'s keys and `file_id_to_path`,
+    /// so the path string is stored once, not three times (interning, #17).
+    pub paths: Vec<Arc<Path>>,
+    /// Exact path -> file_id for O(1) lookups. Keys share the interned
+    /// `Arc<Path>` from `paths` (no separate copy of the path string).
+    path_to_file_id: HashMap<Arc<Path>, u32>,
     /// Stable file_id -> path. Deleted entries are tombstoned as `None` and
     /// the vec grows monotonically until a full rebuild/compaction renumbers.
     /// This is the intended cost of stable file IDs (see AGENTS.md "Key Design
@@ -31,7 +37,8 @@ pub struct PathIndex {
     /// practice because the overlay cap triggers a rebuild before churn can
     /// inflate this vec without limit; a process that churns through far more
     /// files than the base count should run `st index` to compact.
-    file_id_to_path: Vec<Option<PathBuf>>,
+    /// Entries share the interned `Arc<Path>` from `paths`.
+    file_id_to_path: Vec<Option<Arc<Path>>>,
     /// File extension (e.g. "rs") -> set of file_ids with that extension.
     pub extension_to_files: HashMap<Vec<u8>, RoaringBitmap>,
     /// Path component (e.g. "api") -> set of file_ids containing that component.
@@ -46,15 +53,20 @@ impl PathIndex {
     /// `sorted_paths` must be sorted in ascending order; `file_id` is the index
     /// into this slice. Duplicate paths are not allowed.
     pub fn build(sorted_paths: &[PathBuf]) -> Self {
-        let mut path_to_file_id: HashMap<PathBuf, u32> = HashMap::with_capacity(sorted_paths.len());
-        let mut file_id_to_path: Vec<Option<PathBuf>> = Vec::with_capacity(sorted_paths.len());
+        let mut paths: Vec<Arc<Path>> = Vec::with_capacity(sorted_paths.len());
+        let mut path_to_file_id: HashMap<Arc<Path>, u32> =
+            HashMap::with_capacity(sorted_paths.len());
+        let mut file_id_to_path: Vec<Option<Arc<Path>>> = Vec::with_capacity(sorted_paths.len());
         let mut extension_to_files: HashMap<Vec<u8>, RoaringBitmap> = HashMap::new();
         let mut component_to_files: HashMap<Vec<u8>, RoaringBitmap> = HashMap::new();
 
         for (file_id, path) in sorted_paths.iter().enumerate() {
             let file_id = file_id as u32;
-            path_to_file_id.insert(path.clone(), file_id);
-            file_id_to_path.push(Some(path.clone()));
+            // One allocation per unique path, shared across all three structures.
+            let arc: Arc<Path> = Arc::from(path.as_path());
+            path_to_file_id.insert(Arc::clone(&arc), file_id);
+            file_id_to_path.push(Some(Arc::clone(&arc)));
+            paths.push(arc);
             insert_path_metadata(
                 &mut extension_to_files,
                 &mut component_to_files,
@@ -64,7 +76,7 @@ impl PathIndex {
         }
 
         PathIndex {
-            paths: sorted_paths.to_vec(),
+            paths,
             path_to_file_id,
             file_id_to_path,
             extension_to_files,
@@ -80,15 +92,18 @@ impl PathIndex {
         removed_paths: &HashSet<PathBuf>,
         added_paths: &HashSet<PathBuf>,
     ) -> Self {
+        // Carried-forward Arcs are cloned by refcount bump, not by copying the
+        // path string. `removed_paths`/`added_paths` are keyed by `Path` via
+        // `Arc<Path>: Borrow<Path>`.
         let mut paths = old.paths.clone();
-        paths.retain(|path| !removed_paths.contains(path));
+        paths.retain(|path| !removed_paths.contains(path.as_ref()));
 
         let mut path_to_file_id = old.path_to_file_id.clone();
         let mut file_id_to_path = old.file_id_to_path.clone();
         let mut extension_to_files = old.extension_to_files.clone();
         let mut component_to_files = old.component_to_files.clone();
         for path in removed_paths {
-            if let Some(file_id) = path_to_file_id.remove(path) {
+            if let Some(file_id) = path_to_file_id.remove(path.as_path()) {
                 file_id_to_path[file_id as usize] = None;
                 remove_path_metadata(
                     &mut extension_to_files,
@@ -101,14 +116,15 @@ impl PathIndex {
 
         let mut next_file_id = old.next_file_id;
         for path in added_paths {
-            if path_to_file_id.contains_key(path) {
+            if path_to_file_id.contains_key(path.as_path()) {
                 continue;
             }
             let file_id = next_file_id;
             next_file_id += 1;
-            path_to_file_id.insert(path.clone(), file_id);
-            file_id_to_path.push(Some(path.clone()));
-            paths.push(path.clone());
+            let arc: Arc<Path> = Arc::from(path.as_path());
+            path_to_file_id.insert(Arc::clone(&arc), file_id);
+            file_id_to_path.push(Some(Arc::clone(&arc)));
+            paths.push(arc);
             insert_path_metadata(
                 &mut extension_to_files,
                 &mut component_to_files,
@@ -213,15 +229,18 @@ pub(crate) fn from_sidecar_parts(
     extension_to_files: HashMap<Vec<u8>, RoaringBitmap>,
     component_to_files: HashMap<Vec<u8>, RoaringBitmap>,
 ) -> PathIndex {
-    let mut path_to_file_id: HashMap<PathBuf, u32> = HashMap::with_capacity(paths.len());
-    let mut file_id_to_path: Vec<Option<PathBuf>> = Vec::with_capacity(paths.len());
+    let mut interned: Vec<Arc<Path>> = Vec::with_capacity(paths.len());
+    let mut path_to_file_id: HashMap<Arc<Path>, u32> = HashMap::with_capacity(paths.len());
+    let mut file_id_to_path: Vec<Option<Arc<Path>>> = Vec::with_capacity(paths.len());
     for (file_id, path) in paths.iter().enumerate() {
-        path_to_file_id.insert(path.clone(), file_id as u32);
-        file_id_to_path.push(Some(path.clone()));
+        let arc: Arc<Path> = Arc::from(path.as_path());
+        path_to_file_id.insert(Arc::clone(&arc), file_id as u32);
+        file_id_to_path.push(Some(Arc::clone(&arc)));
+        interned.push(arc);
     }
     let next_file_id = paths.len() as u32;
     PathIndex {
-        paths,
+        paths: interned,
         path_to_file_id,
         file_id_to_path,
         extension_to_files,

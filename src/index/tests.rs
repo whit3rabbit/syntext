@@ -668,7 +668,7 @@ fn commit_batch_skips_intermediate_symlink_swap() {
             .path_index
             .paths
             .iter()
-            .any(|p| p == std::path::Path::new("subdir/target.rs")),
+            .any(|p| p.as_ref() == std::path::Path::new("subdir/target.rs")),
         "intermediate symlink swap target must be excluded from the path index"
     );
     drop(index);

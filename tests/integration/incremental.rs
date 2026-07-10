@@ -249,7 +249,7 @@ fn path_index_tracks_incremental_visible_paths() {
         .path_index
         .paths
         .iter()
-        .any(|p| p == "src/new_module.rs"));
+        .any(|p| p.as_ref() == std::path::Path::new("src/new_module.rs")));
 
     let deleted_path = repo.path().join("src/lib.rs");
     fs::remove_file(&deleted_path).unwrap();
@@ -261,7 +261,7 @@ fn path_index_tracks_incremental_visible_paths() {
         .path_index
         .paths
         .iter()
-        .any(|p| p == std::path::Path::new("src/lib.rs")));
+        .any(|p| p.as_ref() == std::path::Path::new("src/lib.rs")));
     drop(index);
 }
 
@@ -426,7 +426,7 @@ fn large_file_excluded_during_commit() {
             .path_index
             .paths
             .iter()
-            .any(|p| p == std::path::Path::new("src/big.rs")),
+            .any(|p| p.as_ref() == std::path::Path::new("src/big.rs")),
         "oversized file should not appear in the path index after commit"
     );
     drop(index);
@@ -451,7 +451,7 @@ fn binary_file_added_during_commit_is_not_indexed() {
             .path_index
             .paths
             .iter()
-            .any(|p| p == std::path::Path::new("src/data.bin")),
+            .any(|p| p.as_ref() == std::path::Path::new("src/data.bin")),
         "binary file should not appear in the path index after incremental commit"
     );
     drop(index);
@@ -476,7 +476,7 @@ fn text_file_changed_to_binary_is_removed_from_visible_index() {
             .path_index
             .paths
             .iter()
-            .any(|p| p == std::path::Path::new("src/main.rs")),
+            .any(|p| p.as_ref() == std::path::Path::new("src/main.rs")),
         "binary replacement should remove the path from the visible path index"
     );
 

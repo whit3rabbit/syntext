@@ -248,6 +248,31 @@ reflects reduced tokenization work; the gain grows with overlay size.
 The `full_build_300_files` benchmark exercises the initial segment build path,
 which is unaffected by the overlay change.
 
+### PathIndex path interning (#17, 2026-07-10)
+
+`PathIndex` stored each unique path three times (the `paths` Vec, the
+`path_to_file_id` keys, and `file_id_to_path`). Each unique path is now interned
+once as an `Arc<Path>` and that allocation is shared by all three, so the path
+string is stored once. No on-disk change: `paths.idx` still serializes a plain
+path list and `from_sidecar_parts` rebuilds the interned form on load.
+
+Max resident set size of `st search token_common --no-update` on a 40k-file
+synthetic tree (`/usr/bin/time -l`, median of 3, macOS Apple Silicon):
+
+| | Before | After |
+|---|---|---|
+| max RSS | ~55.1 MB | ~52.3 MB (~2.8 MB, ~5% lower) |
+
+Matches the analytical estimate (two eliminated path-string copies: 40k paths x
+~55 bytes x 2 ~= 4.4 MB gross, less HashMap slot-overhead differences). Scales
+with file count (~7 MB at 100k). Scope note: this interns the three copies
+*within* `PathIndex` only. `BaseSegments.base_doc_paths` and
+`path_doc_ids` keys hold two further owned copies of the same path set;
+sharing those with `PathIndex`'s interner needs a cross-struct interner and a
+wide `Arc<Path>` type ripple through search/resolver/json/stats, deferred as a
+follow-up. The `open_search_e2e` (100k-file) nightly bench is the standing RSS
+gate.
+
 ### Skip line_content for -l/-L (#7, 2026-07-10)
 
 The verifier now leaves `SearchMatch::line_content` empty when

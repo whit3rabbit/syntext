@@ -79,7 +79,7 @@ fn gitignored_file_not_indexed() {
         .path_index
         .paths
         .iter()
-        .any(|p| p == std::path::Path::new("build/output.txt"));
+        .any(|p| p.as_ref() == std::path::Path::new("build/output.txt"));
     assert!(
         !found,
         "gitignored file appeared in index: build/output.txt"
@@ -119,7 +119,7 @@ fn binary_file_skipped() {
         .path_index
         .paths
         .iter()
-        .any(|p| p == std::path::Path::new("data.bin"));
+        .any(|p| p.as_ref() == std::path::Path::new("data.bin"));
     assert!(!has_binary, "binary file appeared in index");
 
     // The text file must be indexed.
@@ -127,7 +127,7 @@ fn binary_file_skipped() {
         .path_index
         .paths
         .iter()
-        .any(|p| p == std::path::Path::new("src/hello.rs"));
+        .any(|p| p.as_ref() == std::path::Path::new("src/hello.rs"));
     assert!(has_text, "text file not indexed");
     drop(idx);
 }
@@ -402,7 +402,7 @@ fn utf8_bom_file_is_indexed_without_bom_bytes() {
         snap.path_index
             .paths
             .iter()
-            .any(|p| p == std::path::Path::new("src/bom.rs")),
+            .any(|p| p.as_ref() == std::path::Path::new("src/bom.rs")),
         "UTF-8 BOM file must appear in the path index"
     );
 
@@ -444,7 +444,7 @@ fn utf16_le_file_is_indexed_and_searchable() {
         snap.path_index
             .paths
             .iter()
-            .any(|p| p == std::path::Path::new("src/utf16le.rs")),
+            .any(|p| p.as_ref() == std::path::Path::new("src/utf16le.rs")),
         "UTF-16 LE file must appear in the path index (not skipped as binary)"
     );
 
@@ -481,7 +481,7 @@ fn utf16_be_file_is_indexed_and_searchable() {
         snap.path_index
             .paths
             .iter()
-            .any(|p| p == std::path::Path::new("src/utf16be.rs")),
+            .any(|p| p.as_ref() == std::path::Path::new("src/utf16be.rs")),
         "UTF-16 BE file must appear in the path index (not skipped as binary)"
     );
 
