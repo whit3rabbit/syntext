@@ -43,6 +43,10 @@ fs2 = { version = "0.4", optional = true }
 # Gitignore and file-type filtering (native only)
 ignore = { version = "0.4", optional = true }
 
+# Glob pattern matching for -g/--glob (native only; already in the lockfile
+# transitively via ignore, declared here to make the version explicit)
+globset = { version = "0.4", optional = true }
+
 # CLI (native only)
 clap = { version = "4", features = ["derive", "env"], optional = true }
 
@@ -81,11 +85,14 @@ tree-sitter-java = { version = "0.23", optional = true }
 tree-sitter-c = { version = "0.24", optional = true }
 tree-sitter-cpp = { version = "0.23", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
 [features]
 # Native default: command-line binary and library support.
 default = ["cli"]
 # Native library support without CLI-only dependencies.
-native = ["memmap2", "rayon", "fs2", "ignore"]
+native = ["memmap2", "rayon", "fs2", "ignore", "globset"]
 # Command-line interface.
 cli = ["native", "clap"]
 # WASM target: in-memory index, wasm-bindgen API, no filesystem.
@@ -96,6 +103,7 @@ symbols = [
     "tree-sitter-typescript", "tree-sitter-go", "tree-sitter-java",
     "tree-sitter-c", "tree-sitter-cpp",
 ]
+oracle = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -135,6 +143,26 @@ name = "incremental"
 path = "tests/integration/incremental.rs"
 
 [[test]]
+name = "oracle_self"
+path = "tests/integration/oracle_self.rs"
+required-features = ["oracle"]
+
+[[test]]
+name = "oracle_cli"
+path = "tests/integration/oracle_cli.rs"
+required-features = ["oracle"]
+
+[[test]]
+name = "oracle_incremental"
+path = "tests/integration/oracle_incremental.rs"
+required-features = ["oracle"]
+
+[[test]]
+name = "oracle_freshness"
+path = "tests/integration/oracle_freshness.rs"
+required-features = ["oracle"]
+
+[[test]]
 name = "cli"
 path = "tests/integration/cli.rs"
 
@@ -157,6 +185,14 @@ harness = false
 
 [[bench]]
 name = "index_open"
+harness = false
+
+[[bench]]
+name = "open_search_e2e"
+harness = false
+
+[[bench]]
+name = "freshness"
 harness = false
 
 [package.metadata.deb]
