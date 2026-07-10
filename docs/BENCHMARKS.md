@@ -248,6 +248,26 @@ reflects reduced tokenization work; the gain grows with overlay size.
 The `full_build_300_files` benchmark exercises the initial segment build path,
 which is unaffected by the overlay change.
 
+### Bulk doc-table read on open (#5, 2026-07-10)
+
+`Index::open` materializes every segment's doc entries on every open (to build
+`base_doc_paths` / `path_doc_ids`), and each `get_doc` issued 3 preads (index
+entry + fixed header + path). `MmapSegment::iter_docs()` now reads the whole
+`[doc_table_offset, dict_offset)` region in one positional read and parses all
+entries from the buffer, with the identical bounds checks `get_doc` applies
+(SIGBUS-safe: still reads through the fd, not the mmap). Falls back to per-doc
+`get_doc` for in-memory segments or a failed bulk read.
+
+`cargo bench --bench index_open`:
+
+| Benchmark | Before (3 preads/doc) | After (1 read/segment) |
+|---|---|---|
+| `open_2000_files` | ~2.51 ms | ~844 µs (~3x faster, -66%) |
+
+This cost is paid on every open, which bounded update-on-search makes frequent,
+so it is the highest-impact item in this batch. A unit test asserts `iter_docs`
+is byte-for-byte equivalent to per-doc `get_doc`.
+
 ### PathIndex path interning (#17, 2026-07-10)
 
 `PathIndex` stored each unique path three times (the `paths` Vec, the

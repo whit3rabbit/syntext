@@ -188,9 +188,12 @@ impl Index {
             }
 
             segment_base_ids.push(segment_base_id);
-            // Iterate using local 0-based indices (0..seg.doc_count).
-            for local_id in 0..seg.doc_count {
-                if let Some(doc) = seg.get_doc(local_id) {
+            // Bulk-read the whole doc table in one pass (one read per segment)
+            // instead of 3 preads per doc; slot index is the local 0-based
+            // doc_id, matching the previous `0..seg.doc_count` loop.
+            for (local_id, maybe_doc) in seg.iter_docs().into_iter().enumerate() {
+                let local_id = local_id as u32;
+                if let Some(doc) = maybe_doc {
                     let expected_doc_id = segment_base_id.saturating_add(local_id);
                     if doc.doc_id != expected_doc_id {
                         return Err(IndexError::CorruptIndex(format!(

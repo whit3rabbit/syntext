@@ -145,6 +145,81 @@ impl MmapSegment {
         })
     }
 
+    /// Bulk-read every doc entry with a single read of the
+    /// `[doc_table_offset, dict_offset)` region, instead of the 3 preads per doc
+    /// that [`Self::get_doc`] issues. `Index::open` materializes every segment's
+    /// doc entries on every open (to build `base_doc_paths` / `path_doc_ids`),
+    /// so on a large index this turns O(docs) preads into one read per segment.
+    ///
+    /// Returns one slot per local doc_id (`0..doc_count`); a slot is `None` when
+    /// that entry fails the same bounds checks [`Self::get_doc`] applies, so the
+    /// skip semantics are identical. Falls back to per-doc `get_doc` for
+    /// in-memory segments (no backing file) or if the bulk region read fails, so
+    /// the result always matches the per-doc path exactly.
+    pub fn iter_docs(&self) -> Vec<Option<DocEntry>> {
+        if self.check_len().is_none() {
+            return Vec::new();
+        }
+        #[cfg(feature = "memmap2")]
+        if let Some(file) = &self._file {
+            if let Some(region) = self.read_doc_region(file) {
+                return (0..self.doc_count)
+                    .map(|doc_id| self.parse_doc_from_region(&region, doc_id))
+                    .collect();
+            }
+        }
+        // In-memory segment, or the bulk read failed: fall back to per-doc reads.
+        (0..self.doc_count).map(|doc_id| self.get_doc(doc_id)).collect()
+    }
+
+    /// Read the whole doc-table region into a buffer via one positional read.
+    /// SIGBUS-safe like `get_doc_pread` (reads through the fd, not the mmap).
+    /// Returns `None` (caller falls back) if the region is smaller than the
+    /// fixed `doc_count * 8` index array or the read fails.
+    #[cfg(feature = "memmap2")]
+    fn read_doc_region(&self, file: &std::fs::File) -> Option<Vec<u8>> {
+        let len = self.dict_offset.checked_sub(self.doc_table_offset)?;
+        if len < (self.doc_count as usize).checked_mul(8)? {
+            return None;
+        }
+        let mut buf = vec![0u8; len];
+        reader::read_exact_at(file, &mut buf, self.doc_table_offset as u64).ok()?;
+        Some(buf)
+    }
+
+    /// Parse one doc entry out of the region buffer returned by
+    /// [`Self::read_doc_region`]. Applies the identical bounds checks as
+    /// [`Self::get_doc_mmap`] (abs_off within the doc-table region, fixed 22-byte
+    /// header plus variable path length not extending past `dict_offset`), with
+    /// offsets taken relative to `doc_table_offset` (the region's start).
+    #[cfg(feature = "memmap2")]
+    fn parse_doc_from_region(&self, region: &[u8], doc_id: u32) -> Option<DocEntry> {
+        let idx_pos = (doc_id as usize).checked_mul(8)?;
+        let abs_off =
+            u64::from_le_bytes(region.get(idx_pos..idx_pos + 8)?.try_into().ok()?) as usize;
+        const MIN_DOC_ENTRY_BYTES: usize = 22;
+        if abs_off < self.doc_table_offset
+            || abs_off.saturating_add(MIN_DOC_ENTRY_BYTES) > self.dict_offset
+        {
+            return None;
+        }
+        let e = region.get(abs_off.checked_sub(self.doc_table_offset)?..)?;
+        let doc_id_r = u32::from_le_bytes(e.get(0..4)?.try_into().ok()?);
+        let content_hash = u64::from_le_bytes(e.get(4..12)?.try_into().ok()?);
+        let size_bytes = u64::from_le_bytes(e.get(12..20)?.try_into().ok()?);
+        let path_len = u16::from_le_bytes(e.get(20..22)?.try_into().ok()?) as usize;
+        if abs_off.saturating_add(22 + path_len) > self.dict_offset {
+            return None;
+        }
+        let path = path_from_bytes(e.get(22..22 + path_len)?);
+        Some(DocEntry {
+            doc_id: doc_id_r,
+            content_hash,
+            size_bytes,
+            path,
+        })
+    }
+
     /// Binary-search the dictionary for `gram_hash`, returning its posting
     /// offset and entry count. Dispatches to a `pread`-based lookup when a
     /// backing file is available, mirroring [`Self::get_doc`].

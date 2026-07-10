@@ -50,6 +50,44 @@ fn round_trip_with_docs_and_grams() {
 }
 
 #[test]
+fn iter_docs_matches_per_doc_get_doc() {
+    // #5: the bulk single-read iter_docs() must be byte-for-byte equivalent to
+    // calling get_doc(0..doc_count) one at a time, on the pread-backed open path.
+    let dir = TempDir::new().unwrap();
+    let mut writer = SegmentWriter::new();
+    let paths = [
+        "src/main.rs",
+        "src/lib.rs",
+        "a/b/c/deep_module.rs",
+        "README.md",
+        "x.py",
+    ];
+    for (i, p) in paths.iter().enumerate() {
+        writer.add_document(i as u32, Path::new(p), 0x1000 + i as u64, (i as u64 + 1) * 10);
+    }
+    let meta = writer.write_to_dir(dir.path()).unwrap();
+    let dict_path = dir.path().join(&meta.dict_filename);
+    let post_path = dir.path().join(&meta.post_filename);
+    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full, DictVerify::Full)
+        .unwrap();
+
+    let bulk = seg.iter_docs();
+    assert_eq!(bulk.len(), seg.doc_count as usize);
+    for local_id in 0..seg.doc_count {
+        let one = seg.get_doc(local_id);
+        let many = &bulk[local_id as usize];
+        assert_eq!(one.is_some(), many.is_some(), "presence differs at {local_id}");
+        if let (Some(a), Some(b)) = (one, many) {
+            assert_eq!(a.doc_id, b.doc_id);
+            assert_eq!(a.path, b.path);
+            assert_eq!(a.content_hash, b.content_hash);
+            assert_eq!(a.size_bytes, b.size_bytes);
+        }
+    }
+    drop(seg);
+}
+
+#[test]
 fn duplicate_postings_are_deduplicated() {
     let dir = TempDir::new().unwrap();
     let mut writer = SegmentWriter::new();
