@@ -65,12 +65,6 @@ pub fn enumerate_files(config: &Config) -> Result<(Vec<FileRecord>, WalkSkips), 
             continue;
         }
 
-        // Register the canonical path so that any symlink pointing here is
-        // deduplicated in pass 2.  If canonicalize fails (e.g. a race with
-        // deletion) we still index the file rather than silently dropping it.
-        if let Ok(canonical) = fs::canonicalize(path) {
-            seen_canonical.insert(canonical);
-        }
         push_file_record(
             path.to_path_buf(),
             path,
@@ -79,6 +73,14 @@ pub fn enumerate_files(config: &Config) -> Result<(Vec<FileRecord>, WalkSkips), 
             &mut files,
             &mut skips,
         );
+    }
+
+    if !symlink_paths.is_empty() {
+        for file in &files {
+            if let Ok(canonical) = fs::canonicalize(&file.0) {
+                seen_canonical.insert(canonical);
+            }
+        }
     }
 
     // Pass 2: symlinks.  seen_canonical is now fully populated from all

@@ -3,6 +3,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod build;
 #[cfg(not(target_arch = "wasm32"))]
+mod build_external;
+#[cfg(not(target_arch = "wasm32"))]
 mod calibrate;
 #[cfg(not(target_arch = "wasm32"))]
 mod commit;
@@ -11,34 +13,52 @@ mod compact;
 #[cfg(not(target_arch = "wasm32"))]
 mod compact_plan;
 pub(crate) mod encoding;
+#[cfg(not(target_arch = "wasm32"))]
+/// Git freshness detection and index auto-update logic.
+pub mod freshness;
+#[cfg(not(target_arch = "wasm32"))]
+pub use freshness::{ChangeSet, FreshnessError, UpdateLimits, UpdateOutcome};
+#[cfg(not(target_arch = "wasm32"))]
+/// `core.fsmonitor` tip and opt-in enable helpers (re-exported via `freshness`).
+mod fsmonitor;
 mod helpers;
 pub(crate) mod io_util;
 pub(crate) use io_util::open_readonly_nofollow;
 #[cfg(any(unix, windows))]
 pub(crate) use io_util::verify_fd_matches_stat;
 #[cfg(not(target_arch = "wasm32"))]
+/// Manifest serialization, locking, and generation management.
 pub mod manifest;
 #[cfg(not(target_arch = "wasm32"))]
 mod open;
+#[cfg(not(target_arch = "wasm32"))]
+mod paths_idx;
+/// In-memory overlay structures representing uncommitted document edits.
 pub mod overlay;
+/// Pending edits buffer for tracking path modifications before commit.
 pub mod pending;
+/// Immutable single-file segment format definitions and writer.
 pub mod segment;
+/// Snapshot isolation views combining base segments and overlay views.
 pub mod snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 mod stats;
+/// Directory walking, file discovery, and gitignore evaluation.
 pub mod walk;
 #[cfg(feature = "wasm")]
+/// Fully in-memory WASM index implementation.
 pub mod wasm_index;
 
+
 #[cfg(not(target_arch = "wasm32"))]
-pub use build::ExternalFileRecord;
+pub use build_external::ExternalFileRecord;
 pub use snapshot::{BaseSegments, IndexSnapshot};
 
 pub(crate) use encoding::normalize_encoding;
 pub use walk::is_binary;
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Component, Path};
+use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
@@ -129,68 +149,6 @@ impl Index {
         self.install_rebuilt_index(&rebuilt)
     }
 
-    fn repo_relative_path(&self, path: &Path) -> Result<std::path::PathBuf, IndexError> {
-        let rel = path
-            .strip_prefix(&self.config.repo_root)
-            .map_err(|_| IndexError::PathOutsideRepo(path.to_path_buf()))?;
-        if rel.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
-            return Err(IndexError::PathOutsideRepo(path.to_path_buf()));
-        }
-
-        self.normalize_repo_relative_path(rel)
-    }
-
-    fn normalize_repo_relative_path(&self, rel: &Path) -> Result<std::path::PathBuf, IndexError> {
-        if !self.path_has_intermediate_symlink(rel)? {
-            return Ok(rel.to_path_buf());
-        }
-
-        let abs = self.config.repo_root.join(rel);
-        let Some(parent) = abs.parent() else {
-            return Ok(rel.to_path_buf());
-        };
-        let canonical_parent = std::fs::canonicalize(parent)?;
-        if !canonical_parent.starts_with(&self.canonical_root) {
-            return Err(IndexError::PathOutsideRepo(abs));
-        }
-
-        let Some(file_name) = rel.file_name() else {
-            return Ok(rel.to_path_buf());
-        };
-        let normalized = canonical_parent.join(file_name);
-        normalized
-            .strip_prefix(&self.canonical_root)
-            .map(|p| p.to_path_buf())
-            .map_err(|_| IndexError::PathOutsideRepo(normalized))
-    }
-
-    fn path_has_intermediate_symlink(&self, rel: &Path) -> Result<bool, IndexError> {
-        let mut current = self.config.repo_root.clone();
-        let mut components = rel.components().peekable();
-        while let Some(component) = components.next() {
-            let Component::Normal(part) = component else {
-                continue;
-            };
-            if components.peek().is_none() {
-                break;
-            }
-            current.push(part);
-            match std::fs::symlink_metadata(&current) {
-                Ok(meta) if meta.file_type().is_symlink() => return Ok(true),
-                Ok(_) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-                Err(err) => return Err(IndexError::Io(err)),
-            }
-        }
-
-        Ok(false)
-    }
-
     /// Build the index from scratch, writing segments and a manifest.
     /// Respects `.gitignore`, skips binary files and files exceeding
     /// `config.max_file_size`.
@@ -207,7 +165,7 @@ impl Index {
         config: Config,
         records: Vec<ExternalFileRecord>,
     ) -> Result<Self, IndexError> {
-        build::build_index_from_external_records(config, records)
+        build_external::build_index_from_external_records(config, records)
     }
 
     /// Fully re-verify checksums of all base segments (dict and postings).
@@ -240,14 +198,6 @@ impl Index {
         pattern: &str,
         opts: &SearchOptions,
     ) -> Result<Vec<SearchMatch>, IndexError> {
-        // Route symbol searches to the symbol index when available.
-        #[cfg(feature = "symbols")]
-        if let Some((name, kind)) = crate::symbol::parse_symbol_prefix(pattern) {
-            if let Some(sym_idx) = &self.symbol_index {
-                return sym_idx.search(&name, kind);
-            }
-            // Symbol index not built -- fall through to content search.
-        }
         crate::search::search(
             self.snapshot(),
             &self.config,
@@ -355,6 +305,19 @@ impl Index {
         Ok(())
     }
 
+    /// Rebuilds the index from scratch if the repository's git HEAD has changed since the last build.
+    ///
+    /// Returns `Some(IndexStats)` if a rebuild was executed, or `None` if the index is already fresh.
+    ///
+    /// A full rebuild (not an incremental overlay apply) is deliberate here:
+    /// this runs from `cmd_update` / the git hooks in a *separate process*, and
+    /// the overlay is in-memory only (never persisted to disk -- see
+    /// `commit.rs` / `open.rs`). An incremental overlay apply would update just
+    /// this process's snapshot and vanish on exit, so a later `st search`
+    /// process would not see the committed change. Rewriting base segments is
+    /// currently the only way to make a HEAD-move durable across processes.
+    /// Incremental-per-commit updates require overlay-generation persistence
+    /// (a deferred milestone), not a cheaper diff here.
     pub fn rebuild_if_stale(&self) -> Result<Option<IndexStats>, IndexError> {
         if self.pending.has_uncommitted() {
             self.commit_batch()?;
@@ -369,6 +332,15 @@ impl Index {
         self.rebuild_with(build::build_index).map(Some)
     }
 }
+
+// `update_from_git` and `search_fresh` live in `update.rs` to keep this file
+// under the 400-line quality gate.
+#[cfg(not(target_arch = "wasm32"))]
+mod path_resolve;
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
+#[cfg(all(not(target_arch = "wasm32"), feature = "symbols"))]
+mod search_symbols;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

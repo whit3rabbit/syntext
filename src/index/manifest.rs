@@ -42,6 +42,9 @@ pub struct SegmentRef {
     /// predate this field; the open-time length check is skipped then.
     #[serde(default)]
     pub post_len: Option<u64>,
+    /// Sum of all document sizes in this segment.
+    #[serde(default)]
+    pub doc_bytes: Option<u64>,
 }
 
 impl From<SegmentMeta> for SegmentRef {
@@ -60,6 +63,7 @@ impl From<SegmentMeta> for SegmentRef {
             doc_count: m.doc_count,
             gram_count: m.gram_count,
             post_len,
+            doc_bytes: Some(m.doc_bytes),
         }
     }
 }
@@ -102,6 +106,17 @@ pub struct Manifest {
     /// `None` means the manifest predates checksum support.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub checksum: Option<u64>,
+    /// Format version of the `paths.idx` sidecar (see
+    /// `index::paths_idx::FORMAT_VERSION`) that was current when this
+    /// manifest was written. `open()` only attempts to load `paths.idx` when
+    /// this matches the running binary's `paths_idx::FORMAT_VERSION`; a
+    /// mismatch (or `None`, from a manifest written before this field
+    /// existed, or before `st index`/compact ran at least once since) means
+    /// the sidecar's on-disk layout cannot be trusted, so `open()` skips
+    /// straight to rebuilding `PathIndex` from segment doc tables without
+    /// even reading the file.
+    #[serde(default)]
+    pub paths_idx_version: Option<u32>,
 }
 
 impl Manifest {
@@ -126,6 +141,7 @@ impl Manifest {
             opstamp: 0,
             scan_threshold_fraction: None, // populated by Index::build() after calibration
             checksum: None,
+            paths_idx_version: None, // populated by build.rs/compact.rs when paths.idx is written
         }
     }
 

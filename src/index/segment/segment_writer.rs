@@ -93,6 +93,7 @@ impl SegmentWriter {
         let (dict_bytes, post_bytes, doc_count, gram_count) = self.serialize()?;
         std::fs::write(dir.join(&dict_filename), &dict_bytes)?;
         std::fs::write(dir.join(&post_filename), &post_bytes)?;
+        let doc_bytes = self.docs.iter().map(|d| d.size_bytes).sum::<u64>();
         Ok(SegmentMeta {
             segment_id,
             filename: String::new(),
@@ -101,6 +102,7 @@ impl SegmentWriter {
             doc_count,
             gram_count,
             post_len: post_bytes.len() as u64,
+            doc_bytes,
         })
     }
 
@@ -131,6 +133,7 @@ impl SegmentWriter {
         let (dict_bytes, post_bytes, doc_count, gram_count) = self.serialize()?;
         std::fs::write(&dict_path, &dict_bytes)?;
         std::fs::write(&post_path, &post_bytes)?;
+        let doc_bytes = self.docs.iter().map(|d| d.size_bytes).sum::<u64>();
         Ok(SegmentMeta {
             segment_id,
             filename: String::new(),
@@ -139,6 +142,7 @@ impl SegmentWriter {
             doc_count,
             gram_count,
             post_len: post_bytes.len() as u64,
+            doc_bytes,
         })
     }
 

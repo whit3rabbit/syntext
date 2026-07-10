@@ -1,4 +1,41 @@
 //! MmapSegment constructors: from_bytes, open (v2), open_split (v3).
+//!
+//! ## Narrowed threat model (structural-by-default open)
+//!
+//! Historically every open fully checksummed both `.dict` and `.post`
+//! (`PostVerify`/`DictVerify::Full`), which faulted every content page into
+//! the private mapping (or streamed the whole `.post` file) before the first
+//! query. That is now opt-in (`Config::verify_on_open` / `st verify`);
+//! ordinary opens default to `Structural`, an O(1) check of magic, version,
+//! and footer offsets. Three changes narrow what that default trusts and
+//! what it still protects against:
+//!
+//! - **What is no longer checked at open time:** at-rest bit-rot or tampering
+//!   anywhere in the `.dict`/`.post` content region between the last `Full`
+//!   verify and this open. `Structural` only proves the file is
+//!   well-formed, not that its content bytes are untampered.
+//! - **What still holds:** query-time integrity is unaffected. Dict entries,
+//!   doc-table rows, and postings are always re-read from real file bytes
+//!   (never cached/trusted from the open-time checksum pass) through
+//!   bounds-checked parsing (`.get()`, `checked_add`, size caps, fallible
+//!   roaring deserialize). Corruption anywhere in the content region still
+//!   surfaces as `CorruptIndex`/`None`/missing candidates, never as
+//!   fabricated match content or a memory-safety violation.
+//! - **SIGBUS window, shrunk twice:** first, `Structural` verification only
+//!   touches the `.dict` header and footer pages during
+//!   `parse_segment_mmap`, instead of walking every content page for a
+//!   whole-file checksum, so the race window against a concurrent truncate
+//!   racing the open-time read shrinks from "whole file" to "two pages".
+//!   Second, the two hottest post-open `.dict` access paths — dictionary
+//!   binary search and doc-table lookup — now read via `pread`
+//!   (`dict_read.rs`'s `*_pread` methods) against the still-open file
+//!   descriptor rather than indexing into the mmap slice, so a truncate
+//!   racing *those* reads surfaces as an `io::Error` (mapped to `None`) and
+//!   not `SIGBUS`. The remaining mmap-only readers (e.g. posting-list data
+//!   for v2 combined segments) still fault lazily and remain in the
+//!   original SIGBUS window; see `open()`'s and `open_split()`'s doc
+//!   comments for the residual risk and its mitigation (advisory lock,
+//!   0700 index directories in security-sensitive deployments).
 #![allow(clippy::io_other_error)]
 
 #[cfg(feature = "memmap2")]
@@ -46,6 +83,33 @@ pub enum PostVerify {
     Structural,
 }
 
+/// How much of the `.dict` file to verify when opening a v3 segment.
+///
+/// Mirrors [`PostVerify`]: `Full` reads and checksums the entire `.dict`
+/// mmap content (magic/version/checksum/offsets), faulting every dict page
+/// into the private mapping. `Structural` performs only the O(1) checks
+/// (magic, version, footer-offset-in-range) and skips the whole-content
+/// xxh64 pass.
+///
+/// Security: the same argument as `PostVerify` applies. Dict entries and doc
+/// table rows are read from real mmap bytes at query time (bounds-checked
+/// via `.get()`), so skipping the full checksum does not create a
+/// fabrication path — at most it defers at-rest corruption detection from
+/// open time to first use, where it still surfaces as `CorruptIndex`/`None`
+/// rather than incorrect results. Use `Full` (via `Config::verify_on_open`
+/// or `st verify`) when at-rest corruption detection at open time is worth
+/// the I/O.
+///
+/// Selected the same way as `PostVerify`: `Config::verify_on_open` (set by
+/// `st verify`) requests `Full`; ordinary opens default to `Structural`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictVerify {
+    /// Read and checksum the entire `.dict` content at open time.
+    Full,
+    /// O(1) structural checks only (magic, version, footer offsets in range).
+    Structural,
+}
+
 impl MmapSegment {
     /// Load a segment entirely from in-memory bytes (WASM / tests).
     ///
@@ -53,7 +117,14 @@ impl MmapSegment {
     /// `post_bytes`: the full `.post` file content (including SNTXPOST magic and checksum).
     /// No filesystem access, no mmap, no advisory locking.
     pub fn from_bytes(dict_bytes: Vec<u8>, post_bytes: Vec<u8>) -> Result<Self, IndexError> {
-        let layout = parse_segment_mmap(&dict_bytes, &[FORMAT_VERSION_V2, FORMAT_VERSION_V3])?;
+        // In-memory content (WASM / tests): always fully verified. There is no
+        // separate at-rest file to re-read from, so there is no O(1) structural
+        // fallback that preserves the same integrity guarantee here.
+        let layout = parse_segment_mmap(
+            &dict_bytes,
+            &[FORMAT_VERSION_V2, FORMAT_VERSION_V3],
+            DictVerify::Full,
+        )?;
         let len = dict_bytes.len();
         Ok(MmapSegment {
             _file: None,
@@ -65,6 +136,7 @@ impl MmapSegment {
             postings_start: layout.postings_start,
             mmap: SegmentData::Heap(dict_bytes),
             postings: PostingsBacking::InMemory(post_bytes),
+            doc_bytes: None,
         })
     }
 
@@ -110,7 +182,15 @@ impl MmapSegment {
         let len = mmap.len();
         // open() accepts both v2 and v3 version tags. The single-file layout is
         // identical for both; open_split() handles the split-file v3 read path.
-        let layout = parse_segment_mmap(&mmap, &[FORMAT_VERSION_V2, FORMAT_VERSION_V3])?;
+        // v2 combines postings into this same mmap (no separate .post to defer
+        // verification to), so this path always verifies Full regardless of
+        // Config::verify_on_open; only open_split()'s dict-only mmap honors
+        // DictVerify::Structural.
+        let layout = parse_segment_mmap(
+            &mmap,
+            &[FORMAT_VERSION_V2, FORMAT_VERSION_V3],
+            DictVerify::Full,
+        )?;
 
         Ok(MmapSegment {
             _file: Some(file),
@@ -122,6 +202,7 @@ impl MmapSegment {
             dict_offset: layout.dict_offset,
             postings_start: layout.postings_start,
             postings: PostingsBacking::V2Mmap,
+            doc_bytes: None,
         })
     }
 
@@ -130,12 +211,15 @@ impl MmapSegment {
     /// The `.dict` file is fully mmap'd (small, always needed for binary
     /// search). Postings are read on demand from `.post` via positional reads.
     /// `verify` selects how much of the `.post` file is validated at open
-    /// time; see [`PostVerify`] for the tradeoff.
+    /// time; see [`PostVerify`] for the tradeoff. `dict_verify` selects the
+    /// same tradeoff for the `.dict` mmap; see [`DictVerify`].
+    ///
     #[cfg(feature = "memmap2")]
     pub fn open_split(
         dict_path: &Path,
         post_path: &Path,
         verify: PostVerify,
+        dict_verify: DictVerify,
     ) -> Result<Self, IndexError> {
         let file = std::fs::File::open(dict_path)?;
         let file_meta = file.metadata()?;
@@ -156,12 +240,17 @@ impl MmapSegment {
         // Residual SIGBUS risk: same as open() — see that comment. The window here
         // is narrower because only the .dict file is mmap'd; the .post file is read
         // via positional reads (read_exact_at) rather than mmap, so a truncation of
-        // .post after open returns an I/O error rather than SIGBUS. The .dict mmap
-        // is still subject to the SIGBUS window during parse_segment_mmap's checksum
-        // read before all pages are faulted into the private mapping.
+        // .post after open returns an I/O error rather than SIGBUS. Under
+        // DictVerify::Full the .dict mmap is still subject to the SIGBUS window
+        // during parse_segment_mmap's whole-content checksum read, until all pages
+        // are faulted into the private mapping. Under DictVerify::Structural (the
+        // open() default), parse_segment_mmap only touches the header and footer
+        // pages, so the SIGBUS window shrinks to those two pages rather than the
+        // whole file; the remaining .dict pages are faulted in lazily as
+        // dict_lookup/get_doc touch them (still safe: same private mapping).
         let mmap = unsafe { MmapOptions::new().map_copy_read_only(&file)? };
         let len = mmap.len();
-        let layout = parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3])?;
+        let layout = parse_segment_mmap(&mmap, &[FORMAT_VERSION_V3], dict_verify)?;
         let post_file = std::fs::File::open(post_path)?;
         post_file
             .try_lock_shared()
@@ -186,6 +275,7 @@ impl MmapSegment {
             dict_offset: layout.dict_offset,
             postings_start: 0,
             postings: PostingsBacking::V3File(post_file),
+            doc_bytes: None,
         })
     }
 
@@ -254,10 +344,14 @@ fn check_post_file_structure(post_file: &std::fs::File) -> Result<(), IndexError
     Ok(())
 }
 
-/// Read the entire `.post` file and verify its xxh64 trailer checksum.
-/// O(post file size) I/O plus a transient heap allocation of the same size.
+/// Stream the `.post` file in chunks and verify its xxh64 trailer checksum.
+/// O(post file size) I/O with O(1) heap allocation (a fixed read buffer),
+/// avoiding the transient multi-hundred-MB allocation the previous
+/// read-the-whole-file approach needed for large segments.
 #[cfg(feature = "memmap2")]
 fn verify_post_file_checksum(post_file: &std::fs::File) -> Result<(), IndexError> {
+    use xxhash_rust::xxh64::Xxh64;
+
     let post_len = post_file.metadata()?.len() as usize;
     if post_len < POST_MIN_SIZE {
         return Err(IndexError::CorruptIndex(format!(
@@ -268,13 +362,25 @@ fn verify_post_file_checksum(post_file: &std::fs::File) -> Result<(), IndexError
     read_exact_at(post_file, &mut stored_cksum_bytes, (post_len - 8) as u64)?;
     let stored_post_checksum = u64::from_le_bytes(stored_cksum_bytes);
 
-    // Postings data lies between the magic header and the checksum trailer.
+    // Postings data lies between the magic header (8 bytes) and the checksum
+    // trailer (8 bytes). Stream it through the incremental xxh64 hasher in
+    // fixed-size chunks instead of allocating the whole postings region.
     let postings_data_len = post_len - 16;
-    let mut postings_data = vec![0u8; postings_data_len];
-    if postings_data_len > 0 {
-        read_exact_at(post_file, &mut postings_data, 8)?;
+    let mut hasher = Xxh64::new(0);
+    // 64 KB balances syscall count against cache friendliness; a full segment
+    // checksum pass over a ~100 MB .post file is ~1600 preads at this size.
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut offset: u64 = 8;
+    let mut remaining = postings_data_len;
+    while remaining > 0 {
+        let take = remaining.min(buf.len());
+        let chunk = &mut buf[..take];
+        read_exact_at(post_file, chunk, offset)?;
+        hasher.update(chunk);
+        offset += take as u64;
+        remaining -= take;
     }
-    if xxh64(&postings_data, 0) != stored_post_checksum {
+    if hasher.digest() != stored_post_checksum {
         return Err(IndexError::CorruptIndex(
             "post file checksum mismatch".into(),
         ));

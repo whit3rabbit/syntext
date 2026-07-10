@@ -15,7 +15,6 @@ use memmap2::Mmap;
 use uuid::Uuid;
 use xxhash_rust::xxh64::xxh64;
 
-use crate::path_util::path_from_bytes;
 use crate::posting::{roaring_util, PostingList};
 use crate::IndexError;
 
@@ -72,14 +71,17 @@ pub struct SegmentMeta {
     /// Byte length of the `.post` file as written. 0 for v2 segments.
     /// Recorded in the manifest for O(1) truncation detection at open time.
     pub post_len: u64,
+    /// Sum of all document sizes in this segment.
+    pub doc_bytes: u64,
 }
 
 mod segment_writer;
 pub use segment_writer::SegmentWriter;
 
 mod open;
-pub use open::PostVerify;
+pub use open::{DictVerify, PostVerify};
 mod reader;
+mod dict_read;
 
 // ---------------------------------------------------------------------------
 // T022: MmapSegment (reader)
@@ -139,6 +141,8 @@ pub struct MmapSegment {
     #[cfg_attr(not(feature = "memmap2"), allow(dead_code))]
     pub(super) postings_start: usize,
     pub(super) postings: PostingsBacking,
+    /// Sum of all document sizes in this segment.
+    pub doc_bytes: Option<u64>,
 }
 
 impl MmapSegment {
@@ -185,19 +189,6 @@ impl MmapSegment {
         Ok(())
     }
 
-    /// Look up the posting list for a gram. Returns `None` if not present.
-    pub fn lookup_gram(&self, gram_hash: u64) -> Option<PostingList> {
-        self.check_len()?;
-        let (abs_off, _) = self.dict_lookup(gram_hash)?;
-        self.read_posting_list(abs_off)
-    }
-
-    /// Entry count for a gram (for cardinality-based intersection ordering).
-    pub fn gram_cardinality(&self, gram_hash: u64) -> Option<u32> {
-        self.check_len()?;
-        Some(self.dict_lookup(gram_hash)?.1)
-    }
-
     #[cfg_attr(not(feature = "memmap2"), allow(dead_code))]
     pub(crate) fn gram_hashes(&self) -> Result<Vec<u64>, IndexError> {
         self.check_len()
@@ -217,80 +208,6 @@ impl MmapSegment {
             )?));
         }
         Ok(hashes)
-    }
-
-    /// Return the `DocEntry` for a local doc_id (0-based within this segment).
-    pub fn get_doc(&self, doc_id: u32) -> Option<DocEntry> {
-        self.check_len()?;
-        if doc_id >= self.doc_count {
-            return None;
-        }
-        // Use checked arithmetic to avoid silent integer overflow on pathological
-        // segments. doc_table_offset is validated at parse time (parse_segment_mmap
-        // bounds-checks it), but a defence-in-depth check here costs nothing.
-        let idx_pos = self
-            .doc_table_offset
-            .checked_add((doc_id as usize).checked_mul(8)?)?;
-        let abs_off =
-            u64::from_le_bytes(self.mmap.get(idx_pos..idx_pos + 8)?.try_into().ok()?) as usize;
-        // Security: validate abs_off points within the doc table section, not the
-        // dictionary or footer. Doc entries occupy [doc_table_offset, dict_offset).
-        // Minimum fixed entry size: doc_id(4) + content_hash(8) + size_bytes(8) +
-        // path_len(2) = 22 bytes. A crafted segment with a valid checksum could embed
-        // an abs_off pointing into the dict section; without this check, dict bytes
-        // would be returned to callers as DocEntry fields (information disclosure).
-        const MIN_DOC_ENTRY_BYTES: usize = 22;
-        if abs_off < self.doc_table_offset
-            || abs_off.saturating_add(MIN_DOC_ENTRY_BYTES) > self.dict_offset
-        {
-            return None;
-        }
-        let e = self.mmap.get(abs_off..)?;
-        let doc_id_r = u32::from_le_bytes(e.get(0..4)?.try_into().ok()?);
-        let content_hash = u64::from_le_bytes(e.get(4..12)?.try_into().ok()?);
-        let size_bytes = u64::from_le_bytes(e.get(12..20)?.try_into().ok()?);
-        let path_len = u16::from_le_bytes(e.get(20..22)?.try_into().ok()?) as usize;
-        // Security: verify the full variable-length entry (22 fixed bytes + path)
-        // fits within the doc table region [doc_table_offset, dict_offset). The
-        // earlier MIN_DOC_ENTRY_BYTES check only reserved space for the 22-byte
-        // fixed header. A crafted segment could set path_len large enough to
-        // extend the slice past dict_offset, silently dropping this doc from all
-        // query results (targeted denial-of-service against specific files).
-        if abs_off.saturating_add(22 + path_len) > self.dict_offset {
-            return None;
-        }
-        let path = path_from_bytes(e.get(22..22 + path_len)?);
-        Some(DocEntry {
-            doc_id: doc_id_r,
-            content_hash,
-            size_bytes,
-            path,
-        })
-    }
-
-    fn dict_lookup(&self, gram_hash: u64) -> Option<(usize, u32)> {
-        let dict = self.mmap.get(self.dict_offset..)?;
-        let n = self.gram_count as usize;
-        let mut lo = 0usize;
-        let mut hi = n;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let base = mid * DICT_ENTRY_SIZE;
-            let mid_hash = u64::from_le_bytes(dict.get(base..base + 8)?.try_into().ok()?);
-            match mid_hash.cmp(&gram_hash) {
-                std::cmp::Ordering::Equal => {
-                    let abs_off =
-                        u64::from_le_bytes(dict.get(base + 8..base + 16)?.try_into().ok()?)
-                            as usize;
-                    let count =
-                        u32::from_le_bytes(dict.get(base + 16..base + 20)?.try_into().ok()?);
-                    return Some((abs_off, count));
-                }
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-            }
-        }
-        None
     }
 
     fn read_posting_list(&self, abs_off: usize) -> Option<PostingList> {

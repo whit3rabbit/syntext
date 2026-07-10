@@ -10,7 +10,7 @@ use roaring::RoaringBitmap;
 use super::{snapshot, Index, MAX_TOTAL_DOCS};
 use crate::index::manifest::Manifest;
 use crate::index::overlay::{OverlayView, PendingEdits};
-use crate::index::segment::{MmapSegment, PostVerify};
+use crate::index::segment::{DictVerify, MmapSegment, PostVerify};
 use crate::index::snapshot::BaseSegments;
 use crate::path::PathIndex;
 use crate::{Config, IndexError};
@@ -95,7 +95,7 @@ impl Index {
         let mut prev_segment_end: u32 = 0;
 
         for seg_ref in &manifest.segments {
-            let seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty() {
+            let mut seg = if !seg_ref.dict_filename.is_empty() && !seg_ref.post_filename.is_empty() {
                 // v3: split .dict + .post files. Validate both filenames.
                 for filename in [&seg_ref.dict_filename, &seg_ref.post_filename] {
                     if filename.contains('/')
@@ -128,7 +128,14 @@ impl Index {
                 } else {
                     PostVerify::Structural
                 };
-                MmapSegment::open_split(&dict_path, &post_path, verify)?
+                // Same flag drives both: `st verify` (verify_on_open = true)
+                // wants the full dict checksum too, not just the postings one.
+                let dict_verify = if config.verify_on_open {
+                    DictVerify::Full
+                } else {
+                    DictVerify::Structural
+                };
+                MmapSegment::open_split(&dict_path, &post_path, verify, dict_verify)?
             } else {
                 // v2: single combined .seg file. Accept `dict_filename` as a
                 // compatibility fallback for older transitional manifests.
@@ -150,6 +157,7 @@ impl Index {
                 let seg_path = config.index_dir.join(open_filename);
                 MmapSegment::open(&seg_path)?
             };
+            seg.doc_bytes = seg_ref.doc_bytes;
             // Security: check the per-segment doc count against MAX_TOTAL_DOCS
             // BEFORE iterating the segment's doc entries and inserting them into
             // base_doc_paths and path_doc_ids.
@@ -215,38 +223,67 @@ impl Index {
 
         all_paths.sort_unstable();
         all_paths.dedup();
-        let path_index = PathIndex::build(&all_paths);
+        // `paths.idx` caches the sorted path list plus the extension/component
+        // bitmaps that `PathIndex::build` below would otherwise recompute from
+        // scratch on every open. Since bounded auto-update-on-search reopens
+        // (or re-derives) the index on every search, that rebuild is the fixed
+        // cost this sidecar exists to eliminate. It is only ever a cache: any
+        // failure to load falls back to the rebuild path unconditionally.
+        //
+        // The manifest's `paths_idx_version` is checked before even opening
+        // the file: it is written atomically together with `manifest.json`
+        // by build.rs/compact.rs at the same time as `paths.idx` itself, so a
+        // mismatch (including `None`, from a manifest predating this field or
+        // from a manifest written by a build that skipped the sidecar write)
+        // means the two files were not written by the same generation and
+        // the on-disk `paths.idx` layout cannot be trusted even if it happens
+        // to pass its own internal magic/checksum checks.
+        let path_index = if manifest.paths_idx_version == Some(super::paths_idx::FORMAT_VERSION) {
+            match super::paths_idx::read_paths_idx(&config.index_dir) {
+                Ok(index) => index,
+                Err(e) => {
+                    if config.verbose {
+                        eprintln!("syntext: paths.idx not used ({e}); rebuilding path index");
+                    }
+                    PathIndex::build(&all_paths)
+                }
+            }
+        } else {
+            if config.verbose {
+                eprintln!(
+                    "syntext: paths.idx sidecar version {:?} does not match expected {}; \
+                     rebuilding path index",
+                    manifest.paths_idx_version,
+                    super::paths_idx::FORMAT_VERSION
+                );
+            }
+            PathIndex::build(&all_paths)
+        };
 
         let base = Arc::new(BaseSegments {
             segments: base_segments,
             base_ids: segment_base_ids,
             base_doc_paths,
             path_doc_ids,
+            base_doc_to_file_id: std::sync::OnceLock::new(),
         });
 
         // Final sanity check: the per-segment guard above should have caught
-        // any overage, but verify the accumulated total before the vec allocation.
+        // any overage; verify the accumulated total. `base_doc_to_file_id` is
+        // no longer built eagerly here -- it is derived lazily from
+        // `base.base_doc_paths` (sized to this same bound) on first use; see
+        // `BaseSegments::base_doc_to_file_id`.
         if max_global_id_exclusive > MAX_TOTAL_DOCS {
             return Err(IndexError::CorruptIndex(format!(
                 "manifest claims {max_global_id_exclusive} total docs, exceeds safety limit of {MAX_TOTAL_DOCS}"
             )));
         }
-        let mut base_doc_to_file_id = vec![u32::MAX; max_global_id_exclusive as usize];
-        for (gid, path) in base.base_doc_paths.iter().enumerate() {
-            if let Some(path) = path {
-                if let Some(fid) = path_index.file_id(path) {
-                    base_doc_to_file_id[gid] = fid;
-                }
-            }
-        }
-        let base_doc_to_file_id = Arc::new(base_doc_to_file_id);
 
         let snapshot = Arc::new(snapshot::new_snapshot(
             base,
             OverlayView::empty(),
             RoaringBitmap::new(),
             path_index,
-            base_doc_to_file_id,
             HashMap::new(),
             scan_threshold,
         ));

@@ -31,24 +31,36 @@
 //! }
 //! ```
 
+/// Helper module for base64 encoding and decoding.
 pub mod base64;
+/// Command-line interface logic and argument parsing.
 #[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]
 pub mod cli;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod git_util;
+/// Git hook integrations for automated indexing workflows.
 #[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]
 pub mod hook;
+/// Core index management, writing, and snapshot components.
 pub mod index;
+/// Directory and file path component indexing using Roaring bitmaps.
 pub mod path;
 pub(crate) mod path_util;
+/// Posting list encoding, decoding, and adaptive set operations.
 pub mod posting;
+/// Query planning, parsing, and decomposition of search patterns.
 pub mod query;
+/// Search execution and candidate verification engine.
 pub mod search;
+/// Tree-sitter symbol extraction and SQLite cache storage (optional).
 #[cfg(feature = "symbols")]
 pub mod symbol;
+/// Gram tokenization and weight frequency table definitions.
 pub mod tokenizer;
+/// WebAssembly bindings for fully in-memory index operations.
 #[cfg(feature = "wasm")]
 pub mod wasm;
+
 
 use std::path::PathBuf;
 
@@ -87,6 +99,26 @@ pub struct Config {
     /// hardware-dependent, not content-dependent). Set after moving the
     /// index to different hardware or storage. CLI: `st index --recalibrate`.
     pub recalibrate: bool,
+    /// Whether `st search` should auto-update the index via git change
+    /// detection before searching. Default: true.
+    ///
+    /// When enabled, `st search` calls `Index::update_from_git` bounded by
+    /// `auto_update_budget_ms` and `auto_update_max_files`. A stale index
+    /// can only produce false negatives (missed matches), never false
+    /// positives — the verifier re-reads real file bytes before reporting.
+    pub auto_update: bool,
+    /// Maximum number of changed files to process in an auto-update before
+    /// proceeding with a stale index. Default: 200.
+    pub auto_update_max_files: usize,
+    /// Elapsed-time budget in milliseconds for the three git detection
+    /// commands in an auto-update. Default: 150.
+    pub auto_update_budget_ms: u64,
+    /// Whether `st search` should spawn a detached `st update --quiet`
+    /// catch-up after printing results when the bounded auto-update above
+    /// hit `TooManyFiles` or `BudgetExceeded` (i.e. the index is known to be
+    /// stale beyond the search-time budget). Default: true. Disable via
+    /// `SYNTEXT_NO_ASYNC_UPDATE=1`.
+    pub auto_update_async_catchup: bool,
 }
 
 impl Default for Config {
@@ -100,6 +132,10 @@ impl Default for Config {
             strict_permissions: true,
             verify_on_open: false,
             recalibrate: false,
+            auto_update: true,
+            auto_update_max_files: 200,
+            auto_update_budget_ms: 150,
+            auto_update_async_catchup: true,
         }
     }
 }
@@ -134,6 +170,14 @@ pub struct SearchOptions {
     pub max_results: Option<usize>,
     /// Enable case-insensitive matching.
     pub case_insensitive: bool,
+    /// If set, use this pattern for regex/literal verification instead
+    /// of the routing pattern. Used by -w/-x to verify with boundary
+    /// wrapping while routing on the unwrapped inner pattern for gram
+    /// extraction.
+    pub verify_pattern: Option<String>,
+    /// For testing/oracle: bypass query routing and force a full scan.
+    #[cfg(any(test, feature = "oracle"))]
+    pub force_full_scan: bool,
 }
 
 /// Counters and metadata reported by `Index::stats()`.

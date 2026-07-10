@@ -51,6 +51,7 @@ fn build_snapshot(
                 &dir.path().join(&meta.dict_filename),
                 &dir.path().join(&meta.post_filename),
                 crate::index::segment::PostVerify::Full,
+                crate::index::segment::DictVerify::Full,
             )
             .unwrap(),
         );
@@ -59,14 +60,6 @@ fn build_snapshot(
     all_paths.sort_unstable();
     all_paths.dedup();
     let path_index = PathIndex::build(&all_paths);
-    let mut base_doc_to_file_id = vec![u32::MAX; total_docs as usize];
-    for (global_doc_id, path) in base_doc_paths.iter().enumerate() {
-        if let Some(path) = path {
-            if let Some(file_id) = path_index.file_id(path) {
-                base_doc_to_file_id[global_doc_id] = file_id;
-            }
-        }
-    }
 
     let snapshot = new_snapshot(
         Arc::new(BaseSegments {
@@ -74,11 +67,11 @@ fn build_snapshot(
             base_ids,
             base_doc_paths,
             path_doc_ids,
+            base_doc_to_file_id: std::sync::OnceLock::new(),
         }),
         overlay,
         delete_set,
         path_index,
-        Arc::new(base_doc_to_file_id),
         HashMap::new(),
         0.10,
     );

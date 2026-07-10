@@ -1,7 +1,6 @@
 //! Snapshot-backed compaction: rewrite fresh base segments from the current
 //! in-memory view without rereading unchanged base files from disk.
 
-use std::fs;
 use std::sync::Arc;
 
 #[cfg(feature = "fs2")]
@@ -30,6 +29,11 @@ struct CompactionState {
     current_segment_bytes: u64,
     next_doc_id: u32,
     batch_size_bytes: u64,
+    /// Every surviving path, collected as documents are added. Sorted/deduped
+    /// once at the end to seed the `paths.idx` sidecar cache; not sorted
+    /// incrementally since compaction visits docs in old-segment/overlay
+    /// order, not path order.
+    paths: Vec<std::path::PathBuf>,
 }
 
 impl CompactionState {
@@ -42,6 +46,7 @@ impl CompactionState {
             current_segment_bytes: 0,
             next_doc_id: start_doc_id,
             batch_size_bytes: batch_size_bytes.max(1),
+            paths: Vec::new(),
         }
     }
 
@@ -78,6 +83,7 @@ impl CompactionState {
             self.target_map.resize(old_global_id as usize + 1, None);
         }
         self.target_map[old_global_id as usize] = Some(target);
+        self.paths.push(path.to_path_buf());
         self.current_segment_bytes = self.current_segment_bytes.saturating_add(size_cost);
         self.next_doc_id = self
             .next_doc_id
@@ -145,12 +151,13 @@ pub(super) fn compact_index(
     plan: CompactionPlan,
     write_lock: std::fs::File,
 ) -> Result<super::Index, IndexError> {
-    fs::create_dir_all(&config.index_dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&config.index_dir, fs::Permissions::from_mode(0o700))?;
-    }
+    // Symbol index (symbols.db) is deliberately left untouched here. Symbol
+    // lookups are path-keyed (see SymbolIndex::search / delete_for_paths), so
+    // remapping base doc_ids during compaction cannot stale a symbol result, and
+    // every file deletion already evicts its symbol rows via commit_batch. The
+    // full-reindex path (build.rs) rebuilds symbols.db from scratch when the
+    // overlay crosses its threshold.
+    super::helpers::create_dir_all_secure(&config.index_dir)?;
 
     let lock_file = super::helpers::open_dir_lock_file(&config.index_dir)?;
     lock_file
@@ -250,6 +257,8 @@ pub(super) fn compact_index(
         }
     }
 
+    let mut sorted_paths = std::mem::take(&mut state.paths);
+
     let mut seg_refs: Vec<SegmentRef> = previous_manifest.segments[..plan.suffix_start].to_vec();
     for (seg_ref, &base_doc_id) in seg_refs.iter_mut().zip(manifest_bases.iter()) {
         seg_ref.base_doc_id = Some(base_doc_id);
@@ -267,8 +276,24 @@ pub(super) fn compact_index(
     let mut manifest = Manifest::new(seg_refs, total_docs);
     manifest.base_commit = super::helpers::current_repo_head(&config.repo_root)?;
     manifest.scan_threshold_fraction = Some(snapshot.scan_threshold);
+    // See the equivalent comment in build.rs: this must match the version of
+    // the paths.idx written just below, so open() can gate loading on it.
+    manifest.paths_idx_version = Some(super::paths_idx::FORMAT_VERSION);
     manifest.save(&config.index_dir)?;
     manifest.gc_orphan_segments(&config.index_dir)?;
+
+    // Cache the recompacted path index to `paths.idx`, same as `build_index`.
+    // Best-effort: see the comment on the equivalent call in build.rs.
+    {
+        sorted_paths.sort_unstable();
+        sorted_paths.dedup();
+        let path_index = crate::path::PathIndex::build(&sorted_paths);
+        if let Err(e) = super::paths_idx::write_paths_idx(&config.index_dir, &path_index) {
+            if config.verbose {
+                eprintln!("syntext: warning: could not write paths.idx cache: {e}");
+            }
+        }
+    }
 
     if config.verbose {
         eprintln!(

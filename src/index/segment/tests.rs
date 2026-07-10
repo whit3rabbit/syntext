@@ -36,7 +36,8 @@ fn round_trip_with_docs_and_grams() {
 
     let dict_path = dir.path().join(&meta.dict_filename);
     let post_path = dir.path().join(&meta.post_filename);
-    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full).unwrap();
+    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full, DictVerify::Full)
+        .unwrap();
     assert_eq!(seg.doc_count, 2);
 
     let d0 = seg.get_doc(0).unwrap();
@@ -65,7 +66,8 @@ fn duplicate_postings_are_deduplicated() {
 
     let dict_path = dir.path().join(&meta.dict_filename);
     let post_path = dir.path().join(&meta.post_filename);
-    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full).unwrap();
+    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full, DictVerify::Full)
+        .unwrap();
     assert_eq!(seg.gram_cardinality(0xAAAA), Some(2));
 }
 
@@ -221,6 +223,7 @@ fn v3_round_trip_lookup_gram() {
         &dir.path().join(&meta.dict_filename),
         &dir.path().join(&meta.post_filename),
         PostVerify::Full,
+        DictVerify::Full,
     )
     .unwrap();
 
@@ -249,6 +252,7 @@ fn v3_round_trip_get_doc() {
         &dir.path().join(&meta.dict_filename),
         &dir.path().join(&meta.post_filename),
         PostVerify::Full,
+        DictVerify::Full,
     )
     .unwrap();
 
@@ -317,6 +321,7 @@ fn open_split_rejects_corrupt_post_file() {
             &dir.path().join(&meta.dict_filename),
             &dir.path().join(&meta.post_filename),
             verify,
+            DictVerify::Full,
         );
         assert!(
             result.is_err(),
@@ -347,11 +352,13 @@ fn structural_open_tolerates_corrupt_postings_byte_without_panic() {
     let dict_path = dir.path().join(&meta.dict_filename);
 
     assert!(
-        MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full).is_err(),
+        MmapSegment::open_split(&dict_path, &post_path, PostVerify::Full, DictVerify::Full)
+            .is_err(),
         "Full verification must reject a flipped postings byte"
     );
 
-    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Structural).unwrap();
+    let seg = MmapSegment::open_split(&dict_path, &post_path, PostVerify::Structural, DictVerify::Structural)
+            .unwrap();
     // Bounds-checked parsing: lookups may return None or a wrong-but-safe
     // posting list; the call itself must not panic.
     let _ = seg.lookup_gram(0x1111);
@@ -374,6 +381,7 @@ fn verify_postings_passes_on_clean_segment() {
         &dir.path().join(&meta.dict_filename),
         &dir.path().join(&meta.post_filename),
         PostVerify::Structural,
+        DictVerify::Structural,
     )
     .unwrap();
     assert!(seg.verify_postings().is_ok());
@@ -541,5 +549,124 @@ fn v2_posting_offset_below_postings_start_returns_none() {
         result.is_none(),
         "lookup_gram must return None when abs_off({crafted_abs_off}) < \
             postings_start({postings_start}): {result:?}"
+    );
+}
+
+/// Builds a segment with enough documents/grams that its `.dict` content
+/// region (between HEADER_SIZE and the footer) is comfortably larger than a
+/// single byte, so flipping a byte away from the header/footer stays inside
+/// content that `DictVerify::Structural` never reads.
+fn write_multi_entry_segment(dir: &Path) -> SegmentMeta {
+    let mut writer = SegmentWriter::new();
+    for i in 0..8u32 {
+        writer.add_document(i, Path::new(&format!("src/file_{i}.rs")), 0x1000 + i as u64, 50);
+        writer.add_gram_posting(0xA000_0000_0000_0000 + i as u64, i);
+    }
+    writer.write_to_dir(dir).unwrap()
+}
+
+#[test]
+fn dict_verify_full_detects_flipped_byte_structural_open_tolerates() {
+    // Acceptance: "st verify still performs the full dict checksum
+    // (DictVerify::Full) — a byte-flipped dict is detected under verify but
+    // not under structural open."
+    let dir = TempDir::new().unwrap();
+    let meta = write_multi_entry_segment(dir.path());
+
+    let dict_path = dir.path().join(&meta.dict_filename);
+    let post_path = dir.path().join(&meta.post_filename);
+
+    let mut dict_bytes = std::fs::read(&dict_path).unwrap();
+    let footer_start = dict_bytes.len() - FOOTER_SIZE;
+    assert!(
+        footer_start > HEADER_SIZE + 8,
+        "test fixture must have real content between header and footer"
+    );
+    // Flip a byte squarely inside the content region (just past the header),
+    // away from the footer, so only the O(content length) checksum pass
+    // (DictVerify::Full) can observe it.
+    let flip_at = HEADER_SIZE + 4;
+    dict_bytes[flip_at] ^= 0xFF;
+    std::fs::write(&dict_path, &dict_bytes).unwrap();
+
+    // Structural open must tolerate the flipped byte: it never reads the
+    // content region, only the O(1) header/footer checks.
+    let seg = MmapSegment::open_split(
+        &dict_path,
+        &post_path,
+        PostVerify::Structural,
+        DictVerify::Structural,
+    )
+    .expect("structural open must tolerate a flipped content byte");
+
+    // st verify (Config::verify_on_open -> DictVerify::Full at open time)
+    // must reject the same file.
+    assert!(
+        MmapSegment::open_split(
+            &dict_path,
+            &post_path,
+            PostVerify::Full,
+            DictVerify::Full,
+        )
+        .is_err(),
+        "DictVerify::Full open must detect the flipped content byte"
+    );
+
+    // Index::verify() re-checksums via verify_integrity() regardless of how
+    // the segment was originally opened; it must also catch the corruption.
+    assert!(
+        seg.verify_integrity().is_err(),
+        "verify_integrity() must detect the flipped content byte post-open"
+    );
+}
+
+#[test]
+fn default_open_structural_tolerates_corrupt_dict_tail_but_verify_catches_it() {
+    // Acceptance: "default open uses structural checks and does not read
+    // every dict page (e.g. corrupt-tail dict opens fine structurally, fails
+    // under verify)."
+    let dir = TempDir::new().unwrap();
+    let meta = write_multi_entry_segment(dir.path());
+
+    let dict_path = dir.path().join(&meta.dict_filename);
+    let post_path = dir.path().join(&meta.post_filename);
+
+    let mut dict_bytes = std::fs::read(&dict_path).unwrap();
+    let footer_start = dict_bytes.len() - FOOTER_SIZE;
+    assert!(
+        footer_start > HEADER_SIZE + 8,
+        "test fixture must have real content between header and footer"
+    );
+    // Flip the last byte of content, immediately before the footer: the
+    // "tail" of the dict. Structural open only reads the footer's fixed
+    // fields (magic/version/offsets), never this last content byte, so this
+    // must open fine without faulting that page's content into the checksum
+    // pass. Full verification, which reads every content byte, must catch it.
+    let flip_at = footer_start - 1;
+    dict_bytes[flip_at] ^= 0xFF;
+    std::fs::write(&dict_path, &dict_bytes).unwrap();
+
+    // This mirrors what a default (non-`st verify`) open does: DictVerify::Structural.
+    let seg = MmapSegment::open_split(
+        &dict_path,
+        &post_path,
+        PostVerify::Structural,
+        DictVerify::Structural,
+    )
+    .expect("default (structural) open must tolerate a corrupt content tail byte");
+
+    assert!(
+        MmapSegment::open_split(
+            &dict_path,
+            &post_path,
+            PostVerify::Full,
+            DictVerify::Full,
+        )
+        .is_err(),
+        "DictVerify::Full must detect the corrupt tail byte"
+    );
+    assert!(
+        seg.verify_integrity().is_err(),
+        "verify_integrity() (st verify's re-check) must detect the corrupt tail byte"
     );
 }

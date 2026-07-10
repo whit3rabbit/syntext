@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io::Read;
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "fs2")]
@@ -28,22 +28,6 @@ use crate::{Config, IndexError};
 /// Target batch size (content bytes) before flushing a segment.
 pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// A caller-supplied file admitted to a full rebuild without syntext walking
-/// the repository itself.
-///
-/// The caller owns discovery policy; syntext trusts `absolute_path` to refer
-/// to a readable file. TOCTOU defenses (`open_readonly_nofollow` +
-/// `verify_fd_matches_stat`) still apply at read time.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ExternalFileRecord {
-    /// Absolute path read during index construction.
-    pub absolute_path: PathBuf,
-    /// Repository-relative path stored in the manifest and returned in matches.
-    pub relative_path: PathBuf,
-    /// Size of the file in bytes at discovery time.
-    pub size_bytes: u64,
-}
-
 /// Full-corpus index build. Called by `Index::build()`; returns a ready-to-use
 /// `Index` by delegating to `Index::open()` after writing all segments.
 #[cfg(feature = "ignore")]
@@ -61,62 +45,13 @@ pub(super) fn build_index_with_batch_size(
     build_index_from_file_list(config, file_list, walk_skips, batch_size_bytes)
 }
 
-/// Full build from a caller-supplied file list.
-pub(super) fn build_index_from_external_records(
-    config: Config,
-    records: Vec<ExternalFileRecord>,
-) -> Result<super::Index, IndexError> {
-    build_index_from_file_list(
-        config,
-        normalize_external_records(records)?,
-        WalkSkips::default(),
-        BATCH_SIZE_BYTES,
-    )
-}
-
-fn normalize_external_records(
-    records: Vec<ExternalFileRecord>,
-) -> Result<Vec<FileRecord>, IndexError> {
-    let mut file_list = Vec::with_capacity(records.len());
-    for record in records {
-        if record.relative_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
-            return Err(IndexError::PathOutsideRepo(record.relative_path));
-        }
-
-        file_list.push((
-            record.absolute_path,
-            crate::path_util::normalize_to_forward_slashes(record.relative_path),
-            record.size_bytes,
-        ));
-    }
-    file_list.sort_unstable_by(|left, right| left.1.cmp(&right.1));
-    Ok(file_list)
-}
-
-fn build_index_from_file_list(
+pub(super) fn build_index_from_file_list(
     config: Config,
     file_list: Vec<FileRecord>,
     walk_skips: WalkSkips,
     batch_size_bytes: u64,
 ) -> Result<super::Index, IndexError> {
-    fs::create_dir_all(&config.index_dir)?;
-    // Security: restrict the index directory to owner-only access. A group- or
-    // world-writable index directory allows an unprivileged process to replace
-    // segment files or symbols.db between open and mmap, enabling a SIGBUS DoS
-    // via ftruncate() racing the xxh64 checksum pass (SIGBUS window) or
-    // injecting crafted DB rows (Vuln 4). Mode 0700 eliminates both threats in
-    // single-principal deployments. Multi-tenant shared-cache deployments must
-    // additionally arrange for mandatory locking or separate index directories.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&config.index_dir, fs::Permissions::from_mode(0o700))?;
-    }
+    super::helpers::create_dir_all_secure(&config.index_dir)?;
 
     // Exclusive lock for the duration of the build. Prevents concurrent
     // builds and blocks open() callers until the build completes.
@@ -160,6 +95,11 @@ fn build_index_from_file_list(
     // parallel section completes.
     let skipped_binary = AtomicUsize::new(0);
     let skipped_unreadable = AtomicUsize::new(0);
+    // Paths whose byte length exceeds the segment's u16 length prefix. Skipping
+    // one such file (rather than aborting the whole batch in SegmentWriter) keeps
+    // a single pathological path from wedging the build, matching the binary /
+    // oversized-file skip policy.
+    let skipped_oversized_path = AtomicUsize::new(0);
 
     for batch in &batches {
         // Security: checked_add guards against u32 overflow in the doc_id
@@ -169,7 +109,21 @@ fn build_index_from_file_list(
         let verbose = config.verbose;
         let skipped_binary = &skipped_binary;
         let skipped_unreadable = &skipped_unreadable;
-        let map_fn = |(abs_path, _, _): &(PathBuf, PathBuf, u64)| -> Option<(u64, Vec<u64>)> {
+        let skipped_oversized_path = &skipped_oversized_path;
+        let map_fn = |(abs_path, rel_path, _): &(PathBuf, PathBuf, u64)| -> Option<(u64, Vec<u64>)> {
+            // Skip paths that overflow the segment's u16 path-length prefix
+            // before any doc_id is assigned. Doing it here (not in SegmentWriter)
+            // drops just this file instead of failing the batch.
+            if crate::path_util::path_bytes(rel_path).len() > u16::MAX as usize {
+                if verbose {
+                    eprintln!(
+                        "syntext: skipping {}: path exceeds u16::MAX bytes",
+                        rel_path.display()
+                    );
+                }
+                skipped_oversized_path.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
             // Security: close the TOCTOU window between enumerate_files()'s
             // symlink resolution (symlink_metadata + canonicalize) and this
             // read. open_readonly_nofollow blocks final-component substitution;
@@ -215,7 +169,18 @@ fn build_index_from_file_list(
                 return None;
             }
             let hash = xxh64(content.as_ref(), 0);
-            Some((hash, build_all(content.as_ref())))
+            // Dedup gram occurrences per file before pushing into the writer's
+            // postings Vec. Postings are doc-level (a gram is either present or
+            // absent in a given doc), so duplicates from build_all() are pure
+            // waste: they inflate the postings Vec across the whole batch and
+            // enlarge the sort in SegmentWriter::serialize(). For repetitive
+            // files (e.g. generated code, large switch statements) this can cut
+            // the per-file gram count substantially. The HashSet is dropped at
+            // the end of this closure, so peak memory only grows by one file's
+            // worth of distinct grams at a time.
+            let distinct: std::collections::HashSet<u64> =
+                build_all(content.as_ref()).into_iter().collect();
+            Some((hash, distinct.into_iter().collect()))
         };
         #[cfg(feature = "rayon")]
         let results: Vec<Option<(u64, Vec<u64>)>> = batch.par_iter().map(map_fn).collect();
@@ -305,11 +270,32 @@ fn build_index_from_file_list(
     let mut manifest = Manifest::new(seg_refs, total_indexed);
     manifest.base_commit = super::helpers::current_repo_head(&config.repo_root)?;
     manifest.scan_threshold_fraction = Some(scan_threshold);
+    // Record the paths.idx format version this build writes below, so
+    // `open()` can gate loading it on a matching version instead of trusting
+    // whatever bytes happen to be on disk.
+    manifest.paths_idx_version = Some(super::paths_idx::FORMAT_VERSION);
     manifest.save(&config.index_dir)?;
     // Post-build GC: delete segments from the previous build that are no
     // longer in the new manifest. Distinct from the startup GC above, which
     // only removes segments orphaned by a prior crash (not in any manifest).
     manifest.gc_orphan_segments(&config.index_dir)?;
+
+    // Cache the freshly built path index to `paths.idx` so `Index::open` can
+    // skip rebuilding it from segment doc tables next time. Best-effort: a
+    // write failure only costs the perf win, never correctness (open() falls
+    // back to the segment-doc-table rebuild on any missing/corrupt sidecar).
+    {
+        let mut sorted_paths: Vec<PathBuf> =
+            indexed_files.iter().map(|(_, rel)| rel.clone()).collect();
+        sorted_paths.sort_unstable();
+        sorted_paths.dedup();
+        let path_index = crate::path::PathIndex::build(&sorted_paths);
+        if let Err(e) = super::paths_idx::write_paths_idx(&config.index_dir, &path_index) {
+            if config.verbose {
+                eprintln!("syntext: warning: could not write paths.idx cache: {e}");
+            }
+        }
+    }
 
     if config.verbose {
         eprintln!(
@@ -322,6 +308,10 @@ fn build_index_from_file_list(
                 walk_skips.too_large,
             )
         );
+        let oversized_paths = skipped_oversized_path.load(Ordering::Relaxed);
+        if oversized_paths > 0 {
+            eprintln!("syntext: skipped {oversized_paths} file(s) with oversized paths (> u16::MAX bytes)");
+        }
     }
 
     // Build symbol index (T052) — requires `symbols` feature.
@@ -385,4 +375,3 @@ fn build_index_from_file_list(
     drop(write_lock);
     super::Index::open_with_lock(config, lock_file)
 }
-

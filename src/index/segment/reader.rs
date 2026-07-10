@@ -4,7 +4,7 @@
 
 use xxhash_rust::xxh64::xxh64;
 
-use crate::index::segment::{FOOTER_SIZE, HEADER_SIZE, MAGIC};
+use crate::index::segment::{DictVerify, FOOTER_SIZE, HEADER_SIZE, MAGIC};
 use crate::IndexError;
 
 /// Parsed offsets and counts extracted from a segment mmap's footer.
@@ -21,10 +21,16 @@ pub(super) struct SegmentLayout {
 /// Validate magic, checksum, and parse offsets from a segment mmap.
 ///
 /// `accepted_versions`: slice of version numbers this caller accepts.
+/// `dict_verify` selects how much of `mmap` is checksummed: `Full` reads the
+/// entire content region and verifies the stored xxh64 trailer (as before);
+/// `Structural` skips that O(content length) pass and relies solely on the
+/// O(1) checks below (magic, version, footer presence, offsets in range).
+/// See [`DictVerify`] for the security argument behind skipping the full pass.
 /// Returns an error if the mmap is malformed or the version is not in the list.
 pub(super) fn parse_segment_mmap(
     mmap: &[u8],
     accepted_versions: &[u32],
+    dict_verify: DictVerify,
 ) -> Result<SegmentLayout, IndexError> {
     let len = mmap.len();
     let corrupt = |msg: &str| IndexError::CorruptIndex(msg.into());
@@ -58,11 +64,18 @@ pub(super) fn parse_segment_mmap(
             .try_into()
             .map_err(|_| corrupt("footer slice"))?,
     );
-    let content = mmap
-        .get(..len - FOOTER_SIZE)
-        .ok_or_else(|| corrupt("truncated: cannot read content"))?;
-    if xxh64(content, 0) != stored_checksum {
-        return Err(corrupt("checksum mismatch"));
+    // O(content length) pass: only run it when the caller asked for Full
+    // verification. Structural callers (ordinary open) skip this and rely on
+    // the O(1) checks in this function instead; postings and dict entries are
+    // still read from real file/mmap bytes at query time, so skipping this
+    // does not open a fabrication path (see DictVerify's doc comment).
+    if dict_verify == DictVerify::Full {
+        let content = mmap
+            .get(..len - FOOTER_SIZE)
+            .ok_or_else(|| corrupt("truncated: cannot read content"))?;
+        if xxh64(content, 0) != stored_checksum {
+            return Err(corrupt("checksum mismatch"));
+        }
     }
     if mmap.get(0..4) != Some(MAGIC.as_slice()) {
         return Err(corrupt("bad header magic"));

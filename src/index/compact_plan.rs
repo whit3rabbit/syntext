@@ -27,15 +27,37 @@ fn live_snapshot_bytes_from(snapshot: &IndexSnapshot, suffix_start: usize) -> u6
         .skip(suffix_start)
         .map(|(seg_idx, seg)| {
             let base_id = snapshot.base.base_ids.get(seg_idx).copied().unwrap_or(0);
-            (0..seg.doc_count)
-                .filter_map(|local_doc_id| {
-                    let global_doc_id = base_id.checked_add(local_doc_id)?;
-                    if snapshot.delete_set.contains(global_doc_id) {
-                        return Some(0);
+            if let Some(total_bytes) = seg.doc_bytes {
+                let mut deleted_bytes = 0;
+                let start_id = base_id;
+                let end_id = base_id + seg.doc_count;
+                if !snapshot.delete_set.is_empty() {
+                    for global_doc_id in snapshot.delete_set.iter() {
+                        if global_doc_id < start_id {
+                            continue;
+                        }
+                        if global_doc_id >= end_id {
+                            break;
+                        }
+                        if let Some(local_doc_id) = global_doc_id.checked_sub(base_id) {
+                            if let Some(doc) = seg.get_doc(local_doc_id) {
+                                deleted_bytes += doc.size_bytes;
+                            }
+                        }
                     }
-                    Some(seg.get_doc(local_doc_id)?.size_bytes)
-                })
-                .sum::<u64>()
+                }
+                total_bytes.saturating_sub(deleted_bytes)
+            } else {
+                (0..seg.doc_count)
+                    .filter_map(|local_doc_id| {
+                        let global_doc_id = base_id.checked_add(local_doc_id)?;
+                        if snapshot.delete_set.contains(global_doc_id) {
+                            return Some(0);
+                        }
+                        Some(seg.get_doc(local_doc_id)?.size_bytes)
+                    })
+                    .sum::<u64>()
+            }
         })
         .sum();
     let overlay_bytes: u64 = snapshot

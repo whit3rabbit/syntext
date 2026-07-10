@@ -74,6 +74,7 @@ impl InMemoryIndex {
             base_ids: vec![],
             base_doc_paths: vec![],
             path_doc_ids: HashMap::new(),
+            base_doc_to_file_id: std::sync::OnceLock::new(),
         });
 
         let snapshot = Arc::new(new_snapshot(
@@ -81,7 +82,6 @@ impl InMemoryIndex {
             overlay,
             RoaringBitmap::new(),
             path_index,
-            Arc::new(Vec::new()),
             overlay_doc_to_file_id,
             0.10,
         ));

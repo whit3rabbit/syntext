@@ -33,6 +33,42 @@ pub struct BaseSegments {
     pub base_doc_paths: Vec<Option<PathBuf>>,
     /// Repository-relative path -> all base doc_ids for that path.
     pub path_doc_ids: HashMap<PathBuf, Vec<u32>>,
+    /// Lazily-built global base doc_id -> PathIndex file_id map. Left
+    /// uninitialized here (`OnceLock::new()` in every constructor); use
+    /// [`BaseSegments::base_doc_to_file_id`] to build-or-fetch it. Not fully
+    /// `pub` since it must only ever be touched through that accessor.
+    pub(crate) base_doc_to_file_id: OnceLock<Arc<Vec<u32>>>,
+}
+
+impl BaseSegments {
+    /// Get or lazily build the base doc_id -> file_id map.
+    ///
+    /// `base_doc_paths` never changes after `open()` (base segments are
+    /// immutable between full rebuilds/compactions), so the derived mapping
+    /// is safe to compute once and cache here, then share across every
+    /// `IndexSnapshot` built on top of this `BaseSegments` -- even across
+    /// commits that incrementally rebuild `path_index`, because
+    /// `PathIndex::build_incremental` preserves `file_id`s for paths that
+    /// survive, and paths that don't survive are already excluded from
+    /// search results via `delete_set` before this map is consulted.
+    ///
+    /// Building this eagerly at `open()` cost every `st` invocation a
+    /// `base_doc_paths.len()`-sized allocation and scan even when the run
+    /// never used a path filter or `--files`; deferring it here means that
+    /// cost is paid only by callers that actually need it.
+    pub(crate) fn base_doc_to_file_id(&self, path_index: &crate::path::PathIndex) -> Arc<Vec<u32>> {
+        Arc::clone(self.base_doc_to_file_id.get_or_init(|| {
+            let mut map = vec![u32::MAX; self.base_doc_paths.len()];
+            for (gid, path) in self.base_doc_paths.iter().enumerate() {
+                if let Some(path) = path {
+                    if let Some(fid) = path_index.file_id(path) {
+                        map[gid] = fid;
+                    }
+                }
+            }
+            Arc::new(map)
+        }))
+    }
 }
 
 /// A consistent point-in-time view of the index for querying.
@@ -45,21 +81,28 @@ pub struct IndexSnapshot {
     pub delete_set: RoaringBitmap,
     /// Roaring-bitmap component index for path-scoped queries.
     pub path_index: PathIndex,
-    /// Maps base doc_id -> PathIndex file_id for O(1) path filter lookup.
-    /// Value is u32::MAX for docs with no PathIndex entry.
-    pub base_doc_to_file_id: Arc<Vec<u32>>,
     /// Maps overlay doc_id -> PathIndex file_id. Rebuilt on each commit.
     pub overlay_doc_to_file_id: HashMap<u32, u32>,
     /// Cached bitmap of all valid doc IDs. Lazy-initialized on first access.
     all_doc_ids_cache: OnceLock<RoaringBitmap>,
     /// Cached merged posting bitmaps for repeated gram lookups in this snapshot.
     posting_bitmap_cache: OnceLock<Mutex<HashMap<u64, Arc<RoaringBitmap>>>>,
+    /// Memoized glob→bitmap cache for path-scoped queries.
+    pub(crate) glob_cache: OnceLock<Mutex<HashMap<String, RoaringBitmap>>>,
     /// Calibrated index-vs-scan crossover fraction. Populated from
     /// `Manifest::scan_threshold_fraction` on open; defaults to 0.10.
     pub scan_threshold: f64,
 }
 
 impl IndexSnapshot {
+    /// Maps base doc_id -> PathIndex file_id for O(1) path filter lookup.
+    /// Value is u32::MAX for docs with no PathIndex entry. Built on first
+    /// use (search or `--files`) rather than eagerly at `open()`; see
+    /// [`BaseSegments::base_doc_to_file_id`].
+    pub fn base_doc_to_file_id(&self) -> Arc<Vec<u32>> {
+        self.base.base_doc_to_file_id(&self.path_index)
+    }
+
     /// Return the immutable base segments.
     pub fn base_segments(&self) -> &[MmapSegment] {
         &self.base.segments
@@ -132,11 +175,11 @@ impl IndexSnapshot {
             overlay: self.overlay.clone(),
             delete_set: self.delete_set.clone(),
             path_index: self.path_index.clone(),
-            base_doc_to_file_id: Arc::clone(&self.base_doc_to_file_id),
             overlay_doc_to_file_id: self.overlay_doc_to_file_id.clone(),
             scan_threshold: self.scan_threshold,
             all_doc_ids_cache: OnceLock::new(),
             posting_bitmap_cache: OnceLock::new(),
+            glob_cache: OnceLock::new(),
         }
     }
 
@@ -174,7 +217,6 @@ pub fn new_snapshot(
     overlay: crate::index::overlay::OverlayView,
     delete_set: roaring::RoaringBitmap,
     path_index: crate::path::PathIndex,
-    base_doc_to_file_id: Arc<Vec<u32>>,
     overlay_doc_to_file_id: HashMap<u32, u32>,
     scan_threshold: f64,
 ) -> IndexSnapshot {
@@ -183,7 +225,6 @@ pub fn new_snapshot(
         overlay,
         delete_set,
         path_index,
-        base_doc_to_file_id,
         overlay_doc_to_file_id,
         scan_threshold,
         // Left as OnceLock::new() (not pre-populated) intentionally.
@@ -193,5 +234,6 @@ pub fn new_snapshot(
         // skip the bitmap cost.
         all_doc_ids_cache: OnceLock::new(),
         posting_bitmap_cache: OnceLock::new(),
+        glob_cache: OnceLock::new(),
     }
 }

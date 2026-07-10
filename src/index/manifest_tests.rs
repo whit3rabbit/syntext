@@ -82,6 +82,7 @@ fn segment_ref_round_trips_with_post_filename() {
         doc_count: 5,
         gram_count: 10,
         post_len: Some(4321),
+        doc_bytes: Some(1234),
     };
     let manifest = Manifest::new(vec![seg_ref], 5);
     manifest.save(dir.path()).unwrap();
@@ -112,6 +113,7 @@ fn gc_removes_orphan_dict_and_post_files() {
             doc_count: 0,
             gram_count: 0,
             post_len: None,
+            doc_bytes: None,
         }],
         0,
     );
@@ -252,6 +254,7 @@ fn manifest_rejects_non_uuid_segment_id() {
         doc_count: 1,
         gram_count: 1,
         post_len: None,
+        doc_bytes: None,
     };
     let manifest = Manifest::new(vec![seg_ref], 1);
     manifest.save(dir.path()).unwrap();

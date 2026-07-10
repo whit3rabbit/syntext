@@ -143,6 +143,83 @@ fn build_produces_calibrated_threshold_in_valid_range() {
 }
 
 #[test]
+fn build_writes_paths_idx_with_current_manifest_version() {
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("a.rs"), b"fn alpha() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config.clone()).unwrap();
+    drop(index);
+
+    assert!(
+        index_dir.path().join("paths.idx").exists(),
+        "st index must write a paths.idx sidecar"
+    );
+    let manifest = crate::index::manifest::Manifest::load(&config.index_dir).unwrap();
+    assert_eq!(
+        manifest.paths_idx_version,
+        Some(super::paths_idx::FORMAT_VERSION),
+        "manifest must record the format version of the paths.idx it wrote"
+    );
+}
+
+#[test]
+fn open_ignores_paths_idx_when_manifest_version_mismatches() {
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("a.rs"), b"fn alpha() {}\n").unwrap();
+    std::fs::write(repo.path().join("b.rs"), b"fn beta() {}\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config.clone()).unwrap();
+    drop(index);
+
+    // Bump the manifest's recorded paths_idx_version past what this binary's
+    // `paths_idx::FORMAT_VERSION` understands, simulating a manifest written
+    // by a different sidecar-format generation than the paths.idx bytes
+    // actually on disk (e.g. an interrupted upgrade). The paths.idx file
+    // itself is untouched and still well-formed by its own magic/checksum.
+    let mut manifest = crate::index::manifest::Manifest::load(&config.index_dir).unwrap();
+    assert_eq!(
+        manifest.paths_idx_version,
+        Some(super::paths_idx::FORMAT_VERSION)
+    );
+    manifest.paths_idx_version = Some(super::paths_idx::FORMAT_VERSION + 1);
+    manifest.save(&config.index_dir).unwrap();
+
+    // open() must not trust the version-mismatched paths.idx: it should fall
+    // back to rebuilding PathIndex from segment doc tables, and search
+    // results must still be correct either way.
+    let index = Index::open(config).unwrap();
+    assert_eq!(
+        index
+            .search("alpha", &SearchOptions::default())
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        index
+            .search("beta", &SearchOptions::default())
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(index);
+}
+
+#[test]
 fn open_accepts_manifest_with_gapped_base_doc_ids() {
     let _serial = serial_index_lock();
     let repo = TempDir::new().unwrap();
@@ -195,7 +272,10 @@ fn commit_batch_overlay_ids_start_after_max_base_doc_id() {
 }
 
 #[test]
-fn commit_batch_bounded_read_rejects_file_that_exceeds_limit() {
+fn commit_batch_skips_file_that_exceeds_limit() {
+    // A file that grew past max_file_size is excluded (like a binary file)
+    // rather than aborting the batch. commit_batch succeeds and the file is
+    // absent from the overlay.
     let _serial = serial_index_lock();
     let repo = TempDir::new().unwrap();
     let index_dir = TempDir::new().unwrap();
@@ -211,28 +291,39 @@ fn commit_batch_bounded_read_rejects_file_that_exceeds_limit() {
     };
     let index = Index::build(config).unwrap();
 
-    // Write content that exceeds the limit.
+    // Grow past the limit; the file is excluded, not a hard error.
     std::fs::write(&path, b"fn small_but_now_too_big() { let x = 1; }\n").unwrap();
     index.notify_change(&path).unwrap();
-    let result = index.commit_batch();
+    index
+        .commit_batch()
+        .expect("oversized file must be excluded, not fail the batch");
+
     assert!(
-        matches!(result, Err(IndexError::FileTooLarge { .. })),
-        "commit_batch must reject files that exceed max_file_size at read time: {result:?}"
+        !index
+            .snapshot()
+            .overlay
+            .docs
+            .iter()
+            .any(|d| d.path == std::path::Path::new("big.rs")),
+        "oversized file must be excluded from the overlay"
     );
+    assert_eq!(index.stats().pending_edits, 0);
     drop(index);
 }
 
-#[cfg(unix)]
 #[test]
-fn commit_batch_rejects_symlink_escape() {
-    use std::os::unix::fs::symlink;
+fn commit_batch_failure_requeues_pending_edits() {
+    // Regression for data-loss: a failed commit must re-queue the drained
+    // edits so they survive to retry. Per-file failures no longer abort the
+    // batch (they exclude the file — see
+    // commit_batch_bad_file_does_not_wedge_good_files), so this exercises the
+    // requeue path via a batch-level OverlayFull error.
     let _serial = serial_index_lock();
-
     let repo = TempDir::new().unwrap();
     let index_dir = TempDir::new().unwrap();
 
-    // Create a legitimate file so the index builds.
-    std::fs::write(repo.path().join("real.rs"), b"fn real() {}").unwrap();
+    // One base doc: a single overlay doc already exceeds the 0.5 ratio.
+    std::fs::write(repo.path().join("base.rs"), b"fn base() {}\n").unwrap();
 
     let config = Config {
         index_dir: index_dir.path().to_path_buf(),
@@ -241,15 +332,62 @@ fn commit_batch_rejects_symlink_escape() {
     };
     let index = Index::build(config).unwrap();
 
-    // Create a file outside the repo for the symlink to point to.
+    let new_path = repo.path().join("new.rs");
+    std::fs::write(&new_path, b"fn new() {}\n").unwrap();
+    index.notify_change(&new_path).unwrap();
+    let result = index.commit_batch();
+    assert!(
+        matches!(result, Err(IndexError::OverlayFull { .. })),
+        "commit must fail with OverlayFull (1 overlay / 1 base > 0.5): {result:?}"
+    );
+
+    // The drained edit survives for retry. OverlayFull resolves via a full
+    // rebuild, not another commit_batch, so we assert survival (not re-applied).
+    assert_eq!(
+        index.stats().pending_edits,
+        1,
+        "failed commit must re-queue the drained edit so it survives to retry"
+    );
+    drop(index);
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_batch_skips_symlink_escape_and_commits_rest() {
+    use std::os::unix::fs::symlink;
+    let _serial = serial_index_lock();
+
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    // Several base files so a single overlay change stays under the 0.5 ratio.
+    for i in 0..6 {
+        std::fs::write(
+            repo.path().join(format!("base_{i}.rs")),
+            format!("fn base_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // An escaping symlink plus a legitimate new file in the same batch. The
+    // escape must be excluded; the legitimate file must still index. This is
+    // the wedge regression: one bad path must not block unrelated edits.
     let target_outside = std::env::temp_dir().join("syntext_test_escape_target");
     std::fs::write(&target_outside, b"sensitive content").unwrap();
-
-    // Create a symlink inside the repo pointing outside.
     let link_path = repo.path().join("escape.rs");
     symlink(&target_outside, &link_path).unwrap();
+    let good_path = repo.path().join("good.rs");
+    std::fs::write(&good_path, b"fn good() {}\n").unwrap();
 
     index.notify_change(&link_path).unwrap();
+    index.notify_change(&good_path).unwrap();
     let result = index.commit_batch();
 
     // Clean up regardless of result.
@@ -257,9 +395,87 @@ fn commit_batch_rejects_symlink_escape() {
     let _ = std::fs::remove_file(&link_path);
 
     assert!(
-        matches!(result, Err(IndexError::PathOutsideRepo(_))),
-        "commit_batch must reject symlinks that escape the repo root, got: {result:?}"
+        result.is_ok(),
+        "escape symlink must be excluded, not fail the batch: {result:?}"
     );
+    assert!(
+        !index
+            .snapshot()
+            .overlay
+            .docs
+            .iter()
+            .any(|d| d.path == std::path::Path::new("escape.rs")),
+        "escape symlink must not be indexed"
+    );
+    assert!(
+        index
+            .snapshot()
+            .overlay
+            .docs
+            .iter()
+            .any(|d| d.path == std::path::Path::new("good.rs")),
+        "legitimate file in the same batch must still be indexed"
+    );
+    drop(index);
+}
+
+#[test]
+fn commit_batch_bad_file_does_not_wedge_good_files() {
+    // Headline fix for the wedge: a persistently-too-large file in a batch must
+    // not prevent the other files in the same batch from committing.
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    // Enough base docs that a few overlay docs stay under the 0.5 ratio.
+    for i in 0..10 {
+        std::fs::write(
+            repo.path().join(format!("base_{i}.rs")),
+            format!("fn base_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        max_file_size: 100,
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // Three good files plus one oversized file, all in one batch.
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        let p = repo.path().join(name);
+        std::fs::write(&p, b"fn x() {}\n").unwrap();
+        index.notify_change(&p).unwrap();
+    }
+    let huge = repo.path().join("huge.rs");
+    std::fs::write(&huge, "X".repeat(200)).unwrap();
+    index.notify_change(&huge).unwrap();
+
+    index
+        .commit_batch()
+        .expect("good files must commit even when a sibling is too large");
+
+    let overlay_paths: std::collections::HashSet<_> = index
+        .snapshot()
+        .overlay
+        .docs
+        .iter()
+        .map(|d| d.path.clone())
+        .collect();
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        assert!(
+            overlay_paths.contains(std::path::Path::new(name)),
+            "good file {name} must be indexed"
+        );
+    }
+    assert!(
+        !overlay_paths.contains(std::path::Path::new("huge.rs")),
+        "oversized file must be excluded"
+    );
+    assert_eq!(index.stats().pending_edits, 0, "nothing requeued");
     drop(index);
 }
 
@@ -404,7 +620,7 @@ fn commit_batch_normalizes_delete_under_symlinked_directory() {
 // replaced by a symlink would escape the repo without this check.
 #[cfg(unix)]
 #[test]
-fn commit_batch_rejects_intermediate_symlink_swap() {
+fn commit_batch_skips_intermediate_symlink_swap() {
     use std::os::unix::fs::symlink;
     let _serial = serial_index_lock();
 
@@ -436,15 +652,77 @@ fn commit_batch_rejects_intermediate_symlink_swap() {
     std::fs::write(outside.path().join("target.rs"), b"fn attacker() {}").unwrap();
     symlink(outside.path(), &subdir).unwrap();
 
-    // commit_batch must detect the swap and reject with PathOutsideRepo.
-    // The existing canonicalize check catches the case where subdir is now a symlink
-    // pointing outside the repo. The new inode check covers the narrower race where
-    // the swap happens after canonicalize but before open.
+    // commit_batch must detect the swap and exclude the file (not abort the
+    // batch). The canonicalize check catches subdir now being a symlink to
+    // outside the repo; the inode check covers the narrower race where the
+    // swap happens after canonicalize but before open. Either way the escaped
+    // file is not indexed.
     let result = index.commit_batch();
     assert!(
-        matches!(result, Err(IndexError::PathOutsideRepo(_))),
-        "expected PathOutsideRepo after intermediate symlink swap, got: {result:?}"
+        result.is_ok(),
+        "swapped path must be excluded, not fail the batch: {result:?}"
     );
+    let snap = index.snapshot();
+    assert!(
+        !snap
+            .path_index
+            .paths
+            .iter()
+            .any(|p| p == std::path::Path::new("subdir/target.rs")),
+        "intermediate symlink swap target must be excluded from the path index"
+    );
+    drop(index);
+}
+
+// Regression test: repo root reached via a symlink. notify_change() is given a
+// canonicalized absolute path (as `st update` does), but config.repo_root is
+// the non-canonical symlink path. repo_relative_path must strip against either
+// form or every changed file is misreported as PathOutsideRepo.
+#[cfg(unix)]
+#[test]
+fn notify_change_accepts_canonical_path_under_symlinked_repo_root() {
+    use std::os::unix::fs::symlink;
+    let _serial = serial_index_lock();
+
+    let real_repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    // Several base files so a single overlay change stays under the 50% limit.
+    for i in 0..6 {
+        std::fs::write(
+            real_repo.path().join(format!("base_{i}.rs")),
+            format!("fn base_{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(real_repo.path().join("a.rs"), b"fn alpha() {}\n").unwrap();
+
+    // Create a symlink to the real repo elsewhere (simulates /tmp link or a
+    // container bind-mount). Build the index via the symlinked root.
+    let link_root = TempDir::new().unwrap();
+    let symlinked_root = link_root.path().join("repo-link");
+    symlink(real_repo.path(), &symlinked_root).unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: symlinked_root.clone(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // Simulate `st update`: canonicalize the changed file path before notify.
+    std::fs::write(real_repo.path().join("a.rs"), b"fn alpha_updated() {}\n").unwrap();
+    let changed = symlinked_root.join("a.rs");
+    let canonical = changed.canonicalize().unwrap();
+    // canonical is under real_repo, NOT under symlinked_root. Without the fix,
+    // strip_prefix(symlinked_root) fails and notify_change returns PathOutsideRepo.
+    index
+        .notify_change(&canonical)
+        .expect("notify_change must accept a canonical path when repo_root is a symlink");
+    index.commit_batch().unwrap();
+
+    // Sanity: the overlay picked up the edit.
+    assert_eq!(index.snapshot().overlay.docs.len(), 1);
     drop(index);
 }
 
@@ -620,6 +898,257 @@ fn maintenance_apis_are_noops_when_no_work_is_needed() {
     assert!(!index.maybe_compact().unwrap());
     index.compact().unwrap();
     assert!(index.rebuild_if_stale().unwrap().is_none());
+    drop(index);
+}
+
+#[cfg(unix)]
+#[test]
+fn update_from_git_classifies_dangling_symlink_as_change_not_delete() {
+    // Regression for the abs.exists()-based misclassification: exists()
+    // follows symlinks, so a symlink whose target does not exist reports as
+    // absent, causing update_from_git to call notify_delete() for a path git
+    // reports as merely changed. The fix uses symlink_metadata() (which does
+    // not follow the link) to decide presence, so a dangling symlink takes
+    // the "changed" branch, not the "deleted" branch.
+    //
+    // Both branches are mutually exclusive in the source (`if present {
+    // notify_change-or-skip } else { notify_delete-or-skip }`), so a
+    // dangling symlink resulting in `Updated { files: 1, skipped: 0 }` can
+    // only happen via the notify_change branch succeeding: the notify_delete
+    // branch is unreachable when `present` is true.
+    use crate::index::freshness::{UpdateLimits, UpdateOutcome};
+
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    std::fs::write(repo.path().join("main.rs"), b"fn main() {}\n").unwrap();
+    init_git_repo(repo.path());
+    commit_all(repo.path(), "initial");
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // A symlink whose target does not exist. Left untracked so `git
+    // ls-files --others` reports it as a detected change.
+    std::os::unix::fs::symlink(
+        "this-target-does-not-exist",
+        repo.path().join("dangling.rs"),
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(repo.path().join("dangling.rs")).is_ok(),
+        "premise check: the symlink entry itself must exist (lstat succeeds)"
+    );
+    assert!(
+        !repo.path().join("dangling.rs").exists(),
+        "premise check: exists() must report absent (it follows the broken symlink)"
+    );
+
+    let limits = UpdateLimits {
+        max_files: None,
+        budget_ms: None,
+    };
+    let outcome = index.update_from_git(limits).unwrap();
+
+    match outcome {
+        UpdateOutcome::Updated { files, skipped, .. } => {
+            assert_eq!(
+                files, 1,
+                "the dangling symlink must be applied via notify_change (present branch)"
+            );
+            assert_eq!(
+                skipped, 0,
+                "the dangling symlink must not be skipped or misrouted to notify_delete"
+            );
+        }
+        other => panic!("expected Updated, got {other:?}"),
+    }
+    drop(index);
+}
+
+/// Bug 10 regression: a *bounded* `update_from_git` (the search hot path) must
+/// never do a synchronous full rebuild when the overlay would exceed its cap.
+/// It returns `OverlayFull` (so the caller searches stale and spawns the async
+/// catch-up) instead of blocking the latency budget on a `build_index`. The
+/// *unbounded* call (`st update`) still rebuilds inline.
+#[test]
+fn bounded_update_returns_overlay_full_without_inline_rebuild() {
+    use crate::index::freshness::{UpdateLimits, UpdateOutcome};
+
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    // Base = 1 doc. Two untracked files push the projected overlay to 2/1 =
+    // 200% of base, well over the 50% OVERLAY_ENFORCE_THRESHOLD.
+    std::fs::write(repo.path().join("main.rs"), b"fn main() {}\n").unwrap();
+    init_git_repo(repo.path());
+    commit_all(repo.path(), "initial");
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+    let base_docs = index.stats().total_documents;
+
+    // Enough untracked files that the overlay would exceed 50% of the base
+    // (build also indexes the repo's own tracked files), tripping OverlayFull.
+    let n_new = (base_docs as usize) + 4;
+    for i in 0..n_new {
+        std::fs::write(
+            repo.path().join(format!("added_{i:04}.rs")),
+            format!("fn marker_{i:04}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    // Bounded: max_files high enough to avoid TooManyFiles, so it reaches the
+    // commit_batch OverlayFull path.
+    let bounded = UpdateLimits {
+        max_files: Some(10_000),
+        budget_ms: Some(30_000),
+    };
+    match index.update_from_git(bounded).unwrap() {
+        UpdateOutcome::OverlayFull { files_behind, .. } => {
+            assert!(files_behind > 0, "the untracked files are behind");
+        }
+        other => panic!("bounded update must return OverlayFull, got {other:?}"),
+    }
+    // Not applied: the stale index does not yet see the new markers.
+    assert!(
+        index
+            .search("marker_0000", &SearchOptions::default())
+            .unwrap()
+            .is_empty(),
+        "bounded OverlayFull must not have applied changes"
+    );
+
+    // Unbounded (CLI `st update`): rebuilds inline and picks the files up.
+    let unbounded = UpdateLimits {
+        max_files: None,
+        budget_ms: None,
+    };
+    match index.update_from_git(unbounded).unwrap() {
+        UpdateOutcome::Updated { .. } => {}
+        other => panic!("unbounded update must rebuild and Update, got {other:?}"),
+    }
+    assert!(
+        index
+            .search("marker_0000", &SearchOptions::default())
+            .unwrap()
+            .iter()
+            .any(|m| m.path == std::path::Path::new("added_0000.rs")),
+        "unbounded rebuild must include the new content"
+    );
+    drop(index);
+}
+
+#[test]
+fn search_fresh_no_git_changes_returns_no_changes_and_stale_results() {
+    // No changes since the index was built: search_fresh must report
+    // UpdateOutcome::NoChanges and return the same (already-correct, since
+    // nothing changed) results as a plain `search` call would.
+    use crate::index::freshness::UpdateLimits;
+
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    std::fs::write(repo.path().join("main.rs"), b"fn stale_marker() {}\n").unwrap();
+    init_git_repo(repo.path());
+    commit_all(repo.path(), "initial");
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    let limits = UpdateLimits {
+        max_files: None,
+        budget_ms: None,
+    };
+    let (matches, outcome) = index
+        .search_fresh("stale_marker", &SearchOptions::default(), limits)
+        .unwrap();
+
+    assert!(
+        matches!(outcome, UpdateOutcome::NoChanges { .. }),
+        "expected NoChanges with no git activity since build, got {outcome:?}"
+    );
+    assert_eq!(
+        matches.len(),
+        1,
+        "the already-indexed content must still be found"
+    );
+    drop(index);
+}
+
+#[test]
+fn search_fresh_picks_up_changed_file_and_returns_updated_outcome() {
+    // A file changed on disk after the index was built (but not yet
+    // re-indexed) must be picked up by search_fresh's bounded update before
+    // searching: the new content should be matched and UpdateOutcome::Updated
+    // returned, not the stale pre-change content.
+    use crate::index::freshness::UpdateLimits;
+
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+
+    std::fs::write(repo.path().join("main.rs"), b"fn old_marker() {}\n").unwrap();
+    init_git_repo(repo.path());
+    commit_all(repo.path(), "initial");
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // Sanity: the new marker must not yet be searchable before the change is
+    // written, otherwise the test wouldn't prove search_fresh did the update.
+    assert_eq!(
+        index
+            .search("new_marker", &SearchOptions::default())
+            .unwrap()
+            .len(),
+        0,
+        "premise check: new_marker must be absent before the file is changed"
+    );
+
+    // Modify the file on disk without going through notify_change/commit_batch:
+    // only `git diff HEAD` should reveal this to update_from_git.
+    std::fs::write(repo.path().join("main.rs"), b"fn new_marker() {}\n").unwrap();
+
+    let limits = UpdateLimits {
+        max_files: None,
+        budget_ms: None,
+    };
+    let (matches, outcome) = index
+        .search_fresh("new_marker", &SearchOptions::default(), limits)
+        .unwrap();
+
+    match outcome {
+        UpdateOutcome::Updated { files, .. } => {
+            assert_eq!(files, 1, "exactly the one changed file must be applied");
+        }
+        other => panic!("expected Updated, got {other:?}"),
+    }
+    assert_eq!(
+        matches.len(),
+        1,
+        "search_fresh must match the new content after the bounded update"
+    );
     drop(index);
 }
 
@@ -983,13 +1512,13 @@ fn base_doc_id_limit_overflow_returns_error() {
         base_ids: vec![u32::MAX],
         base_doc_paths: vec![],
         path_doc_ids: std::collections::HashMap::new(),
+        base_doc_to_file_id: std::sync::OnceLock::new(),
     });
     let snap = new_snapshot(
         base,
         crate::index::overlay::OverlayView::empty(),
         roaring::RoaringBitmap::new(),
         crate::path::PathIndex::build(&[]),
-        Arc::new(vec![]),
         std::collections::HashMap::new(),
         0.10,
     );
@@ -1232,4 +1761,63 @@ fn open_missing_index_dir_reports_index_not_found() {
         }
         Err(other) => panic!("expected IndexNotFound, got: {other}"),
     }
+}
+
+#[test]
+fn base_doc_to_file_id_stays_lazy_until_path_filter_needs_it() {
+    // Confirms the OnceLock in BaseSegments is not populated at build/open,
+    // stays unbuilt for plain search and for --files-style path listing
+    // (both of which can be served without it), and is only built the first
+    // time a query actually applies a path/type filter.
+    let _serial = serial_index_lock();
+    let repo = TempDir::new().unwrap();
+    let index_dir = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("alpha.rs"), b"fn alpha() {}\n").unwrap();
+    std::fs::write(repo.path().join("beta.py"), b"def beta(): pass\n").unwrap();
+
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let index = Index::build(config).unwrap();
+
+    // Not built at open/build time.
+    assert!(
+        index.snapshot().base.base_doc_to_file_id.get().is_none(),
+        "base_doc_to_file_id must not be built at open/build"
+    );
+
+    // A plain search with no path/type filter must not build it either: the
+    // filter bitmap is None, so search/mod.rs never calls the accessor.
+    let matches = index.search("alpha", &SearchOptions::default()).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert!(
+        index.snapshot().base.base_doc_to_file_id.get().is_none(),
+        "base_doc_to_file_id must not be built by an unfiltered search"
+    );
+
+    // --files-style listing walks PathIndex::visible_paths() directly and
+    // never touches base_doc_to_file_id.
+    let snap = index.snapshot();
+    let listed: Vec<_> = snap.path_index.visible_paths().collect();
+    assert_eq!(listed.len(), 2);
+    assert!(
+        index.snapshot().base.base_doc_to_file_id.get().is_none(),
+        "path listing (--files) must not build base_doc_to_file_id"
+    );
+
+    // A search with a file-type filter goes through the path-filter branch,
+    // which is the one caller of the lazy accessor: it must build it now.
+    let opts = SearchOptions {
+        file_type: Some("rs".to_string()),
+        ..SearchOptions::default()
+    };
+    let matches = index.search("alpha", &opts).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert!(
+        index.snapshot().base.base_doc_to_file_id.get().is_some(),
+        "base_doc_to_file_id must be built once a path/type filter is applied"
+    );
+    drop(index);
 }

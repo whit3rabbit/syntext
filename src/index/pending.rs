@@ -47,11 +47,12 @@ impl PendingEdits {
     /// unwinds, under the default allocator). The same reasoning applies to
     /// `notify_delete`, `reset`, `has_uncommitted`, and `uncommitted_count`.
     ///
-    /// `take_for_commit` is theoretically riskier: if unwinding occurred
-    /// mid-`drain` (e.g. a custom allocator that unwinds on OOM during
-    /// `HashSet::insert`), the Vec would retain only the un-drained suffix,
-    /// silently dropping earlier edits from the commit. In practice this cannot
-    /// happen with the default global allocator.
+    /// `take_for_commit` is theoretically riskier: it uses `std::mem::take`
+    /// (a pointer swap, cannot fail) and then rebuilds changed/deleted sets via
+    /// `HashSet::insert`. If unwinding occurred mid-rebuild (e.g. a custom
+    /// allocator that unwinds on OOM during `HashSet::insert`), the drained
+    /// edits in the local `drained` Vec would be dropped, losing them. In
+    /// practice this cannot happen with the default global allocator.
     ///
     /// Contrast with `SymbolIndex` (symbol/mod.rs), which deliberately does NOT
     /// recover from poison because its `rusqlite::Connection` may hold open
@@ -73,27 +74,40 @@ impl PendingEdits {
         });
     }
 
-    /// Drain uncommitted edits and return a summary for the commit.
+    /// Drain uncommitted edits and return a summary for the commit, capturing
+    /// the raw edits in [`TakeResult::drained`] for re-queueing on failure.
     ///
     /// `newly_changed`/`newly_deleted` are paths touched since the last
     /// `commit_batch()`. A file changed then deleted in the same batch counts
     /// as deleted only.
+    ///
+    /// `drained` holds the exact raw edits in original insertion order. If
+    /// `commit_batch` fails after this call, the caller MUST pass `drained`
+    /// back to [`PendingEdits::requeue_uncommitted`] so the edits are not
+    /// silently lost (staying stale until a full rebuild). On success, the
+    /// caller drops `drained`.
     pub fn take_for_commit(&self) -> TakeResult {
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Snapshot the raw edits before clearing the buffer. Re-queueing these
+        // on failure preserves the caller's edit stream verbatim, which is
+        // simpler and safer than re-deriving changed/deleted sets from a
+        // partially-applied commit.
+        let drained = std::mem::take(&mut state.uncommitted);
 
         // Deduplicate uncommitted into changed/deleted sets.
         // A file changed then deleted counts as deleted only.
         let mut newly_changed: HashSet<PathBuf> = HashSet::new();
         let mut newly_deleted: HashSet<PathBuf> = HashSet::new();
-        for edit in state.uncommitted.drain(..) {
+        for edit in &drained {
             match edit.kind {
                 EditKind::Changed => {
                     newly_deleted.remove(&edit.path);
-                    newly_changed.insert(edit.path);
+                    newly_changed.insert(edit.path.clone());
                 }
                 EditKind::Deleted => {
                     newly_changed.remove(&edit.path);
-                    newly_deleted.insert(edit.path);
+                    newly_deleted.insert(edit.path.clone());
                 }
             }
         }
@@ -101,7 +115,26 @@ impl PendingEdits {
         TakeResult {
             newly_changed,
             newly_deleted,
+            drained,
         }
+    }
+
+    /// Re-queue edits drained by [`take_for_commit`] when the commit fails.
+    ///
+    /// Prepends `edits` to the front of the uncommitted buffer so that any
+    /// edits buffered concurrently with the failed commit are applied after
+    /// them (preserving the original arrival order relative to each other).
+    /// Idempotent if `edits` is empty.
+    pub fn requeue_uncommitted(&self, edits: Vec<super::overlay::FileEdit>) {
+        if edits.is_empty() {
+            return;
+        }
+        let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        // Splice the requeued edits before any edits that arrived during the
+        // failed commit: `edits` were observed first and must stay first.
+        let mut combined = edits;
+        combined.append(&mut state.uncommitted);
+        state.uncommitted = combined;
     }
 
     /// Clear all accumulated state. Call after a full index rebuild.
@@ -129,6 +162,10 @@ pub struct TakeResult {
     pub newly_changed: HashSet<PathBuf>,
     /// Paths deleted since the last `commit_batch()`.
     pub newly_deleted: HashSet<PathBuf>,
+    /// Raw drained edits (in arrival order). Pass back to
+    /// [`PendingEdits::requeue_uncommitted`] if the commit fails so the edits
+    /// are not silently lost. Drop on success.
+    pub drained: Vec<super::overlay::FileEdit>,
 }
 
 /// Compute the delete_set: base doc_ids that are invalidated by overlay

@@ -132,3 +132,23 @@ pub(super) fn format_build_summary(
     }
     summary
 }
+
+/// Create a directory and all parent directories securely with 0700 permissions
+/// atomically on Unix, and standard permissions on other platforms.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn create_dir_all_secure(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}

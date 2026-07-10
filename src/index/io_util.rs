@@ -46,6 +46,9 @@ pub fn open_readonly_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
 // final component (analogous to O_NOFOLLOW), but requires CreateFileW via
 // windows-sys. For now, fall back to plain File::open on non-Unix.
 #[cfg(not(unix))]
+/// Fallback implementation of `open_readonly_nofollow` for non-Unix platforms (e.g. Windows, WASM).
+///
+/// Since `O_NOFOLLOW` is not available, this falls back to a standard read-only file open.
 pub fn open_readonly_nofollow(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(path)
 }
@@ -63,18 +66,42 @@ pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Met
     }
 }
 
-/// Windows stub for `verify_fd_matches_stat`.
+/// Windows verification for `verify_fd_matches_stat` using `GetFileInformationByHandle`.
 ///
-/// The ideal implementation would compare volume serial number + file index
-/// via `GetFileInformationByHandle`, but `MetadataExt::file_index()` and
-/// `volume_serial_number()` are behind the unstable `windows_by_handle`
-/// feature (rust-lang/rust#63010). Until that stabilizes, degrade to `true`.
-///
-/// Windows has mandatory file locking, so the TOCTOU risk is lower than on
-/// Unix where advisory locks are the norm.
+/// Compares the volume serial number and 64-bit file index from the open handle
+/// against the pre-opened file's metadata to detect TOCTOU path swapping.
 #[cfg(windows)]
-pub fn verify_fd_matches_stat(_file: &std::fs::File, _pre_open_meta: &std::fs::Metadata) -> bool {
-    true
+pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::fs::MetadataExt;
+
+    let handle = file.as_raw_handle();
+    if handle.is_null() || handle as isize == -1 {
+        return false;
+    }
+
+    // Query information for the open file handle.
+    let mut info = unsafe { std::mem::zeroed::<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION>() };
+    let ok = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle(
+            handle as _,
+            &mut info,
+        )
+    };
+    if ok == 0 {
+        return false;
+    }
+
+    let fd_volume = info.dwVolumeSerialNumber;
+    let fd_index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+
+    // Compare with the pre-opened metadata fields.
+    match (pre_open_meta.volume_serial_number(), pre_open_meta.file_index()) {
+        (Some(meta_volume), Some(meta_index)) => {
+            fd_volume == meta_volume && fd_index == meta_index
+        }
+        _ => false,
+    }
 }
 
 /// WASM stub: filesystem is not used (WasmIndex receives content directly),

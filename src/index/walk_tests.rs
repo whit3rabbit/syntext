@@ -183,10 +183,7 @@ fn enumerate_files_counts_too_large_skips() {
     let (files, skips) = super::enumerate_files(&config).unwrap();
     assert_eq!(skips.too_large, 1, "one file exceeds the 32-byte cap");
     assert_eq!(
-        files
-            .iter()
-            .map(|(_, rel, _)| rel)
-            .collect::<Vec<_>>(),
+        files.iter().map(|(_, rel, _)| rel).collect::<Vec<_>>(),
         vec![&std::path::PathBuf::from("small.rs")],
         "oversized file must be excluded from the candidate list"
     );
