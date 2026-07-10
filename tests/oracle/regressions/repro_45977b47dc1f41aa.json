@@ -1,0 +1,13 @@
+{
+  "type": "cli",
+  "corpus": [
+    {
+      "path": "src/nested/helper.rs",
+      "content_b64": "/v8AcQB1AGUAcgB5AAoAcABhAHIAcwBlAA0="
+    }
+  ],
+  "query": "parse|",
+  "flags": [
+    "-x"
+  ]
+}

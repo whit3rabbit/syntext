@@ -154,6 +154,16 @@ pub(in crate::cli) fn json_submatches(
     re: &regex::bytes::Regex,
     line: &[u8],
 ) -> Vec<serde_json::Value> {
+    // Enumerate against the line with a bare trailing `\r` stripped (the last
+    // line of a file can carry one; CRLF-terminated lines are already trimmed
+    // by for_each_line). ripgrep matches on the terminator-stripped line, so
+    // without this a CRLF-aware regex sees a phantom empty line after the `\r`
+    // and emits a spurious empty submatch (e.g. `parse|` under `-x`). The `\r`
+    // is still kept in the displayed `lines` text, matching ripgrep.
+    let line = match line.split_last() {
+        Some((b'\r', head)) => head,
+        _ => line,
+    };
     re.find_iter(line)
         .map(|matched| {
             serde_json::json!({

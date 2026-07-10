@@ -39,6 +39,7 @@ All notable changes to this project will be documented in this file.
 - Throttled async catch-up spawning with a coarse TTL stamp so a burst of concurrent stale searches collapses to roughly one `st update` per window instead of stampeding the writer lock.
 - Truncated UTF-16 files (odd byte count after the BOM) now decode the incomplete trailing code unit as U+FFFD instead of dropping it, matching ripgrep and removing an `-x` false-positive divergence (oracle fixture `repro_e1c1603c26349124`).
 - `-x` (line-regexp) now matches CRLF mode like `rg --crlf`: a trailing `\r` at end-of-line is treated as part of the terminator, so `^pat$` matches a final line `pat\r` and submatch extraction stays consistent with the match decision (oracle fixture `repro_e1477df13c5a98f4`).
+- JSON submatch enumeration strips a bare trailing `\r` from the final line before matching, so a CRLF-aware regex no longer emits a spurious empty submatch after the `\r` on empty-alternation queries like `parse|` under `-x` (oracle fixtures `repro_45977b47dc1f41aa`, `repro_bf18cfbef891f8f8`). The `\r` is still kept in the rendered line text.
 - Resolved a predictable temporary file name TOCTOU vulnerability in `write_atomic` by using random UUIDs.
 - Canonicalized directory paths before performing sensitive prefix checks in `validate_index_dir`.
 - Structured verifier to count backward line-starts relative to a watermark to remove the quadratic $O(\text{matches} \times \text{file\_size})$ cost.
