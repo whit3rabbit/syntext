@@ -13,12 +13,51 @@ use super::{
 // T013: build_covering -- query-time covering set extraction
 // ---------------------------------------------------------------------------
 
-/// Extract the minimal covering set of grams from a query pattern.
+/// Grams classified by boundary reliability.
+///
+/// When a literal query is verified via `memchr::memmem`, the pattern can
+/// match anywhere in a file (substring semantics).  Token-aligned grams
+/// anchored only by synthetic position-0 / position-len boundaries cannot
+/// capture sub-token matches (e.g. literal `parse` misses `reparse`).
+///
+/// Splitting grams into two tiers lets the query router widen the candidate
+/// set when edge-only grams would produce false negatives.
+#[derive(Debug, Clone, Default)]
+pub struct CoveringSet {
+    /// Grams with at least one real (interior or forced-edge) boundary.
+    /// These are reliably anchored and can safely narrow the candidate set
+    /// via AND semantics.
+    pub required: Vec<u64>,
+    /// Grams bounded entirely by synthetic boundaries (both position 0 and
+    /// len, with neither endpoint byte being a forced boundary).
+    /// Using these alone as an AND filter risks false negatives.
+    pub optional: Vec<u64>,
+}
+
+impl CoveringSet {
+    /// All grams (required + optional) in a single flat iterator.
+    pub fn all_grams(&self) -> impl Iterator<Item = u64> + '_ {
+        self.required.iter().chain(self.optional.iter()).copied()
+    }
+
+    /// True when no grams of either tier exist.
+    pub fn is_empty(&self) -> bool {
+        self.required.is_empty() && self.optional.is_empty()
+    }
+}
+
+/// Extract the minimal covering set of grams from a query pattern,
+/// classified into required and optional tiers.
 ///
 /// Lowercases `input`, detects the same boundary positions as the original
-/// token-aligned query path, and emits one gram hash per consecutive-boundary span with length >=
-/// `MIN_GRAM_LEN`. The result is used as an AND query: all emitted grams
-/// must appear in a document for it to be a candidate.
+/// token-aligned query path, and emits one gram hash per
+/// consecutive-boundary span with length >= `MIN_GRAM_LEN`.
+///
+/// Each gram is classified:
+/// - **required**: at least one boundary is real (interior position, or
+///   position 0/len with a forced-boundary byte).
+/// - **optional**: both boundaries are synthetic (position 0 and len,
+///   neither endpoint byte is a forced boundary).
 ///
 /// Returns `None` if no grams of sufficient length exist (the entire query
 /// falls in sub-`MIN_GRAM_LEN` spans). Callers must fall back to full scan.
@@ -28,15 +67,28 @@ use super::{
 /// ```
 /// use syntext::tokenizer::build_covering;
 ///
-/// // "parse_query" splits at forced boundaries around '_' into
-/// // "parse" and "query" (two grams, each >= MIN_GRAM_LEN).
+/// // "parse_query" has one synthetic boundary for each gram (start/end of query)
+/// // so they are optional to prevent false negatives on sub-token matches.
 /// let covering = build_covering(b"parse_query").unwrap();
-/// assert!(covering.len() >= 2);
+/// assert!(covering.required.is_empty());
+/// assert_eq!(covering.optional.len(), 2);
+///
+/// // "_parse_query_" is fully anchored by forced boundaries at start and end,
+/// // so its grams are required.
+/// let covering = build_covering(b"_parse_query_").unwrap();
+/// assert!(covering.required.len() >= 2);
+/// assert!(covering.optional.is_empty());
+///
+/// // "parse" has no interior boundaries and no forced-edge bytes:
+/// // the single gram is optional (unanchored).
+/// let covering = build_covering(b"parse").unwrap();
+/// assert!(covering.required.is_empty());
+/// assert_eq!(covering.optional.len(), 1);
 ///
 /// // Short query: no qualifying grams
 /// assert!(build_covering(b"ab").is_none());
 /// ```
-pub fn build_covering(input: &[u8]) -> Option<Vec<u64>> {
+pub fn build_covering(input: &[u8]) -> Option<CoveringSet> {
     if input.len() < MIN_GRAM_LEN {
         return None;
     }
@@ -50,22 +102,37 @@ pub fn build_covering(input: &[u8]) -> Option<Vec<u64>> {
     // rare case where the pattern is long enough but no spans qualify.
     let lower: Vec<u8> = input.iter().map(|b| b.to_ascii_lowercase()).collect();
     with_boundary_positions_lower(&lower, |boundaries| {
-        let mut hashes = Vec::new();
+        let mut required = Vec::new();
+        let mut optional = Vec::new();
+
         for w in boundaries.windows(2) {
             let (start, end) = (w[0], w[1]);
             let span = end - start;
-            if (MIN_GRAM_LEN..=MAX_GRAM_LEN).contains(&span) {
-                hashes.push(gram_hash(&lower[start..end]));
+            if !(MIN_GRAM_LEN..=MAX_GRAM_LEN).contains(&span) {
+                continue;
             }
             // Spans outside [MIN_GRAM_LEN, MAX_GRAM_LEN] are not covered.
             // This leaves a gap in coverage (more false positives), but correctness
             // is maintained because the verifier always re-checks each candidate.
+
+            // A boundary at position 0 or len is "real" only when the byte
+            // at that position is a forced boundary character. Interior
+            // boundaries (start > 0, end < len) are always real.
+            let start_is_real = start > 0 || is_forced_boundary(lower[0]);
+            let end_is_real = end < lower.len() || is_forced_boundary(lower[lower.len() - 1]);
+
+            let hash = gram_hash(&lower[start..end]);
+            if start_is_real && end_is_real {
+                required.push(hash);
+            } else {
+                optional.push(hash);
+            }
         }
 
-        if hashes.is_empty() {
+        if required.is_empty() && optional.is_empty() {
             None
         } else {
-            Some(hashes)
+            Some(CoveringSet { required, optional })
         }
     })
 }

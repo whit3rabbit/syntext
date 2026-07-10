@@ -34,7 +34,7 @@ pub mod weights;
 
 /// Query-time covering set extraction (build_covering, build_covering_inner).
 mod covering;
-pub use covering::{build_covering, build_covering_inner};
+pub use covering::{build_covering, build_covering_inner, CoveringSet};
 
 use weights::BIGRAM_WEIGHTS;
 use xxhash_rust::xxh64::xxh64;
@@ -163,30 +163,6 @@ fn boundary_positions(bytes: &[u8]) -> Vec<usize> {
     positions
 }
 
-/// Like `boundary_positions` but skips inner `to_ascii_lowercase()` since
-/// the caller guarantees `bytes` is already lowercase.
-#[cfg(test)]
-fn boundary_positions_lower(bytes: &[u8]) -> Vec<usize> {
-    let n = bytes.len();
-    let mut positions = Vec::with_capacity(n / 4);
-    positions.push(0);
-    for i in 1..n {
-        if is_forced_boundary(bytes[i]) || is_forced_boundary(bytes[i - 1]) {
-            positions.push(i);
-            continue;
-        }
-        // CamelCase tier skipped: already-lowercase input has no uppercase bytes.
-        let idx = (bytes[i - 1] as usize) << 8 | (bytes[i] as usize);
-        if BIGRAM_WEIGHTS[idx] >= BOUNDARY_THRESHOLD {
-            positions.push(i);
-        }
-    }
-    if n > 0 {
-        positions.push(n);
-    }
-    positions.dedup();
-    positions
-}
 
 /// Thread-local buffered variant of `boundary_positions_lower` using a callback
 /// pattern to avoid cloning the result Vec on every call.

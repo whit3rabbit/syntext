@@ -49,10 +49,10 @@ fn covering_subset_of_all_in_context() {
                 }
 
                 let substr = &lower[start..end];
-                if let Some(covering) = build_covering(substr) {
-                    for h in &covering {
+                if let Some(ref covering) = build_covering(substr) {
+                    for h in covering.all_grams() {
                         assert!(
-                            all.contains(h),
+                            all.contains(&h),
                             "VIOLATION: query={:?} in doc={:?}, gram {:016x} not found\n\
                              boundaries: {:?}\nquery span: [{}..{}]",
                             String::from_utf8_lossy(substr),
@@ -121,10 +121,10 @@ proptest! {
                 }
 
                 let substr = &lower[start..end];
-                if let Some(covering) = build_covering(substr) {
-                    for h in &covering {
+                if let Some(ref covering) = build_covering(substr) {
+                    for h in covering.all_grams() {
                         prop_assert!(
-                            all.contains(h),
+                            all.contains(&h),
                             "VIOLATION: query={:?} in doc context, gram not found",
                             String::from_utf8_lossy(substr)
                         );
@@ -175,10 +175,11 @@ fn arbitrary_substring_coverage() {
             let all: std::collections::HashSet<u64> = build_all(&doc).into_iter().collect();
             let substr = &lower[start..end];
 
-            if let Some(covering) = build_covering(substr) {
+            if let Some(ref covering) = build_covering(substr) {
                 total_queries.set(total_queries.get() + 1);
-                total_grams_checked.set(total_grams_checked.get() + covering.len() as u64);
-                let violations = covering.iter().filter(|h| !all.contains(h)).count();
+                let gram_count = covering.required.len() + covering.optional.len();
+                total_grams_checked.set(total_grams_checked.get() + gram_count as u64);
+                let violations = covering.all_grams().filter(|h| !all.contains(h)).count();
                 if violations > 0 {
                     total_violations.set(total_violations.get() + 1);
                 }

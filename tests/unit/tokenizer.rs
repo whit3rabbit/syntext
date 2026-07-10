@@ -19,7 +19,9 @@ fn all_hashes(input: &[u8]) -> std::collections::HashSet<u64> {
 }
 
 fn covering_hashes(input: &[u8]) -> Vec<u64> {
-    build_covering(input).unwrap_or_default()
+    build_covering(input)
+        .map(|c| c.all_grams().collect())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -108,9 +110,10 @@ fn build_covering_case_insensitive() {
 #[test]
 fn covering_no_duplicates() {
     let covering = build_covering(b"parse_query_engine").unwrap_or_default();
-    let unique: std::collections::HashSet<u64> = covering.iter().copied().collect();
+    let all_grams: Vec<u64> = covering.all_grams().collect();
+    let unique: std::collections::HashSet<u64> = all_grams.iter().copied().collect();
     assert_eq!(
-        covering.len(),
+        all_grams.len(),
         unique.len(),
         "build_covering emitted duplicate hashes"
     );
@@ -125,11 +128,12 @@ fn single_token_one_gram() {
     // "xyz" has no high-weight internal bigrams for typical code pairs.
     // Only boundaries are at 0 and 3.
     let covering = build_covering(b"xyz");
-    if let Some(hashes) = covering {
+    if let Some(ref cov) = covering {
+        let total = cov.required.len() + cov.optional.len();
         assert_eq!(
-            hashes.len(),
-            1,
-            "single token must produce exactly 1 covering gram"
+            total, 1,
+            "single token must produce exactly 1 covering gram, got {}",
+            total
         );
     }
     // If covering is None, that means the span is empty (can't happen for len=3),
@@ -312,10 +316,11 @@ fn forced_boundary_splits_snake_case() {
     // Underscore creates forced boundaries on both sides, giving spans
     // "parse", "_", "query". The "_" span is 1 byte (< MIN_GRAM_LEN),
     // so only "parse" and "query" produce grams.
+    let total = covering.required.len() + covering.optional.len();
     assert!(
-        covering.len() >= 2,
+        total >= 2,
         "parse_query must produce at least 2 covering grams, got {}",
-        covering.len()
+        total
     );
 }
 
@@ -345,8 +350,8 @@ fn covering_subset_in_document_context() {
             b"args", b"items",
         ];
         for q in queries {
-            if let Some(covering) = build_covering(q) {
-                for h in &covering {
+            if let Some(ref covering) = build_covering(q) {
+                for h in covering.all_grams() {
                     // This gram should appear in build_all of ANY document
                     // containing this token, because forced boundaries ensure
                     // the token is extracted as a gram in both contexts.
@@ -355,7 +360,7 @@ fn covering_subset_in_document_context() {
                     let doc_str = String::from_utf8_lossy(doc).to_ascii_lowercase();
                     if doc_str.contains(&q_str.to_ascii_lowercase()) {
                         assert!(
-                            all.contains(h),
+                            all.contains(&h),
                             "COVERAGE VIOLATION: query={:?} in doc={:?}, gram {:016x} not found",
                             q_str,
                             String::from_utf8_lossy(doc),

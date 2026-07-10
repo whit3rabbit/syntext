@@ -1,5 +1,26 @@
 use super::*;
 
+fn boundary_positions_lower(bytes: &[u8]) -> Vec<usize> {
+    let n = bytes.len();
+    let mut positions = Vec::with_capacity(n / 4);
+    positions.push(0);
+    for i in 1..n {
+        if is_forced_boundary(bytes[i]) || is_forced_boundary(bytes[i - 1]) {
+            positions.push(i);
+            continue;
+        }
+        let idx = (bytes[i - 1] as usize) << 8 | (bytes[i] as usize);
+        if BIGRAM_WEIGHTS[idx] >= BOUNDARY_THRESHOLD {
+            positions.push(i);
+        }
+    }
+    if n > 0 {
+        positions.push(n);
+    }
+    positions.dedup();
+    positions
+}
+
 #[test]
 fn empty_input_returns_empty() {
     assert!(build_all(b"").is_empty());
@@ -65,7 +86,7 @@ fn covering_hashes_subset_of_all_hashes() {
     let input = b"parse_query";
     let all: std::collections::HashSet<u64> = build_all(input).into_iter().collect();
     let covering = build_covering(input).unwrap_or_default();
-    for h in covering {
+    for h in covering.all_grams() {
         assert!(
             all.contains(&h),
             "gram from build_covering not found in build_all on same input"
