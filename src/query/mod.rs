@@ -5,9 +5,10 @@
 //! - IndexedRegex: HIR decomposition yields grams, use posting list intersection.
 //! - FullScan: no extractable grams (e.g. `.*`), scan all candidate files.
 
+/// Regex decomposition into n-gram boolean queries.
 pub mod regex_decompose;
 
-use crate::tokenizer::build_covering;
+use crate::tokenizer::{build_covering, CoveringSet};
 
 /// Boolean query tree produced by regex decomposition.
 ///
@@ -82,50 +83,32 @@ pub enum QueryRoute {
     IndexedRegex(GramQuery),
     /// No grams extractable (e.g. `.*`, single-char patterns). Scan all files.
     FullScan,
-    /// Symbol search via `sym:`, `def:`, or `ref:` prefix. Name to look up.
-    SymbolSearch {
-        /// The name to search for (after stripping the prefix).
-        name: String,
-        /// Optional kind filter (e.g. "function"). `ref:` leaves this None.
-        kind_filter: Option<String>,
-    },
 }
 
 /// Classify a search pattern and return the optimal execution route.
 ///
-/// - SymbolSearch if pattern has `sym:`, `def:`, or `ref:` prefix
 /// - Literal if pattern has no regex metacharacters AND case-sensitive
 /// - FullScan if HIR yields `All` (no useful grams)
 /// - IndexedRegex otherwise
+///
+/// Symbol lookups are NOT routed here: they are an explicit `--sym` command
+/// path (see `Index::search_symbols`), so `sym:`/`def:`/`ref:` are ordinary
+/// searchable text.
 pub fn route_query(pattern: &str, case_insensitive: bool) -> Result<QueryRoute, String> {
-    // Symbol prefix detection: sym:, def:, ref:
-    //
-    // ref: is intentionally an alias for sym: (kind_filter: None). A true
-    // reference-finder would need full-file parse trees to distinguish
-    // definitions from usages, which is not implemented. Keeping the prefix
-    // accepted (rather than rejecting it) avoids breaking callers that
-    // already use ref: and lets us add real reference-finding in v2 without
-    // a prefix change.
-    if let Some(rest) = pattern
-        .strip_prefix("sym:")
-        .or_else(|| pattern.strip_prefix("ref:"))
-    {
-        return Ok(QueryRoute::SymbolSearch {
-            name: rest.to_string(),
-            kind_filter: None,
-        });
-    }
-    if let Some(rest) = pattern.strip_prefix("def:") {
-        return Ok(QueryRoute::SymbolSearch {
-            name: rest.to_string(),
-            kind_filter: Some("function".to_string()),
-        });
-    }
-
     if case_insensitive && is_literal(pattern) {
+        // Mirror the case-sensitive `Literal` arm's candidate logic (see
+        // search::search). Only the required (interior-anchored) grams are
+        // AND-intersected: optional grams have synthetic boundaries and
+        // ANDing them would silently drop sub-token matches (e.g. `st -i
+        // parse` missing `reparse_input` when another file emits `parse` as a
+        // token). With no required gram, route to full scan. Selectivity is
+        // applied in search() so a common required gram still bails to scan.
+        // Verification runs through the case-insensitive regex.
         return Ok(match build_covering(pattern.as_bytes()) {
-            Some(grams) => QueryRoute::IndexedRegex(GramQuery::Grams(grams)),
-            None => QueryRoute::FullScan,
+            Some(covering) if !covering.required.is_empty() => {
+                QueryRoute::IndexedRegex(GramQuery::Grams(covering.required))
+            }
+            _ => QueryRoute::FullScan,
         });
     }
 
@@ -154,9 +137,10 @@ pub fn is_literal(pattern: &str) -> bool {
     })
 }
 
-/// Extract covering gram hashes from a literal pattern.
+/// Extract covering gram hashes from a literal pattern, classified by
+/// boundary reliability.
 ///
 /// Returns `None` if the pattern is too short to produce any qualifying gram.
-pub fn literal_grams(pattern: &str) -> Option<Vec<u64>> {
+pub fn literal_grams(pattern: &str) -> Option<CoveringSet> {
     build_covering(pattern.as_bytes())
 }

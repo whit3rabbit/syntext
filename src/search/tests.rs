@@ -15,6 +15,9 @@ fn fallback_path_filter_uses_same_glob_semantics() {
         exclude_type: None,
         max_results: None,
         case_insensitive: false,
+        verify_pattern: None,
+        #[cfg(any(test, feature = "oracle"))]
+        force_full_scan: false,
     };
 
     assert!(matches_path_filter(
@@ -41,11 +44,11 @@ fn literal_queries_short_circuit_when_grams_are_missing() {
     };
     let index = Index::build(config).unwrap();
     let snap = index.snapshot();
-    let grams = literal_grams("xyzzy_no_match_sentinel_42").unwrap();
+    let covering = literal_grams("xyzzy_no_match_sentinel_42").unwrap();
 
-    assert!(should_use_index(&grams, &snap).unwrap());
+    assert!(should_use_index(&covering.required, &snap).unwrap());
 
-    let candidates = execute_query(&GramQuery::Grams(grams), &snap).unwrap();
+    let candidates = execute_query(&GramQuery::Grams(covering.required.clone()), &snap).unwrap();
     assert!(candidates.is_empty());
     drop(index);
 }
@@ -60,7 +63,7 @@ fn posting_bitmaps_are_cached_per_snapshot() {
     };
     let index = Index::build(config).unwrap();
     let snap = index.snapshot();
-    let gram = literal_grams("parse_query").unwrap()[0];
+    let gram = literal_grams("_parse_query_").unwrap().required[0];
 
     assert_eq!(snap.posting_bitmap_cache_len(), 0);
 
@@ -130,9 +133,9 @@ fn should_use_index_very_selective_term() {
     };
     let index = Index::build(config).unwrap();
     let snap = index.snapshot();
-    let grams = literal_grams("ultra_rare_xtqvz_sentinel").unwrap();
+    let covering = literal_grams("ultra_rare_xtqvz_sentinel").unwrap();
     assert!(
-        should_use_index(&grams, &snap).unwrap(),
+        should_use_index(&covering.required, &snap).unwrap(),
         "1% cardinality must use index (threshold clamped to max 0.50)"
     );
     drop(index);
@@ -160,9 +163,9 @@ fn should_use_index_ubiquitous_term() {
     };
     let index = Index::build(config).unwrap();
     let snap = index.snapshot();
-    let grams = literal_grams("common_everywhere").unwrap();
+    let covering = literal_grams("common_everywhere").unwrap();
     assert!(
-        !should_use_index(&grams, &snap).unwrap(),
+        !should_use_index(&covering.required, &snap).unwrap(),
         "100% cardinality must fall back to scan (threshold clamped to max 0.50)"
     );
     drop(index);
@@ -192,13 +195,13 @@ fn should_use_index_respects_snapshot_threshold() {
     let snap_high = Arc::new(index.snapshot().with_scan_threshold(0.40));
     let snap_low = Arc::new(index.snapshot().with_scan_threshold(0.20));
 
-    let grams = literal_grams("target_alpha_marker_fn").unwrap();
+    let covering = literal_grams("target_alpha_marker_fn").unwrap();
     assert!(
-        should_use_index(&grams, &snap_high).unwrap(),
+        should_use_index(&covering.required, &snap_high).unwrap(),
         "30% cardinality should use index when threshold is 0.40"
     );
     assert!(
-        !should_use_index(&grams, &snap_low).unwrap(),
+        !should_use_index(&covering.required, &snap_low).unwrap(),
         "30% cardinality should NOT use index when threshold is 0.20"
     );
     drop(index);
@@ -262,9 +265,9 @@ fn should_use_index_for_compound_identifier_with_selective_intersection() {
     let index = Index::build(config).unwrap();
     let snap = index.snapshot();
 
-    let grams = literal_grams("irq_work_queue").unwrap();
+    let covering = literal_grams("irq_work_queue").unwrap();
     assert!(
-        should_use_index(&grams, &snap).unwrap(),
+        should_use_index(&covering.required, &snap).unwrap(),
         "compound identifier should use index when gram intersection is selective"
     );
     drop(index);
@@ -320,7 +323,7 @@ fn posting_budget_cache_hits_are_free() {
     };
     let index = Index::build(config).unwrap();
     let snap = index.snapshot();
-    let gram = literal_grams("parse_query").unwrap()[0];
+    let gram = literal_grams("_parse_query_").unwrap().required[0];
 
     // First load populates the cache.
     let _first = posting_bitmap(gram, &snap).unwrap();

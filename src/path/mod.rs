@@ -3,6 +3,7 @@
 //! `PathIndex` maps file extensions and path components to sets of file_ids.
 //! A file_id is the index of the file's path in the sorted `paths` vector.
 
+/// Path and extension filtering/scoping logic.
 pub mod filter;
 
 use std::collections::{HashMap, HashSet};
@@ -22,7 +23,14 @@ pub struct PathIndex {
     pub paths: Vec<PathBuf>,
     /// Exact path -> file_id for O(1) lookups.
     path_to_file_id: HashMap<PathBuf, u32>,
-    /// Stable file_id -> path. Deleted entries are `None`.
+    /// Stable file_id -> path. Deleted entries are tombstoned as `None` and
+    /// the vec grows monotonically until a full rebuild/compaction renumbers.
+    /// This is the intended cost of stable file IDs (see AGENTS.md "Key Design
+    /// Decisions"): it keeps `doc_to_file_id` maps valid across incremental
+    /// updates without renumbering unchanged files. The growth is bounded in
+    /// practice because the overlay cap triggers a rebuild before churn can
+    /// inflate this vec without limit; a process that churns through far more
+    /// files than the base count should run `st index` to compact.
     file_id_to_path: Vec<Option<PathBuf>>,
     /// File extension (e.g. "rs") -> set of file_ids with that extension.
     pub extension_to_files: HashMap<Vec<u8>, RoaringBitmap>,
@@ -171,6 +179,41 @@ impl PathIndex {
             }
         }
         map
+    }
+}
+
+/// Reconstruct a `PathIndex` from a sorted, deduplicated path list plus
+/// precomputed extension/component bitmaps.
+///
+/// Used by the `paths.idx` sidecar decoder (`index::paths_idx`) to rebuild a
+/// `PathIndex` without recomputing bitmaps from scratch. `file_id` is
+/// assigned by position, matching `PathIndex::build`'s convention exactly
+/// (this is only valid for a full rebuild path like `Index::open`, which
+/// never needs to preserve stable file IDs across process restarts).
+///
+/// `paths` must already be sorted and deduplicated, and `extension_to_files`
+/// / `component_to_files` must be consistent with it; the sidecar decoder is
+/// responsible for that invariant (a checksum over the whole payload guards
+/// against a torn or corrupted sidecar reaching this function at all).
+pub(crate) fn from_sidecar_parts(
+    paths: Vec<PathBuf>,
+    extension_to_files: HashMap<Vec<u8>, RoaringBitmap>,
+    component_to_files: HashMap<Vec<u8>, RoaringBitmap>,
+) -> PathIndex {
+    let mut path_to_file_id: HashMap<PathBuf, u32> = HashMap::with_capacity(paths.len());
+    let mut file_id_to_path: Vec<Option<PathBuf>> = Vec::with_capacity(paths.len());
+    for (file_id, path) in paths.iter().enumerate() {
+        path_to_file_id.insert(path.clone(), file_id as u32);
+        file_id_to_path.push(Some(path.clone()));
+    }
+    let next_file_id = paths.len() as u32;
+    PathIndex {
+        paths,
+        path_to_file_id,
+        file_id_to_path,
+        extension_to_files,
+        component_to_files,
+        next_file_id,
     }
 }
 

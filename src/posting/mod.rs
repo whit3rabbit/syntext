@@ -17,6 +17,7 @@
 //!   for similarly-sized lists, galloping for size ratio >32:1.
 //! - `union`: OR over multiple posting lists via k-way min-heap merge.
 
+/// Roaring bitmap utilities and set operations.
 pub mod roaring_util;
 
 use roaring::RoaringBitmap;

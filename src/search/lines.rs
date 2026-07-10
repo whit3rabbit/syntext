@@ -29,22 +29,18 @@ pub(crate) fn for_each_line(content: &[u8], mut f: impl FnMut(u32, usize, &[u8])
     let mut line_num: u32 = 1;
     let mut line_start: usize = 0;
 
-    for i in 0..=content.len() {
-        let is_end = i == content.len();
-        let is_newline = !is_end && content[i] == b'\n';
+    for pos in memchr::memchr_iter(b'\n', content) {
+        let line_end = if pos > line_start && content[pos - 1] == b'\r' {
+            pos - 1
+        } else {
+            pos
+        };
+        f(line_num, line_start, &content[line_start..line_end]);
+        line_num += 1;
+        line_start = pos + 1;
+    }
 
-        if is_newline || is_end {
-            if is_end && line_start == content.len() {
-                break;
-            }
-            let line_end = if is_newline && i > line_start && content[i - 1] == b'\r' {
-                i - 1
-            } else {
-                i
-            };
-            f(line_num, line_start, &content[line_start..line_end]);
-            line_num += 1;
-            line_start = i + 1;
-        }
+    if line_start < content.len() {
+        f(line_num, line_start, &content[line_start..]);
     }
 }

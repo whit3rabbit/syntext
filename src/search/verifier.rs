@@ -10,13 +10,11 @@
 
 use std::path::Path;
 
-use memchr::memmem;
+use memchr::{memchr, memrchr, memchr_iter, memmem};
 use regex::bytes::Regex;
 
 use crate::index::is_binary;
 use crate::SearchMatch;
-
-use super::lines::for_each_line;
 
 /// Verify a literal pattern against raw file bytes using `memchr::memmem`.
 ///
@@ -27,11 +25,61 @@ pub fn verify_literal(pattern: &str, path: &Path, content: &[u8]) -> Vec<SearchM
         return Vec::new(); // skip binary files
     }
     let finder = memmem::Finder::new(pattern.as_bytes());
-    collect_line_matches(path, content, |line| {
-        finder
-            .find(line)
-            .map(|start| (start, start + pattern.len()))
-    })
+    let mut matches = Vec::new();
+
+    let mut last_line_start = usize::MAX;
+    let mut current_line_num = 1;
+    let mut last_newline_counted_up_to = 0;
+
+    for match_start in finder.find_iter(content) {
+        // Locate line boundaries around hits
+        // 1. Line start is the byte after the last '\n' before match_start
+        let prev_newline = memrchr(b'\n', &content[..match_start]);
+        let line_start = match prev_newline {
+            Some(pos) => pos + 1,
+            None => 0,
+        };
+
+        // If this match is on the same line as the previous match, we skip it
+        // because we only return the first match per line.
+        if line_start == last_line_start {
+            continue;
+        }
+
+        // 2. Line end is the first '\n' at or after match_start (or end of file)
+        let next_newline = memchr(b'\n', &content[match_start..]);
+        let line_end = match next_newline {
+            Some(pos) => match_start + pos,
+            None => content.len(),
+        };
+
+        // Trim trailing '\r' if present
+        let line_content_end = if line_end > line_start && content[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+
+        // 3. Count newlines between last_newline_counted_up_to and line_start
+        if line_start > last_newline_counted_up_to {
+            let newline_count = memchr_iter(b'\n', &content[last_newline_counted_up_to..line_start]).count();
+            current_line_num += newline_count as u32;
+            last_newline_counted_up_to = line_start;
+        }
+
+        matches.push(SearchMatch {
+            path: path.to_path_buf(),
+            line_number: current_line_num,
+            line_content: content[line_start..line_content_end].to_vec(),
+            byte_offset: match_start as u64,
+            submatch_start: match_start - line_start,
+            submatch_end: (match_start + pattern.len()) - line_start,
+        });
+
+        last_line_start = line_start;
+    }
+
+    matches
 }
 
 /// Verify a compiled regex against raw file bytes.
@@ -42,32 +90,65 @@ pub fn verify_regex(re: &Regex, path: &Path, content: &[u8]) -> Vec<SearchMatch>
     if is_binary(content) {
         return Vec::new(); // skip binary files
     }
-    collect_line_matches(path, content, |line| {
-        re.find(line).map(|m| (m.start(), m.end()))
-    })
-}
-
-/// Iterate `content` line by line, calling `predicate` on each line's bytes.
-/// Returns `SearchMatch` for every line where `predicate` returns the start
-/// offset of the first match within that line.
-fn collect_line_matches(
-    path: &Path,
-    content: &[u8],
-    mut predicate: impl FnMut(&[u8]) -> Option<(usize, usize)>,
-) -> Vec<SearchMatch> {
     let mut matches = Vec::new();
-    for_each_line(content, |line_num, line_start, line| {
-        if let Some((match_start, match_end)) = predicate(line) {
-            matches.push(SearchMatch {
-                path: path.to_path_buf(),
-                line_number: line_num,
-                line_content: line.to_vec(),
-                byte_offset: (line_start + match_start) as u64,
-                submatch_start: match_start,
-                submatch_end: match_end,
-            });
+
+    let mut last_line_start = usize::MAX;
+    let mut current_line_num = 1;
+    let mut last_newline_counted_up_to = 0;
+
+    for m in re.find_iter(content) {
+        let match_start = m.start();
+        let match_end = m.end();
+
+        // 1. Line start is the byte after the last '\n' before match_start
+        let prev_newline = memrchr(b'\n', &content[..match_start]);
+        let line_start = match prev_newline {
+            Some(pos) => pos + 1,
+            None => 0,
+        };
+
+        // 2. Line end is the first '\n' at or after match_start (or end of file)
+        let next_newline = memchr(b'\n', &content[match_start..]);
+        let line_end = match next_newline {
+            Some(pos) => match_start + pos,
+            None => content.len(),
+        };
+
+        // Trim trailing '\r' if present
+        let line_content_end = if line_end > line_start && content[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+
+        // If the match spans across a newline, it is invalid (matches must be line-by-line).
+        if match_end > line_content_end {
+            continue;
         }
-    });
+
+        // If this match is on the same line as the previous match, we skip it.
+        if line_start == last_line_start {
+            continue;
+        }
+
+        // 3. Count newlines between last_newline_counted_up_to and line_start
+        if line_start > last_newline_counted_up_to {
+            let newline_count = memchr_iter(b'\n', &content[last_newline_counted_up_to..line_start]).count();
+            current_line_num += newline_count as u32;
+            last_newline_counted_up_to = line_start;
+        }
+
+        matches.push(SearchMatch {
+            path: path.to_path_buf(),
+            line_number: current_line_num,
+            line_content: content[line_start..line_content_end].to_vec(),
+            byte_offset: match_start as u64,
+            submatch_start: match_start - line_start,
+            submatch_end: match_end - line_start,
+        });
+
+        last_line_start = line_start;
+    }
 
     matches
 }
