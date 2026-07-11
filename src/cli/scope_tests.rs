@@ -246,6 +246,7 @@ mod glob_and_depth_tests {
         ));
     }
 
+    #[cfg(unix)] // OsStr::from_bytes is unix-only; non-UTF-8 paths can't exist on Windows
     #[test]
     fn test_non_utf8_path_matching_directory_prefix() {
         use std::os::unix::ffi::OsStrExt;
