@@ -21,7 +21,7 @@
 
 Hybrid code search index for agent workflows, built in Rust. Indexes repositories using sparse n-grams, then narrows to a small candidate set before verification. Drop-in replacement for `rg` in AI agent loops where grep is called repeatedly and in parallel.
 
-**Status: stable (v1.4).**
+**Status: stable (v2.0).**
 
 ## Installation
 
@@ -274,11 +274,11 @@ Query -> Router -> [Literal | Indexed Regex | Full Scan]
 
 Three index components:
 
-- **Content index**: sparse n-gram posting lists. Trigram augmentation ensures no false negatives for token-aligned queries.
+- **Content index**: sparse n-gram posting lists. Context-independent forced boundaries ensure no false negatives for token-aligned queries.
 - **Path index**: Roaring bitmap component sets for path/type filtering.
 - **Symbol index** (optional): Tree-sitter extraction into SQLite.
 
-Segments are immutable single-file mmap structures (SNTX format). Updates go through an in-memory overlay with atomic batch commit via `ArcSwap`.
+Segments are immutable single-file mmap structures (SNTX format). Updates commit atomically to an in-memory overlay via `ArcSwap`, while durable incremental HEAD-move updates are written as LSM-style delta segments with a checksummed delete-set sidecar.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full quantitative analysis: selectivity math, index size estimates, posting list encoding tradeoffs.
 
@@ -291,28 +291,12 @@ wasm-pack build --target bundler -- --features wasm --no-default-features
 # output: pkg/  (JS glue + .wasm + TypeScript types)
 ```
 
-## Project status
-
-**All phases complete (v1.4).** Core `st index && st "pattern"` workflow validated against ripgrep. Symbol search available behind `--features symbols`.
-
-| Phase | Status | What it delivers |
-|---|---|---|
-| 1. Setup | Complete | Cargo project, dependencies, module structure |
-| 2. Foundational | Complete | Weight table, tokenizer, posting lists, correctness harness |
-| 3. US5 -- Build | Complete | Full index build from scratch |
-| 4. US1 -- Search | Complete | Literal + regex search, ripgrep correctness validation |
-| 5. US2 -- Incremental | Complete | Overlay, batch commit, read-your-writes |
-| 6. US3 -- Path scoping | Complete | Path/type filters with Roaring bitmaps |
-| 7. US4 -- Symbols | Complete | Tree-sitter symbol extraction, SQLite storage |
-| 8. CLI | Complete | `st` binary with grep-compatible output |
-| 9. Polish | Complete | Bug fixes, security hardening, benchmarks, documentation |
-
 ## Known limitations
 
-1. **Crash recovery**: Overlay state is lost on unclean shutdown. Run `st update` or `st index` after a crash.
+1. **Crash recovery**: Uncommitted in-memory overlay state (used by resident integrations) is lost on unclean shutdown. For CLI searches, index state is persisted to disk via delta segments and delete sidecars, and any staleness is auto-healed on the next search via automatic bounded update-on-search. If a sidecar is corrupted, the index fails closed and requires a re-index or update.
 2. **Non-aligned substring coverage**: ~16% false-negative rate for queries that don't align with token boundaries. Token-aligned queries (identifiers, keywords) have 0% false negatives.
 3. **Network filesystems**: Index directory must be on local filesystem. NFS/SMB behavior is undefined.
-4. **Case-insensitive overhead**: ~15-20% more candidates due to lowercase normalization. Correct results guaranteed by verifier.
+4. **Case-insensitive overhead**: ~15-20% more candidates due to lowercase normalization. Correct results are guaranteed by the verifier.
 5. **`\r`-only line endings**: Treated as a single line (matches ripgrep behavior).
 6. **Symbol search accuracy**: Tier 3 (heuristic) results are approximate. Tree-sitter failures fall back silently.
 7. **One root per index**: Each index covers exactly one `--repo-root`. There is no way to merge multiple directories into a single index. To search across two repos, build and query each index separately with `--repo-root`. `st update` requires a git repo; non-git directories must be re-indexed with `st index`.
