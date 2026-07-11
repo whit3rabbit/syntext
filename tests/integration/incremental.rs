@@ -859,6 +859,9 @@ fn untracked_file_found_on_next_search_via_auto_update() {
         .arg(repo.path())
         .arg("--index-dir")
         .arg(index_dir.path())
+        // Slow git spawns on Windows CI starve the default 150ms budget before
+        // ls-files --others detects untracked b.rs; give detection room.
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .args(["-q", "untracked_marker_xyz"])
         .output()
         .expect("run st search");
@@ -943,6 +946,10 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
             .arg("--index-dir")
             .arg(index_dir.path())
             .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "1")
+            // Budget must not starve ls-files --others (untracked detection) on
+            // slow Windows CI, or the 3-file delta is never seen and the
+            // max_files=1 cap can't trip. Budget is independent of the cap.
+            .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
             .arg("branch_switch_marker_0")
             .output()
             .expect("run st search")
@@ -972,6 +979,11 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
             .arg(repo.path())
             .arg("--index-dir")
             .arg(index_dir.path())
+            // Each poll does its own in-band bounded detection (the async
+            // catch-up on an unmoved HEAD is in-memory only, non-durable across
+            // processes). Slow Windows git spawns must not starve the untracked
+            // ls-files pass, or no poll ever sees the change.
+            .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
             .args(["-q", pattern])
             .output()
             .expect("run st search")
