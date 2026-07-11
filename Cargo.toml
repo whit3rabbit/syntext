@@ -67,6 +67,11 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Logging facade (library emits via `log`; the `st` CLI installs the only
+# logger — see src/cli/logger.rs. Zero-cost when no logger is installed, so a
+# library embedder gets total silence by default.)
+log = "0.4"
+
 [target.'cfg(unix)'.dependencies]
 # POSIX constants (O_NOFOLLOW). Usage is gated by #[cfg(unix)] in io_util.rs.
 # See io_util.rs for why the old hardcoded constants were wrong on MIPS/SPARC.

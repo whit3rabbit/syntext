@@ -30,12 +30,16 @@
 // ── Public API ───────────────────────────────────────────────
 /// Core index management, writing, and snapshot components.
 pub mod index;
+/// Error types for index operations.
+pub mod error;
 /// Tree-sitter symbol extraction and SQLite cache storage (optional).
 #[cfg(feature = "symbols")]
 pub mod symbol;
 /// WebAssembly bindings for fully in-memory index operations.
 #[cfg(feature = "wasm")]
 pub mod wasm;
+
+pub use error::IndexError;
 
 // ── Internal modules (not public API) ────────────────────────
 pub(crate) mod base64;
@@ -96,6 +100,7 @@ pub mod __internal {
 }
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Configuration for index building and searching.
 ///
@@ -112,7 +117,11 @@ pub struct Config {
     pub index_dir: PathBuf,
     /// Repository root path.
     pub repo_root: PathBuf,
-    /// Emit progress messages to stderr. Default: false (silent for library consumers).
+    /// CLI-only: sets the `st` binary's log level (verbose → `Debug`, else
+    /// `Warn`). Default: false. The library itself no longer reads this field;
+    /// its diagnostics go through the `log` facade, so a library embedder
+    /// controls verbosity by installing (or not installing) a `log` logger, not
+    /// via this flag.
     pub verbose: bool,
     /// Reject index directories with group/other permission bits (unix only).
     /// Permissive modes allow SIGBUS DoS via concurrent ftruncate on mmap'd
@@ -210,6 +219,77 @@ pub struct SearchMatch {
     pub submatch_end: usize,
 }
 
+/// All matches within a single file, plus the exact bytes the verifier matched
+/// against.
+///
+/// `content` is the encoding-normalized byte view captured at verification time
+/// (UTF-8 BOM stripped, UTF-16 transcoded). Line numbers and byte offsets in
+/// `matches` index into THESE bytes, not the file on disk, which may have
+/// changed since. Rendering from `content` instead of re-reading the path is
+/// what keeps results consistent under concurrent file churn.
+///
+/// Produced by [`Index::search_grouped`](crate::index::Index::search_grouped).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct FileMatches {
+    /// Repository-relative path.
+    pub path: PathBuf,
+    /// Matches within this file, sorted by line number ascending. Never empty.
+    pub matches: Vec<SearchMatch>,
+    /// Encoding-normalized file content at verification time. Cheap to clone
+    /// (`Arc`); shared with the index's internal buffers, so holding results
+    /// does not copy file bytes.
+    pub content: Arc<[u8]>,
+}
+
+impl FileMatches {
+    /// Iterate `(line_number, line_bytes)` over the captured content. Line
+    /// numbers are 1-based; bytes exclude the trailing newline (and the `\r`
+    /// of a CRLF pair), matching [`SearchMatch::line_content`].
+    pub fn lines(&self) -> Vec<(u32, &[u8])> {
+        // Collect (line_no, start, len) inside the closure, then slice
+        // `self.content` after: the closure's `&[u8]` borrows a per-call
+        // lifetime that cannot escape, but the spans can.
+        let mut spans: Vec<(u32, usize, usize)> = Vec::new();
+        crate::search::lines::for_each_line(&self.content, |n, start, line| {
+            spans.push((n, start, line.len()));
+        });
+        spans
+            .into_iter()
+            .map(|(n, start, len)| (n, &self.content[start..start + len]))
+            .collect()
+    }
+
+    /// The lines around `line_number`: up to `before` preceding and `after`
+    /// following, plus the line itself. The tuple's bool is true for the match
+    /// line. This is the ±N context an editor plugin renders next to each hit.
+    ///
+    /// Linear-scans `content` once per call, which is fine for the tens of
+    /// matches a UI shows at a time. To render thousands with context, iterate
+    /// [`lines`](Self::lines) yourself once instead of calling this per match.
+    pub fn context(
+        &self,
+        line_number: u32,
+        before: usize,
+        after: usize,
+    ) -> Vec<(u32, &[u8], bool)> {
+        let target = line_number as usize;
+        let lo = target.saturating_sub(before);
+        let hi = target.saturating_add(after);
+        let mut spans: Vec<(u32, usize, usize, bool)> = Vec::new();
+        crate::search::lines::for_each_line(&self.content, |n, start, line| {
+            let nn = n as usize;
+            if nn >= lo && nn <= hi {
+                spans.push((n, start, line.len(), nn == target));
+            }
+        });
+        spans
+            .into_iter()
+            .map(|(n, start, len, is_match)| (n, &self.content[start..start + len], is_match))
+            .collect()
+    }
+}
+
 /// Search options.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -217,10 +297,19 @@ pub struct SearchMatch {
 pub struct SearchOptions {
     /// Glob pattern to restrict search to matching paths.
     pub path_filter: Option<String>,
-    /// File type filter (e.g., "rs", "py").
+    /// File type filter (e.g., "rs", "py"). Single-type convenience; combined
+    /// with `file_types` (both are honored). Prefer `file_types` for 2+ types
+    /// so the Roaring extension index narrows the candidate set.
     pub file_type: Option<String>,
-    /// Exclude files of this type from results.
+    /// Exclude files of this type from results. Combined with `exclude_types`.
     pub exclude_type: Option<String>,
+    /// Include only files with one of these extensions. Empty by default.
+    /// Unlike a single `file_type`, multiple entries are UNIONed against the
+    /// path index (no fallback to full post-filtering), so `-t rs -t py` still
+    /// narrows candidates. Combined with `file_type`.
+    pub file_types: Vec<String>,
+    /// Exclude files with any of these extensions. Combined with `exclude_type`.
+    pub exclude_types: Vec<String>,
     /// Maximum number of results.
     pub max_results: Option<usize>,
     /// Enable case-insensitive matching.
@@ -267,107 +356,7 @@ pub struct IndexStats {
     pub pending_edits: usize,
 }
 
-/// Errors returned by index operations.
-#[derive(Debug)]
-#[must_use]
-#[non_exhaustive]
-pub enum IndexError {
-    /// I/O error (file not found, permission denied, etc.)
-    Io(std::io::Error),
-    /// No index exists at the given index directory. Build one first
-    /// (`Index::build`, or `st index` from the CLI).
-    IndexNotFound(PathBuf),
-    /// Invalid regex pattern.
-    InvalidPattern(String),
-    /// Index is corrupt and needs rebuilding.
-    CorruptIndex(String),
-    /// Path is outside the repository root.
-    PathOutsideRepo(PathBuf),
-    /// File exceeds maximum indexable size.
-    FileTooLarge {
-        /// Path to the file.
-        path: PathBuf,
-        /// Size of the file in bytes.
-        size: u64,
-    },
-    /// Another process holds a conflicting lock on the index directory.
-    LockConflict(PathBuf),
-    /// Overlay has grown too large relative to the base index.
-    /// Call `Index::build()` to perform a full reindex.
-    OverlayFull {
-        /// Current number of overlay documents.
-        overlay_docs: usize,
-        /// Number of base documents at the time of the check.
-        base_docs: usize,
-    },
-    /// Document ID space exceeded `u32::MAX`.
-    DocIdOverflow {
-        /// Number of base documents already allocated.
-        base_doc_count: u32,
-        /// Number of overlay documents requested on top of the base.
-        overlay_docs: usize,
-    },
-}
 
-impl From<std::io::Error> for IndexError {
-    fn from(err: std::io::Error) -> Self {
-        IndexError::Io(err)
-    }
-}
-
-impl std::fmt::Display for IndexError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IndexError::Io(e) => write!(f, "I/O error: {e}"),
-            IndexError::IndexNotFound(p) => {
-                write!(
-                    f,
-                    "no index found at {}: run `st index` to build one",
-                    p.display()
-                )
-            }
-            IndexError::InvalidPattern(p) => write!(f, "invalid pattern: {p}"),
-            IndexError::CorruptIndex(msg) => write!(f, "corrupt index: {msg}"),
-            IndexError::PathOutsideRepo(p) => {
-                // Use only the last path component to avoid leaking absolute
-                // filesystem layout in library/server contexts where this error
-                // may be forwarded to an untrusted caller.
-                let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                write!(f, "path outside repo: {name}")
-            }
-            IndexError::FileTooLarge { path, size } => {
-                // Same rationale: show filename only, not the full absolute path.
-                let name =
-                    path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                write!(f, "file too large: {name} ({size} bytes)")
-            }
-            IndexError::LockConflict(p) => {
-                write!(f, "index locked by another process: {}", p.display())
-            }
-            IndexError::OverlayFull { overlay_docs, base_docs } => write!(
-                f,
-                "overlay too large ({overlay_docs} overlay docs, {base_docs} base docs): \
-                 run `st index` to rebuild"
-            ),
-            IndexError::DocIdOverflow {
-                base_doc_count,
-                overlay_docs,
-            } => write!(
-                f,
-                "doc_id overflow: base {base_doc_count} docs plus {overlay_docs} overlay docs exceeds u32::MAX"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for IndexError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            IndexError::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
 
 #[cfg(test)]
 mod api_tests {

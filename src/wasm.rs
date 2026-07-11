@@ -45,6 +45,15 @@ impl WasmIndex {
     /// ```
     #[wasm_bindgen(constructor)]
     pub fn new(files: JsValue) -> Result<WasmIndex, JsValue> {
+        // Validate the outer precondition (a plain JS object) up front. Without
+        // this, passing a non-object (number/string/null/array/undefined) goes
+        // through `unchecked_ref` into `Object::entries`, which throws an opaque
+        // JS `TypeError` instead of the clean `Err(JsValue)` path below.
+        if !files.is_object() {
+            return Err(JsValue::from_str(
+                "files must be a plain JS object (Record<string, Uint8Array>)",
+            ));
+        }
         let entries = js_sys::Object::entries(files.unchecked_ref());
 
         let mut map: HashMap<String, Vec<u8>> = HashMap::new();

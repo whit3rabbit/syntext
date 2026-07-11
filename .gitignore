@@ -62,3 +62,6 @@ _ripline-bench/
 .eatahorse-*
 .specify/*
 TODO.md
+
+# Claude Code local plan files
+.zcode/
