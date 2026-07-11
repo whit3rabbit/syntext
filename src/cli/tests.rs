@@ -616,6 +616,10 @@ fn auto_update_finds_new_file_after_index_built() {
         index_dir: idx.path().to_path_buf(),
         repo_root: repo.path().to_path_buf(),
         auto_update: true,
+        // Slow git process spawns on Windows CI can starve the default 150ms
+        // budget before the 3rd detection command (ls-files --others) that
+        // finds untracked b.rs. Use a generous budget so detection completes.
+        auto_update_budget_ms: 60_000,
         ..Config::default()
     };
     let args = SearchArgs {
