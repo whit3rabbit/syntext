@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-11
+
 ### Added
 - **FABLE EDITION** These were recommendations made by Claude Fable 5 for security/bugs/improvments.
 - Durable incremental HEAD-move updates via LSM-style delta segments when the base commit is behind HEAD.
