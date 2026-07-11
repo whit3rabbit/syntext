@@ -1525,6 +1525,9 @@ fn files_flag_lists_freshly_created_untracked_file_without_manual_update() {
         .arg("--index-dir")
         .arg(&index_dir)
         .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        // Slow git spawns on Windows CI starve the default 150ms budget before
+        // ls-files --others detects untracked b.rs; give detection room.
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .arg("--files")
         // Filter by extension via --glob; positionals to --files are path scope
         // (rg semantics), not globs, so `*.rs` as a bare arg would match nothing.
@@ -1583,6 +1586,9 @@ fn invert_match_reflects_freshly_created_untracked_file_without_manual_update() 
         .arg("--index-dir")
         .arg(&index_dir)
         .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        // Slow git spawns on Windows CI starve the default 150ms budget before
+        // ls-files --others detects untracked b.rs; give detection room.
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .arg("-v")
         .arg("-l")
         .arg("needle")
@@ -2107,6 +2113,9 @@ fn hook_rewritten_command_auto_updates_and_searches() {
     let clean_exe = parts[0].trim_matches('\'').trim_matches('"');
     let mut run_cmd = Command::new(clean_exe);
     run_cmd.current_dir(repo.path());
+    // Slow git spawns on Windows CI starve the default 150ms budget before
+    // ls-files --others detects untracked b.rs; give detection room.
+    run_cmd.env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000");
     for arg in &parts[1..] {
         let clean_arg = arg.trim_matches('\'').trim_matches('"');
         run_cmd.arg(clean_arg);
