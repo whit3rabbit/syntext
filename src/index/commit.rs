@@ -255,35 +255,31 @@ impl Index {
                 }
             }
             if let Err(e) = sym_idx.delete_for_paths(&to_delete) {
-                if self.config.verbose {
-                    eprintln!("syntext: warning: symbol index delete failed: {e}");
-                }
+                log::debug!("symbol index delete failed: {e}");
             } else {
                 for (path, content) in &symbol_inputs {
                     let path_str = path.to_string_lossy();
                     // file_id is immaterial to lookups (search reads path/line/
                     // name; deletes are path-keyed), so 0 is a safe placeholder.
                     if let Err(e) = sym_idx.index_file(0, &path_str, content) {
-                        if self.config.verbose {
-                            eprintln!(
-                                "syntext: warning: symbol index failed for {}: {e}",
-                                path.display()
-                            );
-                        }
+                        log::debug!("symbol index failed for {}: {e}", path.display());
                     }
                 }
             }
         }
 
-        if self.config.verbose {
+        // Gated on Debug being enabled so the snapshot load + count sums only
+        // run when the message can actually surface (preserves the old
+        // verbose-only cost).
+        if log::log_enabled!(log::Level::Debug) {
             let snap = self.snapshot.load();
             let base_count: u32 = snap.base_segments().iter().map(|s| s.doc_count).sum();
             let overlay_count = snap.overlay.docs.len() as u32;
             if base_count > 0 {
                 let ratio = overlay_count as f64 / base_count as f64;
                 if ratio > OVERLAY_WARN_THRESHOLD {
-                    eprintln!(
-                        "syntext: warning: overlay is {:.0}% of base ({} overlay, {} base docs); \
+                    log::debug!(
+                        "overlay is {:.0}% of base ({} overlay, {} base docs); \
                          consider running `st index` to rebuild",
                         ratio * 100.0,
                         overlay_count,
@@ -330,7 +326,7 @@ impl Index {
             );
         }
 
-        let content = encoding::normalize_encoding(&raw, self.config.verbose);
+        let content = encoding::normalize_encoding(&raw);
         if crate::index::walk::is_binary(&content) {
             // Binary files are excluded silently (normal, not a failure).
             return ChangedFileOutcome::Excluded;
@@ -338,27 +334,23 @@ impl Index {
         ChangedFileOutcome::Indexed(Arc::from(content.as_ref()))
     }
 
-    /// Verbose-log a vanished file and route it to deletion handling.
+    /// Debug-log a vanished file and route it to deletion handling.
     fn vanished(&self, abs: &Path) -> ChangedFileOutcome {
-        if self.config.verbose {
-            eprintln!(
-                "syntext: warning: file vanished before indexing, treating as deletion: {}",
-                abs.display()
-            );
-        }
+        log::debug!(
+            "file vanished before indexing, treating as deletion: {}",
+            abs.display()
+        );
         ChangedFileOutcome::Vanished
     }
 
-    /// Verbose-log a per-file failure and exclude the file rather than aborting
+    /// Debug-log a per-file failure and exclude the file rather than aborting
     /// the whole batch.
     fn skip(&self, abs: &Path, why: &str) -> ChangedFileOutcome {
-        if self.config.verbose {
-            eprintln!(
-                "syntext: warning: skipping file, excluding from index: {}: {}",
-                abs.display(),
-                why
-            );
-        }
+        log::debug!(
+            "skipping file, excluding from index: {}: {}",
+            abs.display(),
+            why
+        );
         ChangedFileOutcome::Excluded
     }
 }

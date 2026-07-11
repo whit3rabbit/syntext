@@ -492,3 +492,60 @@ fn detect_changed_files_drains_output_larger_than_pipe_buffer() {
     );
     assert!(result.budget_exceeded.is_none());
 }
+
+/// Write a fake `git` shim to `dir/fake-git` and make it executable (unix
+/// only). Lets the deadline-kill tests reproduce the kill deterministically:
+/// the real bug needs git to be killed *during* a command, which a sleep in
+/// the shim reproduces reliably.
+#[cfg(unix)]
+fn write_fake_git(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-git");
+    fs::write(&path, script).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+/// `run_git_bounded` must tag a deadline kill as `Partial`, not collapse it
+/// into the same `Ok(Some(buf))` shape as a clean success (the masked-staleness
+/// bug). The shim emits one complete `-z` record, then stalls well past the
+/// deadline so it is killed mid-output.
+#[test]
+#[cfg(unix)]
+fn run_git_bounded_classifies_deadline_kill_as_partial() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let fake = write_fake_git(
+        dir.path(),
+        "#!/bin/sh\nprintf 'seen.rs\\0'\nsleep 5\nprintf 'never.rs\\0'\n",
+    );
+    let deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
+    match run_git_bounded(&fake, dir.path(), &["ignored"], deadline).unwrap() {
+        GitOutput::Partial(buf) => assert_eq!(buf, b"seen.rs\0"),
+        other => panic!("expected Partial, got {other:?}"),
+    }
+}
+
+/// Regression for the masked-staleness bug: the first two detection commands
+/// complete instantly and empty; the THIRD (`ls-files`) emits one record and
+/// stalls until killed. Pre-fix, the kill fell out of the loop (the top-of-loop
+/// deadline check only guards the *next* iteration, and there is none), so the
+/// result claimed `budget_exceeded: None` — a complete detection. Post-fix the
+/// kill is `Partial`, surfaced as exhaustion with the partial count.
+#[test]
+#[cfg(unix)]
+fn detect_changed_files_reports_budget_exceeded_when_last_command_is_killed() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let fake = write_fake_git(
+        dir.path(),
+        "#!/bin/sh\ncase \"$*\" in\n  *ls-files*) printf 'untracked.rs\\0'; sleep 5 ;;\n  *) exit 0 ;;\nesac\n",
+    );
+    let result = detect_changed_files(dir.path(), &fake, Some(500)).unwrap();
+    assert_eq!(
+        result.budget_exceeded,
+        Some(1),
+        "a kill on the final command must report exhaustion with the partial count"
+    );
+    assert!(result.paths.contains(std::path::Path::new("untracked.rs")));
+}

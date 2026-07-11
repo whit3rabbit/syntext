@@ -186,6 +186,16 @@ pub(super) fn read_exact_at(
     }
     #[cfg(not(any(unix, windows)))]
     {
+        // Fallback for exotic targets with neither Unix pread nor Windows
+        // seek_read. NOTE: unlike the pread/seek_read paths, this does NOT
+        // guarantee `file`'s cursor is preserved: `try_clone` may `dup` the fd
+        // (a shared open-file-description offset) on POSIX-like targets, so
+        // seeking the clone can move the original's cursor. It is correct only
+        // because this crate reads segments purely positionally and never
+        // relies on the cursor between calls. This path is unexercised today
+        // (wasm32 bypasses all file I/O); a real port here should switch to a
+        // save/restore-seek or a positional syscall rather than trust the
+        // clone to be offset-independent.
         use std::io::{Read, Seek, SeekFrom};
         let mut owned = file.try_clone()?;
         owned.seek(SeekFrom::Start(offset))?;
@@ -264,3 +274,75 @@ pub(super) fn read_posting_list_pread(
         )),
     }
 }
+
+pub(super) const POST_MAGIC: &[u8; 8] = b"SNTXPOST";
+pub(super) const POST_MIN_SIZE: usize = 8 + 8;
+
+/// O(1) structural validation of a `.post` file: minimum size, magic header,
+/// and a readable checksum trailer. Three positional reads, no allocation.
+#[cfg(feature = "memmap2")]
+pub(super) fn check_post_file_structure(post_file: &std::fs::File) -> Result<(), IndexError> {
+    let post_len = post_file.metadata()?.len() as usize;
+    if post_len < POST_MIN_SIZE {
+        return Err(IndexError::CorruptIndex(format!(
+            "post file too small: {post_len} bytes"
+        )));
+    }
+    let mut post_magic = [0u8; 8];
+    read_exact_at(post_file, &mut post_magic, 0)?;
+    if &post_magic != POST_MAGIC {
+        return Err(IndexError::CorruptIndex(
+            "post file has wrong magic (expected SNTXPOST)".into(),
+        ));
+    }
+    // Trailer presence only: the stored value is compared against a recomputed
+    // checksum exclusively in the Full pass (verify_post_file_checksum).
+    let mut trailer = [0u8; 8];
+    read_exact_at(post_file, &mut trailer, (post_len - 8) as u64)?;
+    Ok(())
+}
+
+/// Stream the `.post` file in chunks and verify its xxh64 trailer checksum.
+/// O(post file size) I/O with O(1) heap allocation (a fixed read buffer),
+/// avoiding the transient multi-hundred-MB allocation the previous
+/// read-the-whole-file approach needed for large segments.
+#[cfg(feature = "memmap2")]
+pub(super) fn verify_post_file_checksum(post_file: &std::fs::File) -> Result<(), IndexError> {
+    use xxhash_rust::xxh64::Xxh64;
+
+    let post_len = post_file.metadata()?.len() as usize;
+    if post_len < POST_MIN_SIZE {
+        return Err(IndexError::CorruptIndex(format!(
+            "post file too small: {post_len} bytes"
+        )));
+    }
+    let mut stored_cksum_bytes = [0u8; 8];
+    read_exact_at(post_file, &mut stored_cksum_bytes, (post_len - 8) as u64)?;
+    let stored_post_checksum = u64::from_le_bytes(stored_cksum_bytes);
+
+    // Postings data lies between the magic header (8 bytes) and the checksum
+    // trailer (8 bytes). Stream it through the incremental xxh64 hasher in
+    // fixed-size chunks instead of allocating the whole postings region.
+    let postings_data_len = post_len - 16;
+    let mut hasher = Xxh64::new(0);
+    // 64 KB balances syscall count against cache friendliness; a full segment
+    // checksum pass over a ~100 MB .post file is ~1600 preads at this size.
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut offset: u64 = 8;
+    let mut remaining = postings_data_len;
+    while remaining > 0 {
+        let take = remaining.min(buf.len());
+        let chunk = &mut buf[..take];
+        read_exact_at(post_file, chunk, offset)?;
+        hasher.update(chunk);
+        offset += take as u64;
+        remaining -= take;
+    }
+    if hasher.digest() != stored_post_checksum {
+        return Err(IndexError::CorruptIndex(
+            "post file checksum mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+

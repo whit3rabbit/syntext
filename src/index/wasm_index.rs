@@ -46,7 +46,7 @@ impl InMemoryIndex {
             }) {
                 return Err(IndexError::PathOutsideRepo(path));
             }
-            let content = crate::index::normalize_encoding(raw, false);
+            let content = crate::index::normalize_encoding(raw);
             if is_binary(&content) {
                 continue;
             }

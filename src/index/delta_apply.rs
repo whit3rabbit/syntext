@@ -131,9 +131,7 @@ pub(super) fn flush_overlay_as_delta(
     let positional_index = crate::path::PathIndex::build(&live_paths);
     let mut paths_idx_ok = false;
     if let Err(e) = paths_idx::write_paths_idx(&config.index_dir, &positional_index) {
-        if config.verbose {
-            eprintln!("syntext: warning: could not write paths.idx cache: {e}");
-        }
+        log::debug!("could not write paths.idx cache: {e}");
     } else {
         paths_idx_ok = true;
     }

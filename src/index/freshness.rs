@@ -219,8 +219,20 @@ pub fn detect_changed_files(
         if deadline.is_some_and(|d| Instant::now() >= d) {
             return Ok(partial(changed, start));
         }
-        if let Some(stdout) = run_git_bounded(git, repo_root, args, deadline)? {
-            changed.extend(parse_nul_paths(&stdout));
+        match run_git_bounded(git, repo_root, args, deadline)? {
+            GitOutput::Complete(stdout) => changed.extend(parse_nul_paths(&stdout)),
+            GitOutput::Partial(stdout) => {
+                // Keep what git managed to emit (a real lower-bound
+                // estimate), but the set is incomplete: report budget
+                // exhaustion even when this was the FINAL command.
+                // Previously a kill here returned `Ok(Some(buf))` (same shape
+                // as success), fell through the loop, and the result claimed
+                // `budget_exceeded: None` — masking staleness and suppressing
+                // the detached async catch-up.
+                changed.extend(parse_nul_paths(&stdout));
+                return Ok(partial(changed, start));
+            }
+            GitOutput::NoData => {}
         }
     }
 
@@ -238,6 +250,28 @@ fn elapsed_ms(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Outcome of one bounded git command.
+///
+/// `Partial` is the load-bearing variant: a command killed at the deadline
+/// previously returned the same shape as a clean success (`Ok(Some(buf))`),
+/// so a budget hit during the LAST detection command was reported as a
+/// complete change set (`budget_exceeded: None`) — suppressing the staleness
+/// notice and the detached async catch-up. Callers must treat `Partial` as
+/// budget exhaustion, and durable-delta callers must fail closed on it.
+#[derive(Debug)]
+pub(super) enum GitOutput {
+    /// git exited 0; stdout is the complete output.
+    Complete(Vec<u8>),
+    /// git was killed at the deadline; stdout holds whatever it wrote before
+    /// the kill. A torn final `-z` record has no trailing NUL and is filtered
+    /// by `parse_nul_paths` / `is_safe_git_path`, so the prefix is safe to
+    /// parse for a lower-bound files-behind estimate.
+    Partial(Vec<u8>),
+    /// git exited non-zero (repo with no commits, or a non-git directory):
+    /// "no data from this command", not an error.
+    NoData,
+}
+
 /// Build a partial `ChangeSet` flagged as budget-exhausted.
 fn partial(changed: HashSet<PathBuf>, start: Instant) -> ChangeSet {
     ChangeSet {
@@ -249,11 +283,9 @@ fn partial(changed: HashSet<PathBuf>, start: Instant) -> ChangeSet {
 
 /// Run one git command, bounding wall-clock time by `deadline`.
 ///
-/// Returns:
-/// - `Ok(Some(stdout))` when git ran and exited successfully.
-/// - `Ok(None)` when git exited non-zero (no-commits / non-git repo) or was
-///   killed at the deadline — both mean "no data from this command".
-/// - `Err(FreshnessError::Io)` when git failed to spawn (broken exec).
+/// Returns a [`GitOutput`] so a deadline kill (`Partial`) is never confused
+/// with a clean success (`Complete`) or a legitimate no-data non-zero exit
+/// (`NoData`). See the variant docs for why that distinction is load-bearing.
 ///
 /// With a deadline, stdout is drained on a reader thread while the main thread
 /// polls `try_wait` and kills the child at the deadline. Draining concurrently
@@ -270,7 +302,7 @@ pub(super) fn run_git_bounded(
     repo_root: &Path,
     args: &[&str],
     deadline: Option<Instant>,
-) -> Result<Option<Vec<u8>>, FreshnessError> {
+) -> Result<GitOutput, FreshnessError> {
     let mut child = Command::new(git)
         .arg("-C")
         .arg(repo_root)
@@ -283,11 +315,15 @@ pub(super) fn run_git_bounded(
     // No budget (CLI update): drain stdout concurrently, then wait.
     let Some(deadline) = deadline else {
         let output = child.wait_with_output().map_err(FreshnessError::Io)?;
-        return Ok(output.status.success().then_some(output.stdout));
+        return Ok(if output.status.success() {
+            GitOutput::Complete(output.stdout)
+        } else {
+            GitOutput::NoData
+        });
     };
 
     // Bounded: drain stdout on a thread so git never blocks on a full pipe,
-    // while the main thread polls try_wait and kills at the deadline. Killing
+    // while the main thread polls try_wait and kills the child at the deadline. Killing
     // the child closes its stdout write end, so read_to_end returns and the
     // thread finishes. Portable (no wait_timeout on Windows); 2 ms poll keeps
     // the overshoot negligible.
@@ -323,18 +359,19 @@ pub(super) fn run_git_bounded(
     let status = child.wait().map_err(FreshnessError::Io)?;
     let buf = reader.join().unwrap_or_default();
 
-    // Killed at the deadline: return the partial output git emitted before the
-    // kill so the caller can report a real non-zero behind estimate (a
-    // truncated final -z record has no trailing NUL and is filtered by
-    // parse_nul_paths / is_safe_git_path, so it only perturbs an estimate).
+    // Deadline kill: hand back the partial output — the caller reports a
+    // real, non-zero behind estimate — but tagged as `Partial` so it can
+    // never be mistaken for a complete change set. (A truncated final `-z`
+    // record has no trailing NUL and is filtered by `parse_nul_paths` /
+    // `is_safe_git_path`, so it only perturbs an estimate.)
     if killed {
-        return Ok(Some(buf));
+        return Ok(GitOutput::Partial(buf));
     }
     // Clean but non-zero exit (no-commits / non-git repo): no data.
     if !status.success() {
-        return Ok(None);
+        return Ok(GitOutput::NoData);
     }
-    Ok(Some(buf))
+    Ok(GitOutput::Complete(buf))
 }
 
 #[cfg(test)]

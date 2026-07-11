@@ -289,19 +289,15 @@ pub(super) fn compact_index(
         sorted_paths.dedup();
         let path_index = crate::path::PathIndex::build(&sorted_paths);
         if let Err(e) = super::paths_idx::write_paths_idx(&config.index_dir, &path_index) {
-            if config.verbose {
-                eprintln!("syntext: warning: could not write paths.idx cache: {e}");
-            }
+            log::debug!("could not write paths.idx cache: {e}");
         }
     }
 
-    if config.verbose {
-        eprintln!(
-            "syntext: compacted {} documents into {} segment(s)",
-            manifest.total_files_indexed,
-            manifest.segments.len()
-        );
-    }
+    log::debug!(
+        "compacted {} documents into {} segment(s)",
+        manifest.total_files_indexed,
+        manifest.segments.len()
+    );
 
     // Same downgrade pattern as build_index: flock has no atomic EX -> SH
     // downgrade, so a competing writer could grab EX briefly between unlock and

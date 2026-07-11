@@ -113,63 +113,7 @@ pub struct Index {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Index {
-    fn install_rebuilt_index(&self, rebuilt: &Index) -> Result<IndexStats, IndexError> {
-        let take = self.pending.take_for_commit();
-        self.snapshot.store(rebuilt.snapshot());
 
-        // Re-notify any edits that occurred concurrently during the build/compact/delta apply window.
-        for edit in take.drained {
-            match edit.kind {
-                overlay::EditKind::Changed => {
-                    self.pending.notify_change(&edit.path);
-                }
-                overlay::EditKind::Deleted => {
-                    self.pending.notify_delete(&edit.path);
-                }
-            }
-        }
-
-        #[cfg(feature = "symbols")]
-        if let Some(symbol_index) = &self.symbol_index {
-            symbol_index.reopen(&self.config.index_dir.join("symbols.db"))?;
-        }
-        Ok(self.stats())
-    }
-
-    /// Rebuild the index by releasing the shared dir lock, running `build_fn`,
-    /// then re-acquiring shared.
-    ///
-    /// # Lock gap
-    /// File locks do not support atomic shared-to-exclusive promotion. We must
-    /// release shared before `build_fn` can acquire exclusive internally. During
-    /// this window another process could grab exclusive and modify the index.
-    /// Both the success and error paths call `try_lock_shared`; if re-acquisition
-    /// fails (another writer took the lock), we return `LockConflict` rather than
-    /// leaving the `Index` without a directory lock.
-    fn rebuild_with(
-        &self,
-        build_fn: impl FnOnce(Config) -> Result<Index, IndexError>,
-    ) -> Result<IndexStats, IndexError> {
-        self._dir_lock.unlock()?;
-        let rebuilt = match build_fn(self.config.clone()) {
-            Ok(rebuilt) => rebuilt,
-            Err(err) => {
-                if let Err(e) = self._dir_lock.try_lock_shared() {
-                    if self.config.verbose {
-                        eprintln!(
-                            "syntext: warning: failed to re-acquire shared directory lock after build error: {e}"
-                        );
-                    }
-                }
-                return Err(err);
-            }
-        };
-        self._dir_lock
-            .try_lock_shared()
-            .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
-
-        self.install_rebuilt_index(&rebuilt)
-    }
 
     /// Build the index from scratch, writing segments and a manifest.
     /// Respects `.gitignore`, skips binary files and files exceeding
@@ -203,6 +147,16 @@ impl Index {
         }
         // Verify deletes sidecar if present in the manifest.
         let manifest = Manifest::load(&self.config.index_dir)?;
+        // `st verify` is the explicit integrity command: a manifest with no
+        // checksum cannot be integrity-checked at all, so treat its absence as
+        // a failure here (unlike the fail-open warn on the normal open path,
+        // which tolerates pre-checksum manifests for back-compat).
+        if manifest.checksum.is_none() {
+            return Err(IndexError::CorruptIndex(
+                "manifest has no integrity checksum; rebuild with `st index` to add one"
+                    .to_string(),
+            ));
+        }
         if let Some(ref deletes_file) = manifest.overlay_deletes_file {
             self::deletes_idx::read_deletes_idx(&self.config.index_dir, deletes_file).map_err(
                 |e| {
@@ -256,6 +210,29 @@ impl Index {
             opts,
             true,
         )
+    }
+
+    /// Search and group results per file, capturing the verified content of
+    /// each matched file.
+    ///
+    /// Prefer this over [`search`](Self::search) when displaying matched lines,
+    /// context lines, or highlights: the returned `content` is exactly what the
+    /// verifier matched, so rendering from it (via [`FileMatches::lines`] /
+    /// [`FileMatches::context`]) cannot race a concurrent edit to the file.
+    /// Costs one `Arc` clone per matched file over `search`, no extra I/O or
+    /// byte copies. Files are ordered by path; matches within a file by line
+    /// number.
+    ///
+    /// [`FileMatches::lines`]: crate::FileMatches::lines
+    /// [`FileMatches::context`]: crate::FileMatches::context
+    pub fn search_grouped(
+        &self,
+        pattern: &str,
+        opts: &SearchOptions,
+    ) -> Result<Vec<crate::FileMatches>, IndexError> {
+        Ok(crate::search::group_outcome(
+            self.search_with_content(pattern, opts)?,
+        ))
     }
 
     /// Expose the current snapshot for use by the search layer.
@@ -343,11 +320,9 @@ impl Index {
             Ok(rebuilt) => rebuilt,
             Err(err) => {
                 if let Err(e) = self._dir_lock.try_lock_shared() {
-                    if self.config.verbose {
-                        eprintln!(
-                            "syntext: warning: failed to re-acquire shared directory lock after compact error: {e}"
-                        );
-                    }
+                    log::debug!(
+                        "failed to re-acquire shared directory lock after compact error: {e}"
+                    );
                 }
                 return Err(err);
             }
@@ -360,34 +335,7 @@ impl Index {
         Ok(())
     }
 
-    /// Update the index when git HEAD moved since the last build: apply a cheap
-    /// durable delta (delta segment + persistent delete-set), or fall back to a
-    /// full rebuild when the delta path can't safely/cheaply handle the change
-    /// set (non-ancestor HEAD, over-cap change set, or overlay full). Runs from
-    /// `cmd_update` / the git hooks in a separate process.
-    ///
-    /// Returns `Some((stats, was_full_rebuild))` if an update ran, else `None`.
-    pub fn rebuild_if_stale(&self) -> Result<Option<(IndexStats, bool)>, IndexError> {
-        if self.pending.has_uncommitted() {
-            self.commit_batch()?;
-        }
 
-        let manifest = Manifest::load(&self.config.index_dir)?;
-        let current_head = helpers::current_repo_head(&self.config.repo_root)?;
-        if manifest.base_commit == current_head {
-            return Ok(None);
-        }
-
-        // Try a cheap durable delta first: `try_committed_delta` returns
-        // `Some(stats)` when it applied one, `None` for anything it can't
-        // safely/cheaply handle (a full rebuild always answers that "no").
-        if let Some(stats) = self.try_committed_delta(&manifest, current_head.as_deref())? {
-            return Ok(Some((stats, false)));
-        }
-
-        self.rebuild_with(build::build_index)
-            .map(|stats| Some((stats, true)))
-    }
 }
 
 // `update_from_git` and `search_fresh` live in `update.rs` to keep this file

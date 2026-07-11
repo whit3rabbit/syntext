@@ -109,13 +109,21 @@ pub(super) fn detect_committed_changes(
         base_commit,
         "HEAD",
     ];
-    let output = super::freshness::run_git_bounded(git, repo_root, &args, deadline)?;
-    let bytes = output.ok_or_else(|| {
-        FreshnessError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "git diff exited non-zero or was killed at deadline",
-        ))
-    })?;
+    let bytes = match super::freshness::run_git_bounded(git, repo_root, &args, deadline)? {
+        super::freshness::GitOutput::Complete(bytes) => bytes,
+        // A partial name-status list must NEVER seed a durable delta:
+        // applying an incomplete change set advances `base_commit` past files
+        // it never applied, leaving them permanently missing from the index
+        // (no later detection pass re-reports them). `NoData` (non-zero exit)
+        // is likewise not a valid diff. Fail closed; the caller
+        // (`try_committed_delta`) answers any `Err` with a full rebuild,
+        // which is always correct.
+        super::freshness::GitOutput::Partial(_) | super::freshness::GitOutput::NoData => {
+            return Err(FreshnessError::Io(std::io::Error::other(
+                "git diff --name-status produced no complete output",
+            )));
+        }
+    };
     parse_name_status_z(&bytes)
 }
 
@@ -268,9 +276,7 @@ impl Index {
             }
             Ok(DeltaOutcome::Fallback) => Ok(None),
             Err(e) => {
-                if self.config.verbose {
-                    eprintln!("syntext: delta apply failed ({e}); full rebuild instead");
-                }
+                log::debug!("delta apply failed ({e}); full rebuild instead");
                 Ok(None)
             }
         }
@@ -317,11 +323,9 @@ impl Index {
             Ok(rebuilt) => rebuilt,
             Err(err) => {
                 if let Err(e) = self._dir_lock.try_lock_shared() {
-                    if self.config.verbose {
-                        eprintln!(
-                            "syntext: warning: failed to re-acquire shared directory lock after delta error: {e}"
-                        );
-                    }
+                    log::debug!(
+                        "failed to re-acquire shared directory lock after delta error: {e}"
+                    );
                 }
                 return Err(err);
             }

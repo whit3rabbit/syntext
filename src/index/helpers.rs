@@ -115,7 +115,9 @@ pub(super) fn format_build_summary(
     unreadable: usize,
     too_large: usize,
 ) -> String {
-    let mut summary = format!("syntext: indexed {indexed} files into {segments} segment(s)");
+    // No `syntext:`/`st:` prefix here: this string is handed to `log::debug!`,
+    // and the CLI logger adds the `st: ` prefix.
+    let mut summary = format!("indexed {indexed} files into {segments} segment(s)");
     let skipped = binary + unreadable + too_large;
     if skipped > 0 {
         let mut parts: Vec<String> = Vec::new();

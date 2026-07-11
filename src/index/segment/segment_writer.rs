@@ -196,8 +196,8 @@ impl SegmentWriter {
         if self.initial_postings_capacity > 0
             && self.postings.len() > self.initial_postings_capacity * 3
         {
-            eprintln!(
-                "syntext: debug: SegmentWriter postings overshoot: hint={}, actual={}",
+            log::debug!(
+                "SegmentWriter postings overshoot: hint={}, actual={}",
                 self.initial_postings_capacity,
                 self.postings.len()
             );

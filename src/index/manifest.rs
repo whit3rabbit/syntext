@@ -193,9 +193,8 @@ impl Manifest {
                 .into());
             }
         } else {
-            eprintln!(
-                "syntext: warning: manifest at '{}' has no checksum; \
-                 re-run `st index` to add one",
+            log::warn!(
+                "manifest at '{}' has no checksum; re-run `st index` to add one",
                 path.display(),
             );
         }
@@ -253,7 +252,12 @@ impl Manifest {
     ///
     /// **Windows caveat:** Windows does not allow deleting a file that is open
     /// by another process/handle. `fs::remove_file` will return an error for
-    /// any segment still mmap'd by an open `Index`. This is a known v1 limitation.
+    /// any segment still mmap'd by an open `Index`, so that orphan is left on
+    /// disk. It is NOT leaked until manual cleanup, though: this GC re-scans the
+    /// index directory on every build/compact and deletes anything not in the
+    /// current manifest, so the orphan is retried (and removed) by the next GC
+    /// once the holding handle closes. The only residual window is a repo that
+    /// never builds/compacts again while a handle stays open.
     pub fn gc_orphan_segments(&self, index_dir: &Path) -> io::Result<()> {
         let mut known: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for s in &self.segments {
@@ -280,17 +284,21 @@ impl Manifest {
                 || name_str.ends_with(".post");
             if is_segment_file && !known.contains(name_str.as_ref()) {
                 if let Err(e) = std::fs::remove_file(entry.path()) {
-                    eprintln!("syntext: gc: could not remove {}: {e}", name_str);
+                    log::warn!("gc: could not remove {name_str}: {e}");
                 }
             }
             let is_stale_deletes = name_str.starts_with("deletes-")
                 && name_str.ends_with(".idx")
                 && live_deletes != Some(name_str.as_ref());
             if is_stale_deletes {
-                let _ = std::fs::remove_file(entry.path());
+                if let Err(e) = std::fs::remove_file(entry.path()) {
+                    log::warn!("gc: could not remove {name_str}: {e}");
+                }
             }
             if name_str.ends_with(".tmp") {
-                let _ = std::fs::remove_file(entry.path());
+                if let Err(e) = std::fs::remove_file(entry.path()) {
+                    log::warn!("gc: could not remove {name_str}: {e}");
+                }
             }
         }
         Ok(())

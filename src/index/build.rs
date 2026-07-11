@@ -72,16 +72,12 @@ pub(super) fn build_index_from_file_list(
     if let Ok(prev_manifest) = Manifest::load(&config.index_dir) {
         prev_threshold = prev_manifest.scan_threshold_fraction;
         if let Err(e) = prev_manifest.gc_orphan_segments(&config.index_dir) {
-            if config.verbose {
-                eprintln!("syntext: startup gc: {e}");
-            }
+            log::debug!("startup gc: {e}");
         }
     }
 
     let total_candidate = file_list.len();
-    if config.verbose {
-        eprintln!("syntext: indexing {} candidate files", total_candidate);
-    }
+    log::debug!("indexing {total_candidate} candidate files");
 
     // Split into ~256MB batches and process each.
     let batches = split_batches(&file_list, batch_size_bytes.max(1));
@@ -106,7 +102,6 @@ pub(super) fn build_index_from_file_list(
         // space. The overlay path already uses checked_add; this matches it.
         // Parallel: read file content and extract grams.
         // results[i] is None if file i was binary or could not be read.
-        let verbose = config.verbose;
         let skipped_binary = &skipped_binary;
         let skipped_unreadable = &skipped_unreadable;
         let skipped_oversized_path = &skipped_oversized_path;
@@ -116,12 +111,10 @@ pub(super) fn build_index_from_file_list(
                 // before any doc_id is assigned. Doing it here (not in SegmentWriter)
                 // drops just this file instead of failing the batch.
                 if crate::path_util::path_bytes(rel_path).len() > u16::MAX as usize {
-                    if verbose {
-                        eprintln!(
-                            "syntext: skipping {}: path exceeds u16::MAX bytes",
-                            rel_path.display()
-                        );
-                    }
+                    log::debug!(
+                        "skipping {}: path exceeds u16::MAX bytes",
+                        rel_path.display()
+                    );
                     skipped_oversized_path.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
@@ -132,9 +125,7 @@ pub(super) fn build_index_from_file_list(
                 let pre_meta = match std::fs::symlink_metadata(abs_path) {
                     Ok(m) => m,
                     Err(e) => {
-                        if verbose {
-                            eprintln!("syntext: skipping {}: stat: {e}", abs_path.display());
-                        }
+                        log::debug!("skipping {}: stat: {e}", abs_path.display());
                         skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                         return None;
                     }
@@ -142,9 +133,7 @@ pub(super) fn build_index_from_file_list(
                 let mut file = match super::open_readonly_nofollow(abs_path) {
                     Ok(f) => f,
                     Err(e) => {
-                        if verbose {
-                            eprintln!("syntext: skipping {}: open: {e}", abs_path.display());
-                        }
+                        log::debug!("skipping {}: open: {e}", abs_path.display());
                         skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                         return None;
                     }
@@ -158,13 +147,11 @@ pub(super) fn build_index_from_file_list(
                 let _ = &pre_meta;
                 let mut raw = Vec::new();
                 if let Err(e) = file.read_to_end(&mut raw) {
-                    if verbose {
-                        eprintln!("syntext: skipping {}: read: {e}", abs_path.display());
-                    }
+                    log::debug!("skipping {}: read: {e}", abs_path.display());
                     skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
-                let content = crate::index::normalize_encoding(&raw, config.verbose);
+                let content = crate::index::normalize_encoding(&raw);
                 if is_binary(&content) {
                     skipped_binary.fetch_add(1, Ordering::Relaxed);
                     return None;
@@ -232,10 +219,8 @@ pub(super) fn build_index_from_file_list(
             .map(|m| m.len())
             .unwrap_or(0);
         let seg_size = dict_size + post_size;
-        if config.verbose && seg_size > content_size / 2 && content_size > 0 {
-            eprintln!(
-                "syntext: warning: segment is {seg_size} bytes for {content_size} bytes content"
-            );
+        if seg_size > content_size / 2 && content_size > 0 {
+            log::debug!("segment is {seg_size} bytes for {content_size} bytes content");
         }
 
         let mut seg_ref: SegmentRef = meta.into();
@@ -252,18 +237,14 @@ pub(super) fn build_index_from_file_list(
     let scan_threshold = match prev_threshold {
         Some(prev) if !config.recalibrate => {
             let reused = prev.clamp(0.01, 0.50);
-            if config.verbose {
-                eprintln!("syntext: reusing calibrated scan threshold: {reused:.3}");
-            }
+            log::debug!("reusing calibrated scan threshold: {reused:.3}");
             reused
         }
         _ => {
             let scan_paths: Vec<PathBuf> =
                 indexed_files.iter().map(|(abs, _)| abs.clone()).collect();
             let calibrated = calibrate_threshold(&scan_paths);
-            if config.verbose {
-                eprintln!("syntext: calibrated scan threshold: {calibrated:.3}");
-            }
+            log::debug!("calibrated scan threshold: {calibrated:.3}");
             calibrated
         }
     };
@@ -292,27 +273,25 @@ pub(super) fn build_index_from_file_list(
         sorted_paths.dedup();
         let path_index = crate::path::PathIndex::build(&sorted_paths);
         if let Err(e) = super::paths_idx::write_paths_idx(&config.index_dir, &path_index) {
-            if config.verbose {
-                eprintln!("syntext: warning: could not write paths.idx cache: {e}");
-            }
+            log::debug!("could not write paths.idx cache: {e}");
         }
     }
 
-    if config.verbose {
-        eprintln!(
-            "{}",
-            super::helpers::format_build_summary(
-                total_indexed,
-                manifest.segments.len(),
-                skipped_binary.load(Ordering::Relaxed),
-                skipped_unreadable.load(Ordering::Relaxed),
-                walk_skips.too_large,
-            )
-        );
-        let oversized_paths = skipped_oversized_path.load(Ordering::Relaxed);
-        if oversized_paths > 0 {
-            eprintln!("syntext: skipped {oversized_paths} file(s) with oversized paths (> u16::MAX bytes)");
-        }
+    // `format_build_summary` runs only when Debug logging is enabled: the
+    // `log::debug!` macro guards argument evaluation behind its level check.
+    log::debug!(
+        "{}",
+        super::helpers::format_build_summary(
+            total_indexed,
+            manifest.segments.len(),
+            skipped_binary.load(Ordering::Relaxed),
+            skipped_unreadable.load(Ordering::Relaxed),
+            walk_skips.too_large,
+        )
+    );
+    let oversized_paths = skipped_oversized_path.load(Ordering::Relaxed);
+    if oversized_paths > 0 {
+        log::debug!("skipped {oversized_paths} file(s) with oversized paths (> u16::MAX bytes)");
     }
 
     // Build symbol index (T052) — requires `symbols` feature.
@@ -334,28 +313,19 @@ pub(super) fn build_index_from_file_list(
                     let Ok(raw) = fs::read(abs_path) else {
                         continue;
                     };
-                    let content = crate::index::normalize_encoding(&raw, config.verbose);
+                    let content = crate::index::normalize_encoding(&raw);
                     if is_binary(&content) {
                         continue;
                     }
                     let rel_path_str = rel_path.to_string_lossy();
                     if let Err(e) = sym_idx.index_file(file_id, &rel_path_str, content.as_ref()) {
-                        if config.verbose {
-                            eprintln!(
-                                "syntext: warning: symbol index failed for {}: {e}",
-                                rel_path.display()
-                            );
-                        }
+                        log::debug!("symbol index failed for {}: {e}", rel_path.display());
                     }
                 }
-                if config.verbose {
-                    eprintln!("syntext: symbol index built");
-                }
+                log::debug!("symbol index built");
             }
             Err(e) => {
-                if config.verbose {
-                    eprintln!("syntext: warning: could not build symbol index: {e}");
-                }
+                log::debug!("could not build symbol index: {e}");
             }
         }
     }

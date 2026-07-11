@@ -37,6 +37,14 @@ impl Index {
         // by group/other. Permissive modes allow concurrent ftruncate() races
         // (SIGBUS DoS) and crafted-file injection. New builds enforce 0700 via
         // build_index(); this check catches pre-existing indexes.
+        //
+        // Scope note: this verifies only the index *directory* mode, not each
+        // segment file's mode. A pre-existing 0644 segment inside a 0700 dir
+        // passes. That is acceptable because directory traversal is blocked
+        // (a non-owner cannot enumerate/create index entries to reach a
+        // ftruncate target), so the per-file mode is not the load-bearing
+        // control — the directory mode is. Adding per-file checks would be
+        // defense-in-depth but is not required for the threat model.
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -50,9 +58,9 @@ impl Index {
                             config.index_dir,
                             meta.mode() & 0o777,
                         )));
-                    } else if config.verbose {
-                        eprintln!(
-                            "syntext: warning: index dir {:?} has mode {:04o}; \
+                    } else {
+                        log::debug!(
+                            "index dir {:?} has mode {:04o}; \
                              recommend chmod 700 to prevent injection and SIGBUS DoS",
                             config.index_dir,
                             meta.mode() & 0o777,
@@ -246,21 +254,17 @@ impl Index {
             match super::paths_idx::read_paths_idx(&config.index_dir) {
                 Ok(index) => index,
                 Err(e) => {
-                    if config.verbose {
-                        eprintln!("syntext: paths.idx not used ({e}); rebuilding path index");
-                    }
+                    log::debug!("paths.idx not used ({e}); rebuilding path index");
                     PathIndex::build(&all_paths)
                 }
             }
         } else {
-            if config.verbose {
-                eprintln!(
-                    "syntext: paths.idx sidecar version {:?} does not match expected {}; \
-                     rebuilding path index",
-                    manifest.paths_idx_version,
-                    super::paths_idx::FORMAT_VERSION
-                );
-            }
+            log::debug!(
+                "paths.idx sidecar version {:?} does not match expected {}; \
+                 rebuilding path index",
+                manifest.paths_idx_version,
+                super::paths_idx::FORMAT_VERSION
+            );
             PathIndex::build(&all_paths)
         };
 

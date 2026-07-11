@@ -149,10 +149,8 @@ fn push_file_record(
 /// Tests: `enumerate_files_skips_symlink_outside_repo`,
 /// `collect_symlink_entry_rejects_canonical_symlink`.
 #[cfg(feature = "ignore")]
-fn log_symlink_skip(verbose: bool, symlink_path: &Path, reason: std::fmt::Arguments<'_>) {
-    if verbose {
-        eprintln!("st: skipping symlink {}: {reason}", symlink_path.display());
-    }
+fn log_symlink_skip(symlink_path: &Path, reason: std::fmt::Arguments<'_>) {
+    log::debug!("skipping symlink {}: {reason}", symlink_path.display());
 }
 
 #[cfg(feature = "ignore")]
@@ -165,12 +163,10 @@ fn collect_symlink_entry(
     seen_canonical: &mut HashSet<PathBuf>,
 ) {
     let repo_root = config.repo_root.as_path();
-    let verbose = config.verbose;
     let target = match fs::read_link(symlink_path) {
         Ok(target) => target,
         Err(e) => {
             log_symlink_skip(
-                verbose,
                 symlink_path,
                 format_args!("failed to read link: {e}"),
             );
@@ -186,7 +182,6 @@ fn collect_symlink_entry(
         Ok(meta) => meta,
         Err(e) => {
             log_symlink_skip(
-                verbose,
                 symlink_path,
                 format_args!("failed to stat target: {e}"),
             );
@@ -201,7 +196,6 @@ fn collect_symlink_entry(
         Ok(path) => path,
         Err(e) => {
             log_symlink_skip(
-                verbose,
                 symlink_path,
                 format_args!("failed to canonicalize target: {e}"),
             );
@@ -210,7 +204,6 @@ fn collect_symlink_entry(
     };
     if !canonical_target.starts_with(canonical_root) {
         log_symlink_skip(
-            verbose,
             symlink_path,
             format_args!("target {} is outside repo root", canonical_target.display()),
         );
@@ -225,7 +218,6 @@ fn collect_symlink_entry(
         Ok(meta) => meta,
         Err(e) => {
             log_symlink_skip(
-                verbose,
                 symlink_path,
                 format_args!("failed to stat canonical target: {e}"),
             );

@@ -1727,7 +1727,7 @@ fn rebuild_reuses_prior_calibrated_threshold_unless_recalibrate() {
 fn build_summary_omits_skips_when_none() {
     assert_eq!(
         crate::index::helpers::format_build_summary(10, 1, 0, 0, 0),
-        "syntext: indexed 10 files into 1 segment(s)"
+        "indexed 10 files into 1 segment(s)"
     );
 }
 
@@ -1735,12 +1735,12 @@ fn build_summary_omits_skips_when_none() {
 fn build_summary_breaks_down_skips_by_reason() {
     assert_eq!(
         crate::index::helpers::format_build_summary(3802, 1, 240, 20, 3),
-        "syntext: indexed 3802 files into 1 segment(s) \
+        "indexed 3802 files into 1 segment(s) \
          (skipped 263: 240 binary, 20 unreadable, 3 too large)"
     );
     assert_eq!(
         crate::index::helpers::format_build_summary(5, 2, 0, 0, 1),
-        "syntext: indexed 5 files into 2 segment(s) (skipped 1: 1 too large)"
+        "indexed 5 files into 2 segment(s) (skipped 1: 1 too large)"
     );
 }
 
@@ -1817,6 +1817,37 @@ fn base_doc_to_file_id_stays_lazy_until_path_filter_needs_it() {
     assert!(
         index.snapshot().base.base_doc_to_file_id.get().is_some(),
         "base_doc_to_file_id must be built once a path/type filter is applied"
+    );
+    drop(index);
+}
+
+#[test]
+fn verify_rejects_manifest_without_checksum() {
+    let repo = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("a.rs"), "needle\n").unwrap();
+    let index_dir = TempDir::new().unwrap();
+    let config = crate::Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..crate::Config::default()
+    };
+    let index = Index::build(config.clone()).unwrap();
+    drop(index);
+
+    // Strip the checksum field to simulate a pre-checksum (legacy) manifest.
+    let manifest_path = config.index_dir.join("manifest.json");
+    let text = std::fs::read_to_string(&manifest_path).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v.as_object_mut().unwrap().remove("checksum");
+    std::fs::write(&manifest_path, serde_json::to_string(&v).unwrap()).unwrap();
+
+    // open() still tolerates a checksum-less manifest (warns), but `verify()`
+    // is the explicit integrity command and must fail closed.
+    let index = Index::open(config).unwrap();
+    let err = index.verify().unwrap_err();
+    assert!(
+        matches!(err, crate::IndexError::CorruptIndex(ref m) if m.contains("checksum")),
+        "expected CorruptIndex about checksum, got: {err:?}"
     );
     drop(index);
 }

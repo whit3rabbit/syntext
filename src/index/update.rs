@@ -6,7 +6,11 @@
 //! `notify_delete`, `commit_batch`, `repo_relative_path`) directly.
 
 use crate::index::freshness;
-use crate::{IndexError, SearchMatch, SearchOptions};
+use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
+use crate::index::manifest::Manifest;
+use crate::index::helpers;
+use crate::index::overlay;
+
 
 impl super::Index {
     /// Detect changed files via git and apply them to the overlay.
@@ -142,12 +146,7 @@ impl super::Index {
                         // (matching commit_batch's skip-on-failure semantics);
                         // a single bad path cannot wedge the whole update.
                         if let Err(e) = self.notify_change(&resolved) {
-                            if self.config.verbose {
-                                eprintln!(
-                                    "syntext: warning: skip changed file {}: {e}",
-                                    path.display()
-                                );
-                            }
+                            log::debug!("skip changed file {}: {e}", path.display());
                             skipped += 1;
                         } else {
                             count += 1;
@@ -170,12 +169,7 @@ impl super::Index {
                     // real target to escape to.
                     Err(_) => {
                         if let Err(e) = self.notify_change(&abs) {
-                            if self.config.verbose {
-                                eprintln!(
-                                    "syntext: warning: skip changed file {}: {e}",
-                                    path.display()
-                                );
-                            }
+                            log::debug!("skip changed file {}: {e}", path.display());
                             skipped += 1;
                         } else {
                             count += 1;
@@ -189,12 +183,7 @@ impl super::Index {
                 // absent from the new snapshot until the NEXT update cycle,
                 // when git re-reports it changed. The race is self-healing.
                 if let Err(e) = self.notify_delete(&abs) {
-                    if self.config.verbose {
-                        eprintln!(
-                            "syntext: warning: skip deleted file {}: {e}",
-                            path.display()
-                        );
-                    }
+                    log::debug!("skip deleted file {}: {e}", path.display());
                     skipped += 1;
                 } else {
                     count += 1;
@@ -236,5 +225,114 @@ impl super::Index {
             });
         let matches = self.search(pattern, opts)?;
         Ok((matches, outcome))
+    }
+
+    /// [`search_grouped`](Self::search_grouped) with bounded git freshness
+    /// detection first: the grouped analogue of
+    /// [`search_fresh`](Self::search_fresh). Same "stale search is safe"
+    /// contract: a failed freshness check is swallowed (search proceeds against
+    /// the stale index and the returned outcome is `NoChanges`), only the
+    /// search's own error propagates.
+    pub fn search_grouped_fresh(
+        &self,
+        pattern: &str,
+        opts: &SearchOptions,
+        limits: freshness::UpdateLimits,
+    ) -> Result<(Vec<crate::FileMatches>, freshness::UpdateOutcome), IndexError> {
+        let outcome = self
+            .update_from_git(limits)
+            .unwrap_or(freshness::UpdateOutcome::NoChanges {
+                detect_elapsed_ms: 0,
+            });
+        let groups = self.search_grouped(pattern, opts)?;
+        Ok((groups, outcome))
+    }
+
+    pub(super) fn install_rebuilt_index(&self, rebuilt: &super::Index) -> Result<IndexStats, IndexError> {
+        let take = self.pending.take_for_commit();
+        self.snapshot.store(rebuilt.snapshot());
+
+        // Re-notify any edits that occurred concurrently during the build/compact/delta apply window.
+        for edit in take.drained {
+            match edit.kind {
+                overlay::EditKind::Changed => {
+                    self.pending.notify_change(&edit.path);
+                }
+                overlay::EditKind::Deleted => {
+                    self.pending.notify_delete(&edit.path);
+                }
+            }
+        }
+
+        #[cfg(feature = "symbols")]
+        if let Some(symbol_index) = &self.symbol_index {
+            symbol_index.reopen(&self.config.index_dir.join("symbols.db"))?;
+        }
+        Ok(self.stats())
+    }
+
+    /// Rebuild the index by releasing the shared dir lock, running `build_fn`,
+    /// then re-acquiring shared.
+    ///
+    /// # Lock gap
+    /// File locks do not support atomic shared-to-exclusive promotion. We must
+    /// release shared before `build_fn` can acquire exclusive internally. During
+    /// this window another process could grab exclusive and modify the index.
+    /// Both the success and error paths call `try_lock_shared`; if re-acquisition
+    /// fails (another writer took the lock), we return `LockConflict` rather than
+    /// leaving the `Index` without a directory lock.
+    pub(super) fn rebuild_with(
+        &self,
+        build_fn: impl FnOnce(Config) -> Result<super::Index, IndexError>,
+    ) -> Result<IndexStats, IndexError> {
+        #[cfg(feature = "fs2")]
+        self._dir_lock.unlock()?;
+        let rebuilt = match build_fn(self.config.clone()) {
+            Ok(rebuilt) => rebuilt,
+            Err(err) => {
+                #[cfg(feature = "fs2")]
+                if let Err(e) = self._dir_lock.try_lock_shared() {
+                    log::debug!(
+                        "failed to re-acquire shared directory lock after build error: {e}"
+                    );
+                }
+                return Err(err);
+            }
+        };
+        #[cfg(feature = "fs2")]
+        self._dir_lock
+            .try_lock_shared()
+            .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+
+        self.install_rebuilt_index(&rebuilt)
+    }
+
+    /// Update the index when git HEAD moved since the last build: apply a cheap
+    /// durable delta (delta segment + persistent delete-set), or fall back to a
+    /// full rebuild when the delta path can't safely/cheaply handle the change
+    /// set (non-ancestor HEAD, over-cap change set, or overlay full). Runs from
+    /// `cmd_update` / the git hooks in a separate process.
+    ///
+    /// Returns `Some((stats, was_full_rebuild))` if an update ran, else `None`.
+    pub fn rebuild_if_stale(&self) -> Result<Option<(IndexStats, bool)>, IndexError> {
+        if self.pending.has_uncommitted() {
+            self.commit_batch()?;
+        }
+
+        let manifest = Manifest::load(&self.config.index_dir)?;
+        let current_head = helpers::current_repo_head(&self.config.repo_root)?;
+        if manifest.base_commit == current_head {
+            return Ok(None);
+        }
+
+        // Try a cheap durable delta first: `try_committed_delta` returns
+        // `Some(stats)` when it applied one, `None` for anything it can't
+        // safely/cheaply handle (a full rebuild always answers that "no").
+        if let Some(stats) = self.try_committed_delta(&manifest, current_head.as_deref())? {
+            return Ok(Some((stats, false)));
+        }
+
+        self.rebuild_with(super::build::build_index)
+            .map(|stats| Some((stats, true)))
     }
 }
