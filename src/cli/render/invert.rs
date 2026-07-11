@@ -84,7 +84,7 @@ fn render_invert_match_scan(
             continue;
         };
         total_bytes_searched += raw_bytes.len();
-        let file_bytes = crate::index::normalize_encoding(&raw_bytes, config.verbose);
+        let file_bytes = crate::index::normalize_encoding(&raw_bytes);
 
         for_each_line(file_bytes.as_ref(), |line_num, line_start, line| {
             if args

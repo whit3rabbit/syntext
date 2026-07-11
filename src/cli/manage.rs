@@ -39,6 +39,10 @@ pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bo
         // Neither --verbose nor --quiet: default to verbose for CLI users.
         config.verbose = true;
     }
+    // The library logs through `log`; sync the level to this subcommand's
+    // resolved verbosity (default verbose, `--quiet` off) so the build summary
+    // and per-file skips print exactly as they did before the log migration.
+    super::logger::set_verbose(config.verbose);
     let index = match Index::build(config) {
         Ok(idx) => idx,
         Err(e) => {

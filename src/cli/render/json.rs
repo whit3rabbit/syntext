@@ -14,17 +14,16 @@ use super::{
 };
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
-/// Best-effort size (bytes) of a scoped file with no match, for the summary
-/// `bytes_searched` stat. Uses the in-memory index (overlay content, else the
-/// live base-segment doc's `size_bytes`) to avoid reading every unmatched file
-/// off disk. Falls back to a cheap `metadata` stat (not a full read) for a
-/// scoped path absent from the index (e.g. an untracked file in scope), so it
-/// is not silently counted as zero.
-fn get_file_size(
-    snap: &crate::index::IndexSnapshot,
-    root: &std::path::Path,
-    path: &std::path::Path,
-) -> usize {
+/// Size (bytes) of a scoped file with no match, for the summary
+/// `bytes_searched` stat. Read entirely from the in-memory index: overlay
+/// content length, else the live base-segment doc's `size_bytes`.
+///
+/// A scoped path absent from the index (an untracked file that happens to be in
+/// scope) contributes 0: st never actually searched its content (it is not
+/// indexed), so counting its on-disk size would overstate what was searched.
+/// This also avoids an `fs::metadata` syscall per unmatched-scoped file, which
+/// on a large scope with few matches was O(files) stats just to fill this stat.
+fn get_file_size(snap: &crate::index::IndexSnapshot, path: &std::path::Path) -> usize {
     if let Some(doc) = snap.overlay.get_doc_by_path(path) {
         return doc.content.len();
     }
@@ -46,9 +45,7 @@ fn get_file_size(
             }
         }
     }
-    std::fs::metadata(root.join(path))
-        .map(|m| m.len() as usize)
-        .unwrap_or(0)
+    0
 }
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
@@ -165,7 +162,7 @@ pub(in crate::cli) fn render_json(
         if by_file.contains_key(&path) {
             continue;
         }
-        total_bytes_searched += get_file_size(&snap, &canonical_root, &path);
+        total_bytes_searched += get_file_size(&snap, &path);
     }
 
     // summary

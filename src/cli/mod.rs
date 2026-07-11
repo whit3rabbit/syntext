@@ -11,6 +11,7 @@ mod commands;
 mod config;
 mod fallback;
 mod init;
+mod logger;
 mod manage;
 mod post_filter;
 mod render;
@@ -37,6 +38,11 @@ use search::{cmd_search, SearchArgs};
 /// Run the CLI. Returns the process exit code.
 pub fn run() -> i32 {
     let cli = Cli::parse();
+
+    // Install the only logger the library's `log` diagnostics route through.
+    // `st index` re-derives its own level below (defaults to verbose); every
+    // other command uses the resolved -v/--debug flag directly.
+    logger::init(cli.verbose || cli.compat.debug);
 
     match &cli.command {
         Some(ManageCommand::Init(args)) => return cmd_init(args),
@@ -192,6 +198,67 @@ pub fn run() -> i32 {
             if !cli.colors.is_empty() {
                 eprintln!(
                     "st: --colors is not implemented; default match/path/line colors are used"
+                );
+            }
+
+            // Semantically-dangerous silent flags: these are accepted (parsed)
+            // but have NO effect, and silence here would mislead an agent into
+            // thinking it searched more than it did. Warn so the dropped
+            // behavior is visible. (Truly cosmetic no-ops like --sort path,
+            // which is truthful since results are already path-sorted, are
+            // intentionally NOT warned.)
+            if cli.compat.unrestricted > 0 {
+                eprintln!(
+                    "st: -u/--unrestricted is not implemented; hidden/.gitignore/binary files are not searched"
+                );
+            }
+            if cli.compat.binary || cli.compat.text {
+                eprintln!(
+                    "st: --binary/-a/--text is not implemented; binary-file handling matches ripgrep's text-mode default"
+                );
+            }
+            if cli.compat.search_zip {
+                eprintln!(
+                    "st: -z/--search-zip is not implemented; compressed files are not transparently decompressed"
+                );
+            }
+            // --sort/--sortr are no-ops (results are always path-sorted), so
+            // `--sort path`/`--sort none` are truthful. Warn only for other
+            // sort keys, which the user expects to actually reorder results.
+            for (opt, val) in [
+                ("--sort", cli.compat.sort.as_deref()),
+                ("--sortr", cli.compat.sortr.as_deref()),
+            ] {
+                if let Some(v) = val {
+                    if v != "path" && v != "none" {
+                        eprintln!(
+                            "st: {opt} '{v}' is not implemented; results are always sorted by path"
+                        );
+                    }
+                }
+            }
+            // More search-affecting flags that are parsed but have no effect.
+            // Warn so a caller (including an agent) is not misled into trusting
+            // a preprocessor, alternate regex engine, encoding override, or
+            // ad-hoc type definition that silently did nothing.
+            if cli.compat.pre.is_some() || cli.compat.pre_glob.is_some() {
+                eprintln!(
+                    "st: --pre/--pre-glob is not implemented; files are searched as-is, not through a preprocessor"
+                );
+            }
+            if let Some(ref eng) = cli.compat.engine {
+                eprintln!(
+                    "st: --engine '{eng}' is not implemented; the default regex engine is always used"
+                );
+            }
+            if let Some(ref enc) = cli.compat.encoding {
+                eprintln!(
+                    "st: --encoding '{enc}' is not implemented; encoding is auto-detected (UTF-8/UTF-16 BOM) only"
+                );
+            }
+            if !cli.compat.type_add.is_empty() || !cli.compat.type_clear.is_empty() {
+                eprintln!(
+                    "st: --type-add/--type-clear is not implemented; -t/-T use the built-in type definitions only"
                 );
             }
 

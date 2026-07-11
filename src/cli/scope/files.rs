@@ -5,10 +5,25 @@ use crate::index::Index;
 use crate::path_util::path_bytes;
 use crate::Config;
 
-use super::{explicit_path_specs, matches_any_explicit_path, matches_optional_glob, path_depth};
+use super::{
+    explicit_path_specs, matches_any_explicit_path, matches_optional_glob, path_depth,
+    CompiledGlobs,
+};
 
 /// List indexed files matching type/glob filters (--files mode).
 pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
+    // Reject malformed -g/--glob specs up front, mirroring `cmd_search`. Without
+    // this, a bad glob degrades to a silent never-match filter (the file is
+    // simply omitted from the listing) instead of exiting 2, and a malformed
+    // negative glob silently drops an exclusion.
+    let globs = cli.combined_globs();
+    if let Err((spec, msg)) = super::validate_globs(&globs) {
+        eprintln!("st: invalid glob '{spec}': {msg}");
+        return 2;
+    }
+    // Compile globs once, not once per candidate path.
+    let compiled_globs = CompiledGlobs::build(&globs);
+
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         Err(e) => {
@@ -31,7 +46,6 @@ pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let sep = if cli.null { b'\0' } else { b'\n' };
-    let globs = cli.combined_globs();
 
     // Scope by the requested path(s), matching `rg --files <path>`. Dispatch to
     // cmd_files happens before the `-e` positional shift, so the first positional
@@ -51,7 +65,7 @@ pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
         .visible_paths()
         .filter(|(_, path)| {
             matches_any_explicit_path(path, &specs)
-                && matches_optional_glob(path, &cli.file_type, &cli.type_not, &globs)
+                && matches_optional_glob(path, &cli.file_type, &cli.type_not, &compiled_globs)
         })
         .map(|(_, path)| path.to_path_buf())
         .collect();

@@ -66,12 +66,29 @@ impl ColorWhen {
 /// colors only when stdout is a TTY. `--pretty` (which documents
 /// `--color=always`) forces color on unless the user explicitly passed
 /// `never`, so `--pretty --color=never` stays monochrome.
+///
+/// `NO_COLOR` (https://no-color.org, honored by rg/grep/ls/etc.) forces color
+/// off when set to any non-empty value — but only under `auto`/absent, since an
+/// explicit `--color=always`/`ansi` is the user overriding it. This keeps the
+/// accessibility convention (no surprise color in piped/piped-from-no-color
+/// environments) without breaking `--color=always` scripts.
 pub(in crate::cli) fn resolve_color(when: Option<ColorWhen>, pretty: bool) -> bool {
     match when {
         Some(ColorWhen::Always) | Some(ColorWhen::Ansi) => true,
         Some(ColorWhen::Never) => false,
-        None | Some(ColorWhen::Auto) => pretty || io::stdout().is_terminal(),
+        None | Some(ColorWhen::Auto) => {
+            if no_color_set() {
+                return false;
+            }
+            pretty || io::stdout().is_terminal()
+        }
     }
+}
+
+/// True when the `NO_COLOR` env var is present and non-empty (per the
+/// no-color.org spec, which keys on presence+non-emptiness, not the value).
+fn no_color_set() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
 /// Write `bytes` wrapped in `style`...`RESET` when `color` is on, raw

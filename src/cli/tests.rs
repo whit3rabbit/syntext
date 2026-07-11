@@ -10,7 +10,8 @@ use crate::{Config, SearchOptions};
 
 use super::{
     commands::AgentCommand, manage::cmd_index, manage::cmd_status, manage::cmd_update,
-    overlaps_sensitive_prefix, search::cmd_search, search::SearchArgs, Cli, ManageCommand,
+    overlaps_sensitive_prefix, scope::cmd_files, search::cmd_search, search::SearchArgs, Cli,
+    ManageCommand,
 };
 
 /// Build a temporary index from a list of (relative_path, content) pairs.
@@ -132,6 +133,71 @@ fn manage_index_subcommand_still_routes_correctly() {
     let cli = Cli::try_parse_from(["st", "index"]).expect("parse failed");
     assert!(cli.pattern.is_none());
     assert!(matches!(cli.command, Some(ManageCommand::Index { .. })));
+}
+
+#[test]
+fn cmd_files_rejects_malformed_glob_with_exit_2() {
+    // `st --files -g '[bad'` must exit 2 (malformed glob), not silently list
+    // nothing. Mirrors the up-front `validate_globs` check `cmd_search` does;
+    // `cmd_files` previously skipped it, so a bad glob degraded to a silent
+    // never-match filter. Validation runs before `Index::open`, so a
+    // non-existent index dir still yields exit 2 (proving the glob, not a
+    // missing-index error, is what was reported).
+    let cli = Cli::try_parse_from(["st", "--files", "-g", "[bad"]).expect("parse failed");
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    let config = Config {
+        index_dir: idx.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    assert_eq!(cmd_files(config, &cli), 2);
+}
+
+#[test]
+fn cmd_search_rejects_malformed_glob_with_exit_2() {
+    // Companion to the `--files` case: `cmd_search` has always validated up
+    // front; this locks that contract in alongside it.
+    let repo = tempfile::TempDir::new().unwrap();
+    let idx = tempfile::TempDir::new().unwrap();
+    let config = Config {
+        index_dir: idx.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let args = SearchArgs {
+        globs: vec!["[bad".to_string()],
+        ..SearchArgs::default()
+    };
+    assert_eq!(cmd_search(config, &args), 2);
+}
+
+#[test]
+fn count_matches_keeps_line_content_for_rescan() {
+    // Regression for review issue #5: `render_count_matches` re-scans
+    // `m.line_content` with `find_iter` to count per-line occurrences, so
+    // `search_options` must NOT set `skip_line_content` for `--count-matches`
+    // (only `-l`/`-L` may). If a future refactor folds `count_matches` into
+    // the skip condition, every count silently becomes 0 and the file is
+    // suppressed entirely. Lock the contract: `skip_line_content` is true for
+    // files-with-matches / files-without-match, false for count_matches.
+    let count_matches = SearchArgs {
+        count_matches: true,
+        ..SearchArgs::default()
+    };
+    assert!(
+        !super::scope::search_options(&count_matches, None).skip_line_content,
+        "--count-matches must keep line_content so render_count_matches can rescan it"
+    );
+
+    let files_with_matches = SearchArgs {
+        files_with_matches: true,
+        ..SearchArgs::default()
+    };
+    assert!(
+        super::scope::search_options(&files_with_matches, None).skip_line_content,
+        "-l legitimately skips line content (only the file list is needed)"
+    );
 }
 
 #[test]

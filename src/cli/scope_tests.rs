@@ -92,7 +92,12 @@ mod glob_and_depth_tests {
     fn glob_star_extension_passes_deep_path() {
         // *.rs has no '/' → matched against basename → must match src/main.rs.
         let path = Path::new("src/main.rs");
-        assert!(matches_optional_glob(path, &[], &[], &["*.rs".to_string()]));
+        assert!(matches_optional_glob(
+            path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&["*.rs".to_string()])
+        ));
     }
 
     #[test]
@@ -102,7 +107,7 @@ mod glob_and_depth_tests {
             path,
             &[],
             &[],
-            &["*.rs".to_string()]
+            &CompiledGlobs::build(&["*.rs".to_string()])
         ));
     }
 
@@ -112,8 +117,8 @@ mod glob_and_depth_tests {
         let vendor = Path::new("vendor/lib.rs");
         let src = Path::new("src/lib.rs");
         let globs = vec!["!vendor/**".to_string()];
-        assert!(!matches_optional_glob(vendor, &[], &[], &globs));
-        assert!(matches_optional_glob(src, &[], &[], &globs));
+        assert!(!matches_optional_glob(vendor, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(src, &[], &[], &CompiledGlobs::build(&globs)));
     }
 
     #[test]
@@ -122,8 +127,8 @@ mod glob_and_depth_tests {
         let path_a = Path::new("foo/afile.rs");
         let path_z = Path::new("foo/zfile.rs");
         let globs = vec!["[abcde]file.rs".to_string()];
-        assert!(matches_optional_glob(path_a, &[], &[], &globs));
-        assert!(!matches_optional_glob(path_z, &[], &[], &globs));
+        assert!(matches_optional_glob(path_a, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(!matches_optional_glob(path_z, &[], &[], &CompiledGlobs::build(&globs)));
     }
 
     #[test]
@@ -132,8 +137,8 @@ mod glob_and_depth_tests {
         let path_a = Path::new("foo/afile.rs");
         let path_z = Path::new("foo/zfile.rs");
         let globs = vec!["**/[abcde]file.rs".to_string()];
-        assert!(matches_optional_glob(path_a, &[], &[], &globs));
-        assert!(!matches_optional_glob(path_z, &[], &[], &globs));
+        assert!(matches_optional_glob(path_a, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(!matches_optional_glob(path_z, &[], &[], &CompiledGlobs::build(&globs)));
     }
 
     #[test]
@@ -143,9 +148,9 @@ mod glob_and_depth_tests {
         let py_path = Path::new("src/lib.py");
         let js_path = Path::new("src/lib.js");
         let globs = vec!["*.{rs,py}".to_string()];
-        assert!(matches_optional_glob(rs_path, &[], &[], &globs));
-        assert!(matches_optional_glob(py_path, &[], &[], &globs));
-        assert!(!matches_optional_glob(js_path, &[], &[], &globs));
+        assert!(matches_optional_glob(rs_path, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(py_path, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(!matches_optional_glob(js_path, &[], &[], &CompiledGlobs::build(&globs)));
     }
 
     #[test]
@@ -155,9 +160,9 @@ mod glob_and_depth_tests {
         let py_path = Path::new("src/lib.py");
         let js_path = Path::new("src/lib.js");
         let globs = vec!["**/*.{rs,py}".to_string()];
-        assert!(matches_optional_glob(rs_path, &[], &[], &globs));
-        assert!(matches_optional_glob(py_path, &[], &[], &globs));
-        assert!(!matches_optional_glob(js_path, &[], &[], &globs));
+        assert!(matches_optional_glob(rs_path, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(py_path, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(!matches_optional_glob(js_path, &[], &[], &CompiledGlobs::build(&globs)));
     }
 
     #[test]
@@ -167,13 +172,18 @@ mod glob_and_depth_tests {
         let bad = Path::new("mysrc/foo/bar.rs");
         let good = Path::new("src/foo/bar.rs");
         let globs = vec!["src/foo/**".to_string()];
-        assert!(!matches_optional_glob(bad, &[], &[], &globs));
-        assert!(matches_optional_glob(good, &[], &[], &globs));
+        assert!(!matches_optional_glob(bad, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(good, &[], &[], &CompiledGlobs::build(&globs)));
     }
 
     #[test]
     fn glob_empty_returns_true() {
-        assert!(matches_optional_glob(Path::new("anything"), &[], &[], &[]));
+        assert!(matches_optional_glob(
+            Path::new("anything"),
+            &[],
+            &[],
+            &CompiledGlobs::build(&[])
+        ));
     }
 
     #[test]
@@ -192,11 +202,68 @@ mod glob_and_depth_tests {
         // -g '!foo' -g 'foo' -> foo is matched because positive glob is last
         let path = Path::new("foo");
         let globs = vec!["!foo".to_string(), "foo".to_string()];
-        assert!(matches_optional_glob(path, &[], &[], &globs));
+        assert!(matches_optional_glob(path, &[], &[], &CompiledGlobs::build(&globs)));
 
         // -g 'foo' -g '!foo' -> foo is excluded because negative glob is last
         let globs2 = vec!["foo".to_string(), "!foo".to_string()];
-        assert!(!matches_optional_glob(path, &[], &[], &globs2));
+        assert!(!matches_optional_glob(path, &[], &[], &CompiledGlobs::build(&globs2)));
+    }
+
+    #[test]
+    fn compiled_globs_reused_across_paths() {
+        // One CompiledGlobs built once must give per-path-correct results when
+        // applied to many paths (the precompile-once contract).
+        let globs = vec!["*.rs".to_string(), "!vendor/**".to_string()];
+        let compiled = CompiledGlobs::build(&globs);
+        assert!(matches_optional_glob(
+            Path::new("src/main.rs"),
+            &[],
+            &[],
+            &compiled
+        ));
+        assert!(!matches_optional_glob(
+            Path::new("vendor/dep.rs"),
+            &[],
+            &[],
+            &compiled
+        ));
+        assert!(!matches_optional_glob(
+            Path::new("src/main.py"),
+            &[],
+            &[],
+            &compiled
+        ));
+        // Reusing the same compiled set a second time is stable.
+        assert!(matches_optional_glob(
+            Path::new("lib/util.rs"),
+            &[],
+            &[],
+            &compiled
+        ));
+    }
+
+    #[test]
+    fn glob_matchers_diverge_on_slash_prefix() {
+        // Lock the intentional divergence between the two glob implementations
+        // so a future "unification" can't silently collapse it:
+        //   - CLI `-g` (globset, literal_separator): `src/foo` matches the path
+        //     `src/foo` exactly, NOT `src/foo/bar.rs`.
+        //   - internal path_glob (path::filter::path_matches_glob, substring):
+        //     `src/foo` substring-matches `src/foo/bar.rs`.
+        let path = Path::new("src/foo/bar.rs");
+        let cli_glob = CompiledGlobs::build(&["src/foo".to_string()]);
+        assert!(
+            !matches_optional_glob(path, &[], &[], &cli_glob),
+            "CLI globset: `src/foo` must not match a deeper path"
+        );
+        assert!(
+            crate::path::filter::path_matches_glob(path, "src/foo"),
+            "internal path_glob: `src/foo` substring-matches a deeper path"
+        );
+        // Both agree on a plain basename extension glob.
+        let ext = CompiledGlobs::build(&["*.rs".to_string()]);
+        assert!(matches_optional_glob(path, &[], &[], &ext));
+        assert!(crate::path::filter::path_matches_glob(path, "*.rs"));
     }
 
     // --- path_depth ---

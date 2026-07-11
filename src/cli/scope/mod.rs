@@ -179,8 +179,12 @@ fn normalize_relative_path(path: &Path) -> PathBuf {
 pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> SearchOptions {
     SearchOptions {
         case_insensitive: args.ignore_case,
-        file_type: single_filter(&args.file_types),
-        exclude_type: single_filter(&args.type_nots),
+        // Pass every -t/-T through the multi-type vecs so the path index
+        // narrows even for `-t rs -t py` (the singles stay unused here).
+        file_type: None,
+        exclude_type: None,
+        file_types: args.file_types.clone(),
+        exclude_types: args.type_nots.clone(),
         max_results: None,
         path_filter,
         verify_pattern: None,
@@ -190,14 +194,6 @@ pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> 
         deterministic: false,
         #[cfg(any(test, feature = "oracle"))]
         force_full_scan: false,
-    }
-}
-
-fn single_filter(filters: &[String]) -> Option<String> {
-    if filters.len() == 1 {
-        Some(filters[0].clone())
-    } else {
-        None
     }
 }
 
@@ -215,98 +211,116 @@ fn compile_glob(pattern: &str) -> Result<globset::Glob, globset::Error> {
     }
 }
 
+/// Precompiled `-g`/`--glob` specs: each pattern is parsed once into a
+/// `GlobMatcher` (no per-path recompilation), tagged exclude-vs-include and
+/// basename-vs-full-path, in CLI order for last-match-wins. Build once per
+/// search via [`CompiledGlobs::build`], then reuse across every candidate path.
+pub(super) struct CompiledGlobs {
+    entries: Vec<GlobEntry>,
+    /// True if any positive (non-`!`) glob is present. Drives the no-match
+    /// fallback: a set of only excludes includes everything not excluded.
+    has_positive: bool,
+}
+
+struct GlobEntry {
+    is_exclude: bool,
+    /// Pattern had no '/': match against the basename only (rg `-g` semantics).
+    basename_only: bool,
+    matcher: globset::GlobMatcher,
+}
+
+impl CompiledGlobs {
+    /// Compile each spec once, skipping malformed globs (mirrors the old inline
+    /// `let Ok(glob) = compile_glob(..) else continue`). Up-front rejection of
+    /// bad specs is [`validate_globs`]'s job; callers run it first and exit 2,
+    /// so by the time we build here every surviving spec compiles.
+    pub(super) fn build(path_globs: &[String]) -> Self {
+        let mut entries = Vec::new();
+        let mut has_positive = false;
+        for glob_str in path_globs {
+            let (is_exclude, pattern) = match glob_str.strip_prefix('!') {
+                Some(excl) => (true, excl),
+                None => (false, glob_str.as_str()),
+            };
+            if pattern.is_empty() {
+                continue;
+            }
+            if !is_exclude {
+                has_positive = true;
+            }
+            let Ok(glob) = compile_glob(pattern) else {
+                continue;
+            };
+            entries.push(GlobEntry {
+                is_exclude,
+                basename_only: !pattern.contains('/'),
+                matcher: glob.compile_matcher(),
+            });
+        }
+        Self {
+            entries,
+            has_positive,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 pub(super) fn matches_optional_glob(
     path: &Path,
     file_types: &[String],
     exclude_types: &[String],
-    path_globs: &[String],
+    globs: &CompiledGlobs,
 ) -> bool {
     if !file_types.is_empty()
         && !file_types
             .iter()
-            .any(|file_type| matches_path_filter(path, Some(file_type.as_str()), None, None))
+            .any(|file_type| matches_path_filter(path, &[file_type.as_str()], &[], None))
     {
         return false;
     }
 
     if exclude_types
         .iter()
-        .any(|exclude_type| matches_path_filter(path, Some(exclude_type.as_str()), None, None))
+        // "does the path HAVE this excluded extension" — pass as an include
+        // probe; a true result means the path carries an excluded type.
+        .any(|exclude_type| matches_path_filter(path, &[exclude_type.as_str()], &[], None))
     {
         return false;
     }
 
-    if path_globs.is_empty() {
+    if globs.is_empty() {
         return true;
     }
 
-    // Use globset for correct glob semantics matching rg's -g behaviour:
+    // globset semantics matching rg's -g behaviour:
     //
-    //   • Patterns WITHOUT '/' are matched against the **basename** only,
-    //     so `*.rs` matches `src/lib.rs` (not just files at the repo root).
-    //     We achieve this by building without literal_separator and then
-    //     testing against Path::file_name().
-    //
-    //   • Patterns WITH '/' are matched against the **full relative path**
-    //     with literal_separator(true), so `src/foo` does NOT substring-match
+    //   • Patterns WITHOUT '/' match the **basename** only, so `*.rs` matches
+    //     `src/lib.rs` (compiled without literal_separator, tested against
+    //     Path::file_name()).
+    //   • Patterns WITH '/' match the **full relative path** with
+    //     literal_separator(true), so `src/foo` does NOT substring-match
     //     `mysrc/foo` (each slash is a component boundary).
     //
-    // Both paths support [...] character classes and {a,b} alternation.
-    use globset::GlobSetBuilder;
-
+    // Last matching glob wins (exclude vs include); a set of only excludes
+    // includes everything not excluded.
     let basename = path.file_name().map(Path::new);
-
-    let mut has_positive = false;
-    let mut state = None; // None means Undecided
-
-    for glob_str in path_globs {
-        let (is_exclude, pattern) = if let Some(excl) = glob_str.strip_prefix('!') {
-            (true, excl)
+    let mut state: Option<bool> = None; // None means Undecided
+    for entry in &globs.entries {
+        let matches = if entry.basename_only {
+            basename.is_some_and(|b| entry.matcher.is_match(b))
         } else {
-            (false, glob_str.as_str())
+            entry.matcher.is_match(path)
         };
-
-        if pattern.is_empty() {
-            continue;
-        }
-
-        if !is_exclude {
-            has_positive = true;
-        }
-
-        let has_slash = pattern.contains('/');
-
-        let Ok(glob) = compile_glob(pattern) else {
-            continue;
-        };
-
-        // Build a single-pattern set for matching.
-        let mut builder = GlobSetBuilder::new();
-        builder.add(glob);
-        let Ok(set) = builder.build() else {
-            continue;
-        };
-
-        // Determine the match target.
-        let matches = if has_slash {
-            set.is_match(path)
-        } else {
-            // Match against basename for patterns without '/'.
-            basename.is_some_and(|b| set.is_match(b))
-        };
-
         if matches {
-            if is_exclude {
-                state = Some(false); // Excluded
-            } else {
-                state = Some(true); // Included
-            }
+            state = Some(!entry.is_exclude);
         }
     }
-
     match state {
         Some(included) => included,
-        None => !has_positive,
+        None => !globs.has_positive,
     }
 }
 
@@ -336,12 +350,14 @@ pub(super) fn collect_scoped_paths(
 ) -> Vec<PathBuf> {
     let snapshot = index.snapshot();
     let explicit_specs = explicit_path_specs(config.repo_root.as_path(), &args.paths);
+    // Compile globs once, not once per candidate path.
+    let compiled_globs = CompiledGlobs::build(&args.globs);
     let mut paths: Vec<PathBuf> = snapshot
         .path_index
         .visible_paths()
         .filter(|(_, path)| {
             matches_any_explicit_path(path, &explicit_specs)
-                && matches_optional_glob(path, &args.file_types, &args.type_nots, &args.globs)
+                && matches_optional_glob(path, &args.file_types, &args.type_nots, &compiled_globs)
         })
         .map(|(_, path)| path.to_path_buf())
         .collect();

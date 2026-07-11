@@ -10,6 +10,7 @@ pub use super::commands::ManageCommand;
 
 mod compat;
 pub use compat::CompatibilityArgs;
+mod globs;
 
 /// Fast code search with index acceleration. ripgrep-style interface.
 ///
@@ -18,7 +19,8 @@ pub use compat::CompatibilityArgs;
 #[command(name = "st", version, about, disable_help_subcommand = true)]
 pub struct Cli {
     /// Pattern to search (regex by default). Use -F for literal, -e to avoid
-    /// subcommand name conflicts (e.g. `st -e index`).
+    /// subcommand name conflicts (`st -e index`), or `--` to search for a
+    /// colliding word (`st -- index` searches "index", not the rebuild).
     pub pattern: Option<String>,
 
     /// Paths (files or directories) to restrict the search.
@@ -39,6 +41,8 @@ pub struct Cli {
     pub ignore_case: bool,
 
     /// Case-insensitive if pattern is all lowercase, case-sensitive otherwise.
+    /// Note: uppercase regex class shorthands (\S, \D, \W) and ranges like
+    /// [A-Z] count as uppercase and force case-sensitive mode.
     #[arg(short = 'S', long = "smart-case", overrides_with_all = ["ignore_case", "case_sensitive"])]
     pub smart_case: bool,
 
@@ -323,11 +327,4 @@ pub struct Cli {
     pub command: Option<ManageCommand>,
 }
 
-impl Cli {
-    pub(super) fn combined_globs(&self) -> Vec<String> {
-        let mut globs = self.glob.clone();
-        globs.extend(self.include.iter().cloned());
-        globs.extend(self.exclude.iter().map(|glob| format!("!{glob}")));
-        globs
-    }
-}
+

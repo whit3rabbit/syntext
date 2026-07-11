@@ -7,7 +7,7 @@
 
 use super::scope::{
     matches_any_explicit_path, matches_optional_glob, path_depth, truncate_matches_per_file,
-    ExplicitPathSpec,
+    CompiledGlobs, ExplicitPathSpec,
 };
 use super::search::SearchArgs;
 
@@ -22,9 +22,10 @@ pub(super) fn apply_post_filters(
         || !args.type_nots.is_empty()
         || !args.globs.is_empty()
     {
+        let compiled_globs = CompiledGlobs::build(&args.globs);
         results.retain(|m| {
             matches_any_explicit_path(&m.path, explicit_specs)
-                && matches_optional_glob(&m.path, &args.file_types, &args.type_nots, &args.globs)
+                && matches_optional_glob(&m.path, &args.file_types, &args.type_nots, &compiled_globs)
         });
     }
     if let Some(depth) = args.max_depth {
