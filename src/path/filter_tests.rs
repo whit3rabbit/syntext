@@ -15,35 +15,51 @@ fn make_index() -> PathIndex {
 #[test]
 fn filter_by_extension() {
     let idx = make_index();
-    let filter = build_filter(&idx, Some("rs"), None, None, None).unwrap();
+    let filter = build_filter(&idx, &["rs"], &[], None, None).unwrap();
     assert_eq!(filter.file_ids.len(), 3);
 }
 
 #[test]
 fn filter_by_path_glob() {
     let idx = make_index();
-    let filter = build_filter(&idx, None, None, Some("src/"), None).unwrap();
+    let filter = build_filter(&idx, &[], &[], Some("src/"), None).unwrap();
     assert_eq!(filter.file_ids.len(), 3);
 }
 
 #[test]
 fn filter_combined_type_and_path() {
     let idx = make_index();
-    let filter = build_filter(&idx, Some("rs"), None, Some("src/"), None).unwrap();
+    let filter = build_filter(&idx, &["rs"], &[], Some("src/"), None).unwrap();
     assert_eq!(filter.file_ids.len(), 2);
 }
 
 #[test]
 fn filter_exclude_type() {
     let idx = make_index();
-    let filter = build_filter(&idx, None, Some("js"), None, None).unwrap();
+    let filter = build_filter(&idx, &[], &["js"], None, None).unwrap();
     assert_eq!(filter.file_ids.len(), 5);
+}
+
+#[test]
+fn filter_by_multiple_extensions_unions() {
+    let idx = make_index();
+    // rs (3) UNION py (1) = 4, resolved through the index (not post-filter).
+    let filter = build_filter(&idx, &["rs", "py"], &[], None, None).unwrap();
+    assert_eq!(filter.file_ids.len(), 4);
+}
+
+#[test]
+fn filter_multiple_excludes_subtract() {
+    let idx = make_index();
+    // 6 files minus js (1) minus md (1) = 4.
+    let filter = build_filter(&idx, &[], &["js", "md"], None, None).unwrap();
+    assert_eq!(filter.file_ids.len(), 4);
 }
 
 #[test]
 fn no_filter_returns_none() {
     let idx = make_index();
-    let filter = build_filter(&idx, None, None, None, None);
+    let filter = build_filter(&idx, &[], &[], None, None);
     assert!(filter.is_none());
 }
 
@@ -69,20 +85,20 @@ fn glob_double_star_extension() {
 fn matches_path_filter_combines_type_and_glob() {
     assert!(matches_path_filter(
         Path::new("src/main.rs"),
-        Some("rs"),
-        None,
+        &["rs"],
+        &[],
         Some("src/")
     ));
     assert!(!matches_path_filter(
         Path::new("src/main.py"),
-        Some("rs"),
-        None,
+        &["rs"],
+        &[],
         Some("src/")
     ));
     assert!(!matches_path_filter(
         Path::new("tests/main.rs"),
-        Some("rs"),
-        None,
+        &["rs"],
+        &[],
         Some("src/")
     ));
 }
@@ -170,7 +186,7 @@ fn non_utf8_paths_participate_in_extension_and_glob_filters() {
     use std::os::unix::ffi::OsStringExt;
 
     let path = std::path::PathBuf::from(OsString::from_vec(b"src/odd\xff.rs".to_vec()));
-    assert!(matches_path_filter(&path, Some("rs"), None, Some("src/")));
+    assert!(matches_path_filter(&path, &["rs"], &[], Some("src/")));
     assert!(path_matches_glob(&path, "*.rs"));
     assert!(path_matches_glob(&path, "src/"));
 }
@@ -193,13 +209,13 @@ fn byte_split_ext_last_sep() {
 fn filter_uses_glob_cache() {
     let idx = make_index();
     let cache = std::sync::Mutex::new(std::collections::HashMap::new());
-    let filter1 = build_filter(&idx, None, None, Some("src/"), Some(&cache)).unwrap();
+    let filter1 = build_filter(&idx, &[], &[], Some("src/"), Some(&cache)).unwrap();
     assert_eq!(filter1.file_ids.len(), 3);
     {
         let guard = cache.lock().unwrap();
         assert!(guard.contains_key("src/"));
         assert_eq!(guard.get("src/").unwrap().len(), 3);
     }
-    let filter2 = build_filter(&idx, None, None, Some("src/"), Some(&cache)).unwrap();
+    let filter2 = build_filter(&idx, &[], &[], Some("src/"), Some(&cache)).unwrap();
     assert_eq!(filter2.file_ids.len(), 3);
 }
