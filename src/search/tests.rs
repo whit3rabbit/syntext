@@ -5,6 +5,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::index::Index;
 use crate::query::literal_grams;
+use crate::search::executor::posting_bitmap;
 use crate::Config;
 
 // Test-only ergonomics: let a `SearchOutcome` be used directly as its match
@@ -39,6 +40,8 @@ fn fallback_path_filter_uses_same_glob_semantics() {
         path_filter: Some("*.rs".to_string()),
         file_type: None,
         exclude_type: None,
+        file_types: Vec::new(),
+        exclude_types: Vec::new(),
         max_results: None,
         case_insensitive: false,
         verify_pattern: None,
@@ -50,14 +53,14 @@ fn fallback_path_filter_uses_same_glob_semantics() {
 
     assert!(matches_path_filter(
         std::path::Path::new("src/main.rs"),
-        opts.file_type.as_deref(),
-        None,
+        &[],
+        &[],
         opts.path_filter.as_deref(),
     ));
     assert!(!matches_path_filter(
         std::path::Path::new("src/main.py"),
-        opts.file_type.as_deref(),
-        None,
+        &[],
+        &[],
         opts.path_filter.as_deref(),
     ));
 }

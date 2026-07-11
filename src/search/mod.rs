@@ -25,14 +25,13 @@ use resolver::resolve_doc;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use regex::bytes::RegexBuilder;
-use roaring::RoaringBitmap;
 
 use crate::index::IndexSnapshot;
 use crate::path::filter::{build_filter, matches_path_filter};
 use crate::query::{literal_grams, route_query, GramQuery, QueryRoute};
 use crate::{Config, IndexError, SearchMatch, SearchOptions};
 
-use executor::{execute_query, gram_cardinality, is_selective_enough, posting_bitmap};
+use executor::{execute_query, should_use_index};
 
 /// 10 MiB cap on regex NFA/DFA size: prevents ReDoS during compilation (not just matching).
 ///
@@ -177,10 +176,24 @@ pub(crate) fn search_with_content(
     let glob_cache = snap
         .glob_cache
         .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    // Combine the single-type convenience fields with the multi-type vecs so a
+    // library caller can use either; the index narrows on all of them.
+    let include_types: Vec<&str> = opts
+        .file_type
+        .as_deref()
+        .into_iter()
+        .chain(opts.file_types.iter().map(String::as_str))
+        .collect();
+    let exclude_types: Vec<&str> = opts
+        .exclude_type
+        .as_deref()
+        .into_iter()
+        .chain(opts.exclude_types.iter().map(String::as_str))
+        .collect();
     let path_filter_bitmap = build_filter(
         &snap.path_index,
-        opts.file_type.as_deref(),
-        opts.exclude_type.as_deref(),
+        &include_types,
+        &exclude_types,
         opts.path_filter.as_deref(),
         Some(glob_cache),
     );
@@ -214,7 +227,6 @@ pub(crate) fn search_with_content(
             canonical_root,
             root_fd.as_ref(),
             config.max_file_size,
-            config.verbose,
         )?;
 
         if let Some(ref pf) = path_filter_bitmap {
@@ -236,8 +248,8 @@ pub(crate) fn search_with_content(
             } else {
                 if !matches_path_filter(
                     &rel_path,
-                    opts.file_type.as_deref(),
-                    opts.exclude_type.as_deref(),
+                    &include_types,
+                    &exclude_types,
                     opts.path_filter.as_deref(),
                 ) {
                     return None;
@@ -326,6 +338,42 @@ pub(crate) fn search_with_content(
     Ok(SearchOutcome { matches, files })
 }
 
+/// Group a content-capturing [`SearchOutcome`] into per-file results, moving
+/// each file's verified content into its group.
+///
+/// `matches` is already sorted by `(path, line)`, so a single linear pass
+/// groups it; matches within a group stay line-sorted. Requires the outcome to
+/// come from `capture_content=true`: every path in `matches` then has a `files`
+/// entry. The empty-content fallback is unreachable from the public
+/// `SearchOptions` (symbol/refs lookups, which carry no content map, are
+/// CLI-only), hence the `debug_assert`.
+pub(crate) fn group_outcome(outcome: SearchOutcome) -> Vec<crate::FileMatches> {
+    let SearchOutcome { matches, mut files } = outcome;
+    let mut groups: Vec<crate::FileMatches> = Vec::new();
+    for m in matches {
+        if let Some(g) = groups.last_mut() {
+            if g.path == m.path {
+                g.matches.push(m);
+                continue;
+            }
+        }
+        let path = m.path.clone();
+        let content: Arc<[u8]> = files.remove(&path).map(|mf| mf.normalized).unwrap_or_else(|| {
+            debug_assert!(
+                false,
+                "capture_content=true guarantees content for every matched path"
+            );
+            Arc::from(&[][..])
+        });
+        groups.push(crate::FileMatches {
+            path,
+            matches: vec![m],
+            content,
+        });
+    }
+    groups
+}
+
 /// Per-candidate result: the file's verified content (when captured) plus its
 /// matches. Merged after the parallel pass into the final `SearchOutcome`.
 struct FileResult {
@@ -345,53 +393,6 @@ fn sort_matches(mut matches: Vec<SearchMatch>) -> Vec<SearchMatch> {
 /// All global doc IDs across base segments + overlay, excluding delete_set.
 fn all_doc_ids(snap: &IndexSnapshot) -> Vec<u32> {
     snap.all_doc_ids().iter().collect()
-}
-
-/// Return true if the literal looks selective enough to justify indexed
-/// execution instead of a full scan.
-fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> Result<bool, IndexError> {
-    if hashes.is_empty() {
-        return Ok(false);
-    }
-
-    let total_docs = snap.all_doc_ids().len();
-    if total_docs == 0 {
-        return Ok(false);
-    }
-
-    let mut ordered = hashes.to_vec();
-    ordered.sort_unstable_by_key(|&hash| gram_cardinality(hash, snap));
-
-    let smallest = ordered
-        .first()
-        .map(|&hash| gram_cardinality(hash, snap))
-        .unwrap_or(0);
-    if is_selective_enough(u64::from(smallest), total_docs, snap.scan_threshold) {
-        return Ok(true);
-    }
-
-    if ordered.len() == 1 {
-        return Ok(false);
-    }
-
-    // Probe the intersection of a few smallest postings. Compound identifiers
-    // can be highly selective even when each component gram is common alone.
-    // Use & on two borrows to avoid cloning the first (potentially large) bitmap.
-    let first = posting_bitmap(ordered[0], snap)?;
-    let second = posting_bitmap(ordered[1], snap)?;
-    let mut acc: RoaringBitmap = first.as_ref() & second.as_ref();
-    if acc.is_empty() || is_selective_enough(acc.len(), total_docs, snap.scan_threshold) {
-        return Ok(true);
-    }
-    if ordered.len() > 2 {
-        let third = posting_bitmap(ordered[2], snap)?;
-        acc &= third.as_ref();
-        if acc.is_empty() || is_selective_enough(acc.len(), total_docs, snap.scan_threshold) {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
 }
 
 #[cfg(test)]

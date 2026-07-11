@@ -34,9 +34,12 @@ impl PostingBudget {
     pub(crate) fn charge(&self, n: usize) -> Result<(), IndexError> {
         let rem = self.remaining.get();
         if n > rem {
-            return Err(IndexError::CorruptIndex(format!(
-                "query exceeded aggregate posting budget ({MAX_QUERY_POSTING_BYTES} bytes)"
-            )));
+            // Not corruption — an OOM defense against a broad/adversarial query
+            // on a (possibly large but healthy) index. Don't tell the user to
+            // rebuild; tell them to narrow the query.
+            return Err(IndexError::QueryTooBroad {
+                limit_bytes: MAX_QUERY_POSTING_BYTES,
+            });
         }
         self.remaining.set(rem - n);
         Ok(())
@@ -207,3 +210,51 @@ fn posting_bitmap_inner(
     bitmap -= &snap.delete_set;
     Ok(snap.store_posting_bitmap(gram_hash, Arc::new(bitmap)))
 }
+
+/// Return true if the literal looks selective enough to justify indexed
+/// execution instead of a full scan.
+pub(crate) fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> Result<bool, IndexError> {
+    if hashes.is_empty() {
+        return Ok(false);
+    }
+
+    let total_docs = snap.all_doc_ids().len();
+    if total_docs == 0 {
+        return Ok(false);
+    }
+
+    let mut ordered = hashes.to_vec();
+    ordered.sort_unstable_by_key(|&hash| gram_cardinality(hash, snap));
+
+    let smallest = ordered
+        .first()
+        .map(|&hash| gram_cardinality(hash, snap))
+        .unwrap_or(0);
+    if is_selective_enough(u64::from(smallest), total_docs, snap.scan_threshold) {
+        return Ok(true);
+    }
+
+    if ordered.len() == 1 {
+        return Ok(false);
+    }
+
+    // Probe the intersection of a few smallest postings. Compound identifiers
+    // can be highly selective even when each component gram is common alone.
+    // Use & on two borrows to avoid cloning the first (potentially large) bitmap.
+    let first = posting_bitmap(ordered[0], snap)?;
+    let second = posting_bitmap(ordered[1], snap)?;
+    let mut acc: RoaringBitmap = first.as_ref() & second.as_ref();
+    if acc.is_empty() || is_selective_enough(acc.len(), total_docs, snap.scan_threshold) {
+        return Ok(true);
+    }
+    if ordered.len() > 2 {
+        let third = posting_bitmap(ordered[2], snap)?;
+        acc &= third.as_ref();
+        if acc.is_empty() || is_selective_enough(acc.len(), total_docs, snap.scan_threshold) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+

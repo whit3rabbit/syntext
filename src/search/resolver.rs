@@ -21,7 +21,6 @@ pub(super) fn resolve_doc(
     canonical_root: &Path,
     root_fd: Option<&std::fs::File>,
     max_file_size: u64,
-    verbose: bool,
 ) -> Option<(std::path::PathBuf, Arc<[u8]>, u64)> {
     if let Some(doc) = snap.overlay.get_doc(global_id) {
         let raw_len = doc.content.len() as u64;
@@ -60,7 +59,7 @@ pub(super) fn resolve_doc(
         return None;
     }
     let raw_len = raw.len() as u64;
-    let content = crate::index::normalize_encoding(&raw, verbose);
+    let content = crate::index::normalize_encoding(&raw);
     Some((doc_entry.path, Arc::from(content.as_ref()), raw_len))
 }
 
