@@ -1354,7 +1354,7 @@ fn test_gapped_overlay_doc_ids_cross_process() {
     fx.index
         .notify_change(&fx.repo.path().join("src/main.rs"))
         .unwrap();
-    fx.index.commit_batch().unwrap();
+    commit_batch_with_retry(&fx.index);
 
     // 2. Second commit_batch: modify src/main.rs again (creating gap in overlay doc ids)
     fs::write(
@@ -1366,7 +1366,7 @@ fn test_gapped_overlay_doc_ids_cross_process() {
         .notify_change(&fx.repo.path().join("src/main.rs"))
         .unwrap();
     // This second commit_batch will evict the previous overlay doc id and assign a new one, leaving a gap!
-    fx.index.commit_batch().unwrap();
+    commit_batch_with_retry(&fx.index);
 
     // Now commit to git and run rebuild_if_stale to trigger delta flush of this gapped overlay!
     fx.git(&["commit", "-am", "twice", "--no-gpg-sign"]);
