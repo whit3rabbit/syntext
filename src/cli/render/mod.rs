@@ -313,25 +313,8 @@ pub(in crate::cli) fn read_repo_file_bytes(
 /// Separating these prevents the wrapped regex from being routed through
 /// the HIR walker, which would reject boundary-hugging grams and force
 /// every `-w`/`-x` query into a full scan.
-pub(in crate::cli) fn build_effective_pattern(args: &SearchArgs) -> (String, Option<String>) {
-    let pat = if args.fixed_strings {
-        regex::escape(&args.pattern)
-    } else {
-        args.pattern.clone()
-    };
-    if args.line_regexp {
-        let wrapped = format!("^(?:{pat})$");
-        (pat, Some(wrapped))
-    } else if args.word_regexp {
-        // Group pat so a multi-`-e` alternation like `(?:a)|(?:b)` anchors on
-        // both sides of every alternative. Without the inner group, `\b` would
-        // bind only the first/last alternative (`\b(?:a)|(?:b)\b`).
-        let wrapped = format!(r"\b(?:{pat})\b");
-        (pat, Some(wrapped))
-    } else {
-        (pat, None)
-    }
-}
+mod pattern;
+pub(in crate::cli) use pattern::build_effective_pattern;
 
 pub(in crate::cli) fn compile_output_regex(args: &SearchArgs) -> io::Result<regex::bytes::Regex> {
     let (routing, verify) = build_effective_pattern(args);

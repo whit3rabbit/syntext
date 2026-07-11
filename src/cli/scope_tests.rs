@@ -247,6 +247,16 @@ mod glob_and_depth_tests {
     }
 
     #[test]
+    fn test_non_utf8_path_matching_directory_prefix() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::ffi::OsStr;
+        let path = Path::new(OsStr::from_bytes(b"src/odd\xff.rs"));
+        let globs = vec!["src/**".to_string()];
+        let compiled = CompiledGlobs::build(&globs);
+        assert!(matches_optional_glob(path, &[], &[], &compiled));
+    }
+
+    #[test]
     fn glob_empty_returns_true() {
         assert!(matches_optional_glob(
             Path::new("anything"),

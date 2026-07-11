@@ -876,7 +876,7 @@ fn non_utf8_filenames_work_with_glob_and_type_filters() {
     let output = run_repo(
         repo.path(),
         index.path(),
-        &["-F", "-g", "src/", "-t", "rs", "needle"],
+        &["-F", "-g", "src/**", "-t", "rs", "needle"],
     );
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(output.stdout, b"src/odd\xff.rs:needle\n");
@@ -2104,7 +2104,8 @@ fn hook_rewritten_command_auto_updates_and_searches() {
     let parts: Vec<&str> = rewritten_cmd.split_whitespace().collect();
     assert!(!parts.is_empty());
 
-    let mut run_cmd = Command::new(parts[0]);
+    let clean_exe = parts[0].trim_matches('\'').trim_matches('"');
+    let mut run_cmd = Command::new(clean_exe);
     run_cmd.current_dir(repo.path());
     for arg in &parts[1..] {
         let clean_arg = arg.trim_matches('\'').trim_matches('"');
