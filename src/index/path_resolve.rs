@@ -33,7 +33,13 @@ impl super::Index {
             return Err(IndexError::PathOutsideRepo(path.to_path_buf()));
         }
 
+        // Force forward slashes: this is an ingestion boundary. On Windows a
+        // caller that canonicalizes first (`apply_changed_paths`, the durable
+        // delta path) yields a backslash-separated `rel`, which would store
+        // "src\foo.rs" in the segment and leak backslashes into search results.
+        // Segments must always hold forward-slash paths (see CLAUDE.md).
         self.normalize_repo_relative_path(rel)
+            .map(crate::path_util::normalize_to_forward_slashes)
     }
 
     fn normalize_repo_relative_path(&self, rel: &Path) -> Result<std::path::PathBuf, IndexError> {
