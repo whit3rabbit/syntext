@@ -68,6 +68,88 @@ fn build_produces_nonzero_doc_count() {
 }
 
 #[test]
+fn search_grouped_groups_by_file_with_content() {
+    // Plain (non-git) temp repo: only the two files below are indexed.
+    let repo = TempDir::new().unwrap();
+    std::fs::write(repo.path().join("a.rs"), "needle\nneedle\n").unwrap();
+    std::fs::create_dir(repo.path().join("b")).unwrap();
+    std::fs::write(repo.path().join("b/c.rs"), "x\nneedle\n").unwrap();
+
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let idx = Index::build(config).unwrap();
+
+    let groups = idx
+        .search_grouped("needle", &SearchOptions::default())
+        .unwrap();
+    assert_eq!(groups.len(), 2, "one group per matched file");
+    assert!(
+        groups.windows(2).all(|w| w[0].path < w[1].path),
+        "groups are path-sorted"
+    );
+    for g in &groups {
+        assert!(!g.matches.is_empty(), "no group is empty");
+        assert!(
+            !g.content.is_empty(),
+            "content captured for {}",
+            g.path.display()
+        );
+        assert!(
+            g.matches.windows(2).all(|w| w[0].line_number <= w[1].line_number),
+            "matches line-sorted within a file"
+        );
+        // context(line, 0, 0) is exactly the match line, and its bytes agree
+        // with the match's own line_content (no line-splitting drift).
+        let m = &g.matches[0];
+        let ctx = g.context(m.line_number, 0, 0);
+        assert_eq!(ctx.len(), 1);
+        assert_eq!(ctx[0].0, m.line_number);
+        assert_eq!(ctx[0].1, &m.line_content[..]);
+        assert!(ctx[0].2, "the match line is flagged");
+    }
+    let a = groups
+        .iter()
+        .find(|g| g.path == Path::new("a.rs"))
+        .expect("a.rs group present");
+    assert_eq!(a.matches.len(), 2, "a.rs has two needle lines");
+    drop(idx);
+}
+
+#[test]
+fn search_grouped_truncation_prunes_content() {
+    // -m style truncation must not pin content for dropped files, and every
+    // surviving group must keep its content.
+    let repo = TempDir::new().unwrap();
+    for i in 0..20 {
+        std::fs::write(repo.path().join(format!("f{i:02}.rs")), "needle\n").unwrap();
+    }
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+    let idx = Index::build(config).unwrap();
+    let mut opts = SearchOptions::default();
+    opts.max_results = Some(3);
+    opts.deterministic = true;
+    let groups = idx.search_grouped("needle", &opts).unwrap();
+    assert!(
+        groups.len() <= 3,
+        "truncated to max_results files, got {}",
+        groups.len()
+    );
+    for g in &groups {
+        assert!(!g.content.is_empty(), "surviving group keeps its content");
+    }
+    drop(idx);
+}
+
+#[test]
 fn gitignored_file_not_indexed() {
     let index_dir = TempDir::new().unwrap();
     let config = make_config(&index_dir);

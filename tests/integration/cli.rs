@@ -2512,3 +2512,136 @@ fn githooks_post_commit_hook_triggers_background_update() {
         stderr_text(&uninstall)
     );
 }
+
+#[test]
+fn glob_exclude_then_include_is_positional_last_match_wins() {
+    // Regression for review issue #3: `combined_globs` previously appended all
+    // --exclude values after every --glob/--include regardless of CLI position,
+    // so `--exclude='*.rs' -g 'src/main.rs'` could never re-include — the
+    // exclude always won. ripgrep's semantics are positional last-match-wins,
+    // so the later `-g 'src/main.rs'` must re-include it.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(repo.path().join("src/other.rs"), "fn other() {}\n").unwrap();
+    build_index(repo.path(), &index_dir);
+
+    let out = run_repo(
+        repo.path(),
+        &index_dir,
+        &[
+            "--files",
+            "--exclude=*.rs",
+            "--glob=src/main.rs",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    let stdout = fix_path(stdout_text(&out));
+    assert!(
+        stdout.contains("src/main.rs"),
+        "the later --glob must re-include src/main.rs over the earlier --exclude; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("src/other.rs"),
+        "the earlier --exclude '*.rs' must still drop src/other.rs; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn glob_short_eq_form_matches_like_long_eq() {
+    // Regression for review issue #6: clap accepts `-g=val` for a short
+    // value-option and strips the leading `=` (storing `val`), but the
+    // occurrence-order reconstructor re-parses argv and used to keep the `=`,
+    // emitting `=src/main.rs`. The count-match gate still passed (1==1), so the
+    // wrong pattern was trusted and matched nothing. Both `-g=val` and `-gval`
+    // must match the same files as `--glob=val`.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(repo.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(repo.path().join("src/other.py"), "x = 1\n").unwrap();
+    build_index(repo.path(), &index_dir);
+
+    for form in ["--glob=src/main.rs", "-g=src/main.rs", "-gsrc/main.rs"] {
+        let out = run_repo(repo.path(), &index_dir, &["--files", form]);
+        assert_eq!(out.status.code(), Some(0), "{form}: {}", stderr_text(&out));
+        let stdout = fix_path(stdout_text(&out));
+        assert!(
+            stdout.contains("src/main.rs"),
+            "{form}: must match src/main.rs; got:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("src/other.py"),
+            "{form}: must not match src/other.py; got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn double_dash_escape_searches_for_subcommand_name_word() {
+    // Regression for review issue #18: `st index` rebuilds (subcommand), so a
+    // user wanting to search for the word "index" must escape. `st -e index`
+    // has always worked; the `--` separator is the more conventional escape
+    // hatch (clap routes post-`--` positionals to `pattern`, skipping
+    // subcommand matching). Verify `st -- index` finds the literal word
+    // "index" rather than triggering a rebuild.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    fs::write(
+        repo.path().join("src/main.rs"),
+        "let index = 42;\nfn other() {}\n",
+    )
+    .unwrap();
+    build_index(repo.path(), &index_dir);
+
+    let out = run_repo(repo.path(), &index_dir, &["--no-update", "--", "index"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    let stdout = fix_path(stdout_text(&out));
+    assert!(
+        stdout.contains("let index = 42;"),
+        "`st -- index` must search for the word 'index'; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn unsupported_search_flags_warn_but_still_search() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::write(repo.path().join("a.rs"), "needle here\n").unwrap();
+    build_index(repo.path(), &index_dir);
+
+    // --pre/--engine/--encoding/--type-add are parsed but do nothing; each must
+    // warn on stderr so a caller is not misled, while the search still runs.
+    let out = run_repo(
+        repo.path(),
+        &index_dir,
+        &[
+            "--pre", "cat", "--engine", "pcre2", "--encoding", "utf16", "--type-add", "foo:*.x",
+            "needle",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    let stderr = stderr_text(&out);
+    assert!(
+        stderr.contains("st: --pre/--pre-glob is not implemented"),
+        "expected --pre warning, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("st: --engine 'pcre2' is not implemented"),
+        "expected --engine warning, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("st: --encoding 'utf16' is not implemented"),
+        "expected --encoding warning, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("st: --type-add/--type-clear is not implemented"),
+        "expected --type-add warning, got:\n{stderr}"
+    );
+    assert!(
+        stdout_text(&out).contains("needle here"),
+        "search must still run despite the warnings"
+    );
+}
