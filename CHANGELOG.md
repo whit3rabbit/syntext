@@ -48,6 +48,7 @@ All notable changes to this project will be documented in this file.
 - Rejected literal and escaped newlines (`\n`, `\x0a`, etc.) in query patterns during routing.
 - Warn on post-delta update errors instead of failing since the HEAD move is already durable.
 - Suppressed confusing "no changes detected" output when a delta segment update successfully runs.
+- Agent hook rewriter (`rg`/`grep` -> `st`) now re-emits a `--` separator before positionals, so a bare pattern equal to a subcommand name (`rg status .`) searches instead of silently routing to that subcommand, and a `--`-escaped leading-dash pattern (`rg -- -foo src`) no longer parses as a flag bundle. `grep --binary-files without-match` is now accepted space-separated (not just inline `=without-match`); other `--binary-files` values still abort the rewrite (semantics `st` does not replicate).
 
 ## [1.4.0] - 2026-06-13
 

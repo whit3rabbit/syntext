@@ -112,7 +112,7 @@ mod tests {
         };
         assert_eq!(
             output["hookSpecificOutput"]["updatedInput"]["command"],
-            "/tmp/st parse_query src/"
+            "/tmp/st -- parse_query src/"
         );
         assert_eq!(output["hookSpecificOutput"]["updatedInput"]["timeout"], 5);
     }
@@ -129,6 +129,6 @@ mod tests {
         assert!(output["permissionDecisionReason"]
             .as_str()
             .unwrap()
-            .contains("/tmp/st parse_query src/"));
+            .contains("/tmp/st -- parse_query src/"));
     }
 }

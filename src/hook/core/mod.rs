@@ -8,6 +8,8 @@ pub mod instructions;
 pub mod json;
 /// Configuration file rewriting utilities.
 pub mod rewrite;
+pub(crate) mod rewrite_grep;
+pub(crate) mod rewrite_rg;
 pub(crate) mod shell;
 
 #[cfg(test)]

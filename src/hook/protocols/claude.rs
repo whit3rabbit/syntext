@@ -93,7 +93,7 @@ mod tests {
         let hook = &output["hookSpecificOutput"];
         assert_eq!(hook["hookEventName"], "PreToolUse");
         assert_eq!(hook["permissionDecision"], "ask");
-        assert_eq!(hook["updatedInput"]["command"], "/tmp/st parse_query src/");
+        assert_eq!(hook["updatedInput"]["command"], "/tmp/st -- parse_query src/");
         assert_eq!(hook["updatedInput"]["description"], "search");
     }
 

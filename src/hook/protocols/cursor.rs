@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(output["permission"], "ask");
         assert_eq!(
             output["updated_input"]["command"],
-            "/tmp/st parse_query src/"
+            "/tmp/st -- parse_query src/"
         );
     }
 

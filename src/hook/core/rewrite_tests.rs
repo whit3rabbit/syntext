@@ -1,4 +1,4 @@
-use crate::hook::core::rewrite::{quote_env_assignment, rewrite_rg_args};
+use crate::hook::core::rewrite::{quote_env_assignment, rewrite_grep_args, rewrite_rg_args};
 use crate::hook::core::shell::Word;
 
 fn word(s: &str) -> Word {
@@ -77,6 +77,48 @@ fn rg_allowed_flags_produce_output() {
 fn rg_no_pattern_and_no_positional_returns_none() {
     // No pattern means there is nothing to search for.
     assert!(rewrite_rg_args(&words(&["-n"])).is_none());
+}
+
+// --- `--` separator is re-emitted before positionals (Bugs 1 + 2) ---
+
+#[test]
+fn rg_double_dash_escaped_leading_dash_pattern_reemits_separator() {
+    // `rg -- -foo src` must search for the literal `-foo`, not parse it as a
+    // flag bundle. The rewriter must put `--` back before the positionals.
+    let args = rewrite_rg_args(&words(&["--", "-foo", "src"])).expect("must rewrite");
+    let sep = args.iter().position(|a| a == "--").expect("`--` re-emitted");
+    assert_eq!(args[sep + 1], "-foo", "`--` must sit immediately before -foo");
+    assert!(args.contains(&"src".to_string()));
+}
+
+#[test]
+fn rg_pattern_matching_subcommand_name_is_escaped() {
+    // `rg status .` -> the pattern `status` must not route to the `status`
+    // subcommand. `--` before the positionals forces clap to treat it as the
+    // search pattern.
+    let args = rewrite_rg_args(&words(&["status", "."])).expect("must rewrite");
+    assert_eq!(args, vec!["--", "status", "."]);
+}
+
+// --- grep --binary-files: inline and space-separated behave identically (Bug 3) ---
+
+#[test]
+fn grep_binary_files_without_match_inline_and_spaced_agree() {
+    let inline =
+        rewrite_grep_args(&words(&["--binary-files=without-match", "-rn", "foo", "."]));
+    let spaced =
+        rewrite_grep_args(&words(&["--binary-files", "without-match", "-rn", "foo", "."]));
+    assert!(inline.is_some(), "inline --binary-files must rewrite");
+    assert_eq!(inline, spaced, "spaced form must match inline form");
+    assert_eq!(inline.unwrap(), vec!["-n", "--", "foo", "."]);
+}
+
+#[test]
+fn grep_binary_files_semantics_changing_value_aborts() {
+    // `text` (and `binary`) change match semantics st does not replicate, so
+    // the whole rewrite must abort (stay on grep), inline or spaced.
+    assert!(rewrite_grep_args(&words(&["--binary-files=text", "-rn", "foo", "."])).is_none());
+    assert!(rewrite_grep_args(&words(&["--binary-files", "text", "-rn", "foo", "."])).is_none());
 }
 
 // --- env-assignment neutralization (shell-expansion safety) ---

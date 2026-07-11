@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(output["decision"], "allow");
         assert_eq!(
             output["hookSpecificOutput"]["tool_input"]["command"],
-            "/tmp/st parse_query src/"
+            "/tmp/st -- parse_query src/"
         );
     }
 
