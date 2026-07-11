@@ -25,7 +25,12 @@ pub(super) fn apply_post_filters(
         let compiled_globs = CompiledGlobs::build(&args.globs);
         results.retain(|m| {
             matches_any_explicit_path(&m.path, explicit_specs)
-                && matches_optional_glob(&m.path, &args.file_types, &args.type_nots, &compiled_globs)
+                && matches_optional_glob(
+                    &m.path,
+                    &args.file_types,
+                    &args.type_nots,
+                    &compiled_globs,
+                )
         });
     }
     if let Some(depth) = args.max_depth {

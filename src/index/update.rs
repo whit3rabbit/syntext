@@ -6,11 +6,10 @@
 //! `notify_delete`, `commit_batch`, `repo_relative_path`) directly.
 
 use crate::index::freshness;
-use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
-use crate::index::manifest::Manifest;
 use crate::index::helpers;
+use crate::index::manifest::Manifest;
 use crate::index::overlay;
-
+use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
 
 impl super::Index {
     /// Detect changed files via git and apply them to the overlay.
@@ -248,7 +247,10 @@ impl super::Index {
         Ok((groups, outcome))
     }
 
-    pub(super) fn install_rebuilt_index(&self, rebuilt: &super::Index) -> Result<IndexStats, IndexError> {
+    pub(super) fn install_rebuilt_index(
+        &self,
+        rebuilt: &super::Index,
+    ) -> Result<IndexStats, IndexError> {
         let take = self.pending.take_for_commit();
         self.snapshot.store(rebuilt.snapshot());
 
@@ -285,12 +287,10 @@ impl super::Index {
         &self,
         build_fn: impl FnOnce(Config) -> Result<super::Index, IndexError>,
     ) -> Result<IndexStats, IndexError> {
-        #[cfg(feature = "fs2")]
         self._dir_lock.unlock()?;
         let rebuilt = match build_fn(self.config.clone()) {
             Ok(rebuilt) => rebuilt,
             Err(err) => {
-                #[cfg(feature = "fs2")]
                 if let Err(e) = self._dir_lock.try_lock_shared() {
                     log::debug!(
                         "failed to re-acquire shared directory lock after build error: {e}"
@@ -299,7 +299,6 @@ impl super::Index {
                 return Err(err);
             }
         };
-        #[cfg(feature = "fs2")]
         self._dir_lock
             .try_lock_shared()
             .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;

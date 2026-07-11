@@ -113,8 +113,6 @@ pub struct Index {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Index {
-
-
     /// Build the index from scratch, writing segments and a manifest.
     /// Respects `.gitignore`, skips binary files and files exceeding
     /// `config.max_file_size`.
@@ -334,8 +332,6 @@ impl Index {
         self.install_rebuilt_index(&rebuilt)?;
         Ok(())
     }
-
-
 }
 
 // `update_from_git` and `search_fresh` live in `update.rs` to keep this file

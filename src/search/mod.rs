@@ -46,7 +46,7 @@ use executor::{execute_query, should_use_index};
 /// linear-time matching once compiled, so matching itself is not a ReDoS vector.
 pub(crate) const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
 
-use verifier::{verify_literal, verify_regex};
+use verifier::{verify_empty, verify_literal, verify_regex};
 
 /// Verified content for a file that produced at least one match, captured
 /// exactly as the verifier saw it. Lets renderers emit the bytes that matched
@@ -258,20 +258,24 @@ pub(crate) fn search_with_content(
         }
 
         let file_path = rel_path.as_path();
-        let file_matches = match &route {
-            // Unwrapped literal: fast memchr path. A wrapped literal (-w/-x)
-            // falls through to the regex verifier, since verify_pattern holds
-            // the boundary-wrapped pattern and memchr would search for its
-            // literal bytes (matching nothing).
-            QueryRoute::Literal if opts.verify_pattern.is_none() => {
-                verify_literal(verify_pattern, file_path, &content, opts.skip_line_content)
+        let file_matches = if verify_pattern.is_empty() {
+            verify_empty(file_path, &content, opts.skip_line_content)
+        } else {
+            match &route {
+                // Unwrapped literal: fast memchr path. A wrapped literal (-w/-x)
+                // falls through to the regex verifier, since verify_pattern holds
+                // the boundary-wrapped pattern and memchr would search for its
+                // literal bytes (matching nothing).
+                QueryRoute::Literal if opts.verify_pattern.is_none() => {
+                    verify_literal(verify_pattern, file_path, &content, opts.skip_line_content)
+                }
+                _ => verify_regex(
+                    compiled_re.as_ref().unwrap(),
+                    file_path,
+                    &content,
+                    opts.skip_line_content,
+                ),
             }
-            _ => verify_regex(
-                compiled_re.as_ref().unwrap(),
-                file_path,
-                &content,
-                opts.skip_line_content,
-            ),
         };
         if let Some(_limit) = opts.max_results {
             if !file_matches.is_empty() {
@@ -358,13 +362,16 @@ pub(crate) fn group_outcome(outcome: SearchOutcome) -> Vec<crate::FileMatches> {
             }
         }
         let path = m.path.clone();
-        let content: Arc<[u8]> = files.remove(&path).map(|mf| mf.normalized).unwrap_or_else(|| {
-            debug_assert!(
-                false,
-                "capture_content=true guarantees content for every matched path"
-            );
-            Arc::from(&[][..])
-        });
+        let content: Arc<[u8]> = files
+            .remove(&path)
+            .map(|mf| mf.normalized)
+            .unwrap_or_else(|| {
+                debug_assert!(
+                    false,
+                    "capture_content=true guarantees content for every matched path"
+                );
+                Arc::from(&[][..])
+            });
         groups.push(crate::FileMatches {
             path,
             matches: vec![m],

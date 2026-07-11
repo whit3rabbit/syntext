@@ -525,8 +525,7 @@ fn concurrent_commit_batch_returns_lock_conflict() {
         .truncate(false)
         .open(&lock_path)
         .unwrap();
-    use fs2::FileExt;
-    lock_file.try_lock_exclusive().unwrap();
+    lock_file.try_lock().unwrap();
 
     // commit_batch should fail with LockConflict, not block or succeed.
     let result = index.commit_batch();
@@ -562,8 +561,7 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
         .truncate(false)
         .open(&lock_path)
         .unwrap();
-    use fs2::FileExt;
-    lock_file.try_lock_exclusive().unwrap();
+    lock_file.try_lock().unwrap();
 
     let config = Config {
         index_dir: index_dir.path().to_path_buf(),
@@ -1375,6 +1373,30 @@ fn test_gapped_overlay_doc_ids_cross_process() {
     assert!(
         search(&index, "modified_once").is_empty(),
         "old modification is gone"
+    );
+    drop(index);
+}
+
+/// A committed RENAME is durable across processes and deletes the old file path.
+#[test]
+fn committed_rename_visible_cross_process() {
+    let fx = delta_setup();
+    fx.git(&["mv", "src/main.rs", "src/new_main.rs"]);
+    fx.git(&["commit", "-m", "rename main", "--no-gpg-sign"]);
+
+    let stats = fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+    assert!(stats.is_some(), "HEAD moved, update should run");
+
+    let (_repo, _index_dir, index) = fx.reopen();
+    let next_matches = search(&index, "old_alpha_marker");
+    assert_eq!(next_matches.len(), 1);
+    assert_eq!(next_matches[0].0, "src/new_main.rs");
+
+    assert!(
+        search(&index, "old_alpha_marker")
+            .iter()
+            .all(|(p, _)| p != "src/main.rs"),
+        "old path must be deleted"
     );
     drop(index);
 }

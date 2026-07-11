@@ -3,8 +3,6 @@
 
 use std::sync::Arc;
 
-#[cfg(feature = "fs2")]
-use fs2::FileExt;
 use xxhash_rust::xxh64::xxh64;
 
 use crate::index::manifest::{Manifest, SegmentRef};
@@ -161,7 +159,7 @@ pub(super) fn compact_index(
 
     let lock_file = super::helpers::open_dir_lock_file(&config.index_dir)?;
     lock_file
-        .try_lock_exclusive()
+        .try_lock()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
     let _write_lock = write_lock;
     let previous_manifest = Manifest::load(&config.index_dir)?;

@@ -196,12 +196,28 @@ impl MmapSegment {
         let dict_len = (self.gram_count as usize)
             .checked_mul(DICT_ENTRY_SIZE)
             .ok_or_else(|| IndexError::CorruptIndex("dictionary size overflow".into()))?;
+
+        let mut hashes = Vec::with_capacity(self.gram_count as usize);
+
+        #[cfg(feature = "memmap2")]
+        if let Some(ref file) = self._file {
+            let mut dict = vec![0u8; dict_len];
+            reader::read_exact_at(file, &mut dict, self.dict_offset as u64).map_err(|e| {
+                IndexError::CorruptIndex(format!("failed to read dictionary: {}", e))
+            })?;
+            for entry in dict.chunks_exact(DICT_ENTRY_SIZE) {
+                hashes.push(u64::from_le_bytes(entry[0..8].try_into().map_err(
+                    |_| IndexError::CorruptIndex("dictionary entry hash".into()),
+                )?));
+            }
+            return Ok(hashes);
+        }
+
         let dict = self
             .mmap
             .get(self.dict_offset..self.dict_offset.saturating_add(dict_len))
             .ok_or_else(|| IndexError::CorruptIndex("truncated dictionary".into()))?;
 
-        let mut hashes = Vec::with_capacity(self.gram_count as usize);
         for entry in dict.chunks_exact(DICT_ENTRY_SIZE) {
             hashes.push(u64::from_le_bytes(entry[0..8].try_into().map_err(
                 |_| IndexError::CorruptIndex("dictionary entry hash".into()),

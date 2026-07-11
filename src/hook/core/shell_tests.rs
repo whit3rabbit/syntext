@@ -101,3 +101,13 @@ fn shell_quote_handles_spaces_and_quotes() {
     assert_eq!(shell_quote("two words"), "'two words'");
     assert_eq!(shell_quote("don't"), "'don'\\''t'");
 }
+
+#[test]
+fn shell_parse_double_quote_backslash_escapes() {
+    // Inside double quotes, backslash only escapes $, `, ", \.
+    // Any other character retains the backslash verbatim.
+    assert_eq!(command_words(r#"rg "\." src"#), vec!["rg", r#"\."#, "src"]);
+    assert_eq!(command_words(r#"rg "\"" src"#), vec!["rg", r#"""#, "src"]);
+    assert_eq!(command_words(r#"rg "\\" src"#), vec!["rg", r#"\"#, "src"]);
+    assert_eq!(command_words(r#"rg "\$" src"#), vec!["rg", r#"$"#, "src"]);
+}

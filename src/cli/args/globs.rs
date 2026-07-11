@@ -30,14 +30,56 @@ impl Cli {
         let mut ordered: Vec<String> = Vec::new();
         let mut pending: Option<usize> = None; // index into counts/LONG
         const LONG: [&str; 3] = ["--glob", "--include", "--exclude"];
+        const VALUE_SHORTS: &[char] = &[
+            'e', 'm', 'r', 'A', 'B', 'C', 't', 'T', 'M', 'd', 'f', 'E', 'j',
+        ];
+        const VALUE_LONGS: &[&str] = &[
+            "--regexp",
+            "--max-count",
+            "--replace",
+            "--after-context",
+            "--before-context",
+            "--context",
+            "--type",
+            "--type-not",
+            "--max-columns",
+            "--max-depth",
+            "--ignore-file",
+            "--sort",
+            "--sortr",
+            "--max-filesize",
+            "--encoding",
+            "--engine",
+            "--dfa-size-limit",
+            "--regex-size-limit",
+            "--file",
+            "--type-add",
+            "--type-clear",
+            "--iglob",
+            "--threads",
+            "--pre",
+            "--pre-glob",
+            "--color",
+            "--colors",
+            "--context-separator",
+        ];
 
         let emit = |i: usize, v: &str, counts: &mut [usize; 3], out: &mut Vec<String>| {
             counts[i] += 1;
-            out.push(if i == 2 { format!("!{v}") } else { v.to_string() });
+            out.push(if i == 2 {
+                format!("!{v}")
+            } else {
+                v.to_string()
+            });
         };
 
+        let mut skip_next = false;
         for raw in std::env::args_os().skip(1) {
             let arg = raw.to_str()?;
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
             if arg == "--" {
                 break;
             }
@@ -50,6 +92,13 @@ impl Cli {
                     emit(i, val, &mut counts, &mut ordered);
                     continue;
                 }
+                if VALUE_LONGS.contains(&name) {
+                    continue;
+                }
+            }
+            if VALUE_LONGS.contains(&arg) {
+                skip_next = true;
+                continue;
             }
             if let Some(i) = LONG.iter().position(|l| *l == arg) {
                 pending = Some(i);
@@ -62,10 +111,13 @@ impl Cli {
             // (it takes a value, so it ends the bundle) and strip the `=`, else
             // `-g=foo` would emit `=foo` and `-ng val` would skip counting the
             // glob, both forcing a silent field-order fallback.
-            if let Some(rest) = arg.strip_prefix('-').filter(|s| !s.is_empty() && !s.starts_with('-'))
+            if let Some(rest) = arg
+                .strip_prefix('-')
+                .filter(|s| !s.is_empty() && !s.starts_with('-'))
             {
                 for (k, b) in rest.bytes().enumerate() {
-                    if b == b'g' {
+                    let c = b as char;
+                    if c == 'g' {
                         // k sits on an ASCII 'g' (a char boundary), so k+1 is too.
                         let after = &rest[k + 1..];
                         let val = after.strip_prefix('=').unwrap_or(after);
@@ -73,6 +125,12 @@ impl Cli {
                             pending = Some(0);
                         } else {
                             emit(0, val, &mut counts, &mut ordered);
+                        }
+                        break;
+                    } else if VALUE_SHORTS.contains(&c) {
+                        let after = &rest[k + 1..];
+                        if after.is_empty() {
+                            skip_next = true;
                         }
                         break;
                     }

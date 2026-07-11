@@ -117,8 +117,18 @@ mod glob_and_depth_tests {
         let vendor = Path::new("vendor/lib.rs");
         let src = Path::new("src/lib.rs");
         let globs = vec!["!vendor/**".to_string()];
-        assert!(!matches_optional_glob(vendor, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(matches_optional_glob(src, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(!matches_optional_glob(
+            vendor,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(matches_optional_glob(
+            src,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
     }
 
     #[test]
@@ -127,8 +137,18 @@ mod glob_and_depth_tests {
         let path_a = Path::new("foo/afile.rs");
         let path_z = Path::new("foo/zfile.rs");
         let globs = vec!["[abcde]file.rs".to_string()];
-        assert!(matches_optional_glob(path_a, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(!matches_optional_glob(path_z, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(
+            path_a,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(!matches_optional_glob(
+            path_z,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
     }
 
     #[test]
@@ -137,8 +157,18 @@ mod glob_and_depth_tests {
         let path_a = Path::new("foo/afile.rs");
         let path_z = Path::new("foo/zfile.rs");
         let globs = vec!["**/[abcde]file.rs".to_string()];
-        assert!(matches_optional_glob(path_a, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(!matches_optional_glob(path_z, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(
+            path_a,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(!matches_optional_glob(
+            path_z,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
     }
 
     #[test]
@@ -148,9 +178,24 @@ mod glob_and_depth_tests {
         let py_path = Path::new("src/lib.py");
         let js_path = Path::new("src/lib.js");
         let globs = vec!["*.{rs,py}".to_string()];
-        assert!(matches_optional_glob(rs_path, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(matches_optional_glob(py_path, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(!matches_optional_glob(js_path, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(
+            rs_path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(matches_optional_glob(
+            py_path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(!matches_optional_glob(
+            js_path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
     }
 
     #[test]
@@ -160,9 +205,24 @@ mod glob_and_depth_tests {
         let py_path = Path::new("src/lib.py");
         let js_path = Path::new("src/lib.js");
         let globs = vec!["**/*.{rs,py}".to_string()];
-        assert!(matches_optional_glob(rs_path, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(matches_optional_glob(py_path, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(!matches_optional_glob(js_path, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(
+            rs_path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(matches_optional_glob(
+            py_path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(!matches_optional_glob(
+            js_path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
     }
 
     #[test]
@@ -172,8 +232,18 @@ mod glob_and_depth_tests {
         let bad = Path::new("mysrc/foo/bar.rs");
         let good = Path::new("src/foo/bar.rs");
         let globs = vec!["src/foo/**".to_string()];
-        assert!(!matches_optional_glob(bad, &[], &[], &CompiledGlobs::build(&globs)));
-        assert!(matches_optional_glob(good, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(!matches_optional_glob(
+            bad,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
+        assert!(matches_optional_glob(
+            good,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
     }
 
     #[test]
@@ -202,11 +272,21 @@ mod glob_and_depth_tests {
         // -g '!foo' -g 'foo' -> foo is matched because positive glob is last
         let path = Path::new("foo");
         let globs = vec!["!foo".to_string(), "foo".to_string()];
-        assert!(matches_optional_glob(path, &[], &[], &CompiledGlobs::build(&globs)));
+        assert!(matches_optional_glob(
+            path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs)
+        ));
 
         // -g 'foo' -g '!foo' -> foo is excluded because negative glob is last
         let globs2 = vec!["foo".to_string(), "!foo".to_string()];
-        assert!(!matches_optional_glob(path, &[], &[], &CompiledGlobs::build(&globs2)));
+        assert!(!matches_optional_glob(
+            path,
+            &[],
+            &[],
+            &CompiledGlobs::build(&globs2)
+        ));
     }
 
     #[test]

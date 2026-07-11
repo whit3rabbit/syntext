@@ -61,14 +61,24 @@ pub(crate) enum ProtocolOutput {
 fn read_stdin_json() -> Option<Value> {
     use serde::Deserialize;
     use std::io::{IsTerminal, Read};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
         return None;
     }
-    let limited = stdin.lock().take((STDIN_CAP + 1) as u64);
-    let mut de = serde_json::Deserializer::from_reader(limited);
-    Value::deserialize(&mut de).ok()
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let limited = stdin.lock().take((STDIN_CAP + 1) as u64);
+        let mut de = serde_json::Deserializer::from_reader(limited);
+        let res = Value::deserialize(&mut de).ok();
+        let _ = tx.send(res);
+    });
+
+    rx.recv_timeout(Duration::from_millis(500)).ok().flatten()
 }
 
 fn current_st_program() -> String {

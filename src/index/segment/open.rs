@@ -160,11 +160,14 @@ impl MmapSegment {
         // mutate segment bytes after the checksum passes, injecting false search
         // results (information disclosure / result manipulation) even though safe
         // Rust's .get() bounds checks prevent memory-safety violations. MAP_PRIVATE
-        // creates a copy-on-write mapping: once parse_segment_mmap reads every
-        // content page during checksum verification, those pages are in our private
-        // address space and are immune to external mutations for the mapping's
-        // lifetime. The advisory file lock still blocks concurrent writes by other
-        // syntext instances.
+        // creates a copy-on-write mapping:
+        // - Under DictVerify::Full, the open-time checksum pass reads/faults in every
+        //   page, making them immune to external mutations for the mapping's lifetime.
+        // - Under DictVerify::Structural (the default), pages are faulted lazily, so
+        //   external mutations to unfaulted pages remain observable on first touch.
+        //   Query integrity still holds because downstream searches verify candidates
+        //   against the real source files on disk, and bounds checks prevent memory safety issues.
+        // The advisory file lock still blocks concurrent writes by other syntext instances.
         //
         // Residual SIGBUS risk: the advisory file lock (try_lock_shared above) does
         // not prevent other processes from truncating the file — advisory locks are
@@ -317,5 +320,3 @@ impl MmapSegment {
         }
     }
 }
-
-

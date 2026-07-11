@@ -36,8 +36,6 @@ rayon = { version = "1", optional = true }
 # Lock-free snapshot swapping
 arc-swap = "1"
 
-# Advisory file locking (native only)
-fs2 = { version = "0.4", optional = true }
 
 # Gitignore and file-type filtering (native only)
 ignore = { version = "0.4", optional = true }
@@ -96,7 +94,7 @@ windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32
 # Native default: command-line binary and library support.
 default = ["cli"]
 # Native library support without CLI-only dependencies.
-native = ["memmap2", "rayon", "fs2", "ignore", "globset"]
+native = ["memmap2", "rayon", "ignore", "globset"]
 # Command-line interface.
 cli = ["native", "clap"]
 # WASM target: in-memory index, wasm-bindgen API, no filesystem.

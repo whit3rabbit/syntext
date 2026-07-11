@@ -345,4 +345,3 @@ pub(super) fn verify_post_file_checksum(post_file: &std::fs::File) -> Result<(),
     }
     Ok(())
 }
-

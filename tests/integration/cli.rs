@@ -2530,11 +2530,7 @@ fn glob_exclude_then_include_is_positional_last_match_wins() {
     let out = run_repo(
         repo.path(),
         &index_dir,
-        &[
-            "--files",
-            "--exclude=*.rs",
-            "--glob=src/main.rs",
-        ],
+        &["--files", "--exclude=*.rs", "--glob=src/main.rs"],
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     let stdout = fix_path(stdout_text(&out));
@@ -2618,7 +2614,14 @@ fn unsupported_search_flags_warn_but_still_search() {
         repo.path(),
         &index_dir,
         &[
-            "--pre", "cat", "--engine", "pcre2", "--encoding", "utf16", "--type-add", "foo:*.x",
+            "--pre",
+            "cat",
+            "--engine",
+            "pcre2",
+            "--encoding",
+            "utf16",
+            "--type-add",
+            "foo:*.x",
             "needle",
         ],
     );

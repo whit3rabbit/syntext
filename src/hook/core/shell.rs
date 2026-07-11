@@ -161,8 +161,14 @@ pub(crate) fn parse(command: &str) -> Result<ShellLine, ShellParseError> {
                     if i >= chars.len() {
                         return Err(ShellParseError::TrailingEscape);
                     }
-                    raw.push(chars[i]);
-                    text.push(chars[i]);
+                    let next = chars[i];
+                    raw.push(next);
+                    if matches!(next, '$' | '`' | '"' | '\\') {
+                        text.push(next);
+                    } else {
+                        text.push('\\');
+                        text.push(next);
+                    }
                     i += 1;
                 }
                 '$' | '`' => {

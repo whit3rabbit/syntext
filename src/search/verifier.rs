@@ -38,8 +38,13 @@ pub fn verify_literal(
     let mut last_line_start = usize::MAX;
     let mut current_line_num = 1;
     let mut last_newline_counted_up_to = 0;
+    let mut current_line_end = 0;
 
     for match_start in finder.find_iter(content) {
+        if match_start < current_line_end {
+            continue;
+        }
+
         // Locate line boundaries around hits
         // 1. Line start is the byte after the last '\n' before match_start.
         //    Bound the backward scan to `last_newline_counted_up_to`, which is
@@ -99,6 +104,7 @@ pub fn verify_literal(
         });
 
         last_line_start = line_start;
+        current_line_end = line_end;
     }
 
     matches
@@ -125,10 +131,15 @@ pub fn verify_regex(
     let mut last_line_start = usize::MAX;
     let mut current_line_num = 1;
     let mut last_newline_counted_up_to = 0;
+    let mut current_line_end = 0;
 
     for m in re.find_iter(content) {
         let match_start = m.start();
         let match_end = m.end();
+
+        if match_start < current_line_end {
+            continue;
+        }
 
         // 1. Line start is the byte after the last '\n' before match_start.
         //    Bounded by the watermark (a valid line start <= this line start,
@@ -155,7 +166,7 @@ pub fn verify_regex(
         };
 
         // If the match spans across a newline, it is invalid (matches must be line-by-line).
-        if match_end > line_content_end {
+        if match_end > line_end {
             continue;
         }
 
@@ -182,10 +193,67 @@ pub fn verify_regex(
             },
             byte_offset: match_start as u64,
             submatch_start: match_start - line_start,
-            submatch_end: match_end - line_start,
+            submatch_end: match_end.min(line_content_end) - line_start,
         });
 
         last_line_start = line_start;
+        current_line_end = line_end;
+    }
+
+    matches
+}
+
+/// Match every line of the file (for empty pattern searches).
+pub fn verify_empty(path: &Path, content: &[u8], skip_line_content: bool) -> Vec<SearchMatch> {
+    if is_binary(content) {
+        return Vec::new();
+    }
+    let mut matches = Vec::new();
+    let mut line_start = 0;
+    let mut line_num = 1;
+
+    for pos in memchr_iter(b'\n', content) {
+        let line_end = pos;
+        let line_content_end = if line_end > line_start && content[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        matches.push(SearchMatch {
+            path: path.to_path_buf(),
+            line_number: line_num,
+            line_content: if skip_line_content {
+                Vec::new()
+            } else {
+                content[line_start..line_content_end].to_vec()
+            },
+            byte_offset: line_start as u64,
+            submatch_start: 0,
+            submatch_end: 0,
+        });
+        line_start = pos + 1;
+        line_num += 1;
+    }
+
+    if line_start <= content.len() {
+        let line_end = content.len();
+        let line_content_end = if line_end > line_start && content[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        matches.push(SearchMatch {
+            path: path.to_path_buf(),
+            line_number: line_num,
+            line_content: if skip_line_content {
+                Vec::new()
+            } else {
+                content[line_start..line_content_end].to_vec()
+            },
+            byte_offset: line_start as u64,
+            submatch_start: 0,
+            submatch_end: 0,
+        });
     }
 
     matches
@@ -314,5 +382,33 @@ mod tests {
         assert_eq!(matches[0].line_content, b"prefix\xFFsuffix");
         assert_eq!(matches[0].submatch_start, 6);
         assert_eq!(matches[0].submatch_end, 7);
+    }
+
+    #[test]
+    fn regex_pattern_ending_in_cr_clamps_submatch_end() {
+        let re = Regex::new("abc\r").unwrap();
+        let matches = verify_regex(&re, Path::new("f"), b"abc\r\n", false);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_content, b"abc");
+        assert!(
+            matches[0].submatch_end <= matches[0].line_content.len(),
+            "submatch_end {} must not exceed line_content len {}",
+            matches[0].submatch_end,
+            matches[0].line_content.len()
+        );
+        let _ = &matches[0].line_content[matches[0].submatch_start..matches[0].submatch_end];
+    }
+
+    #[test]
+    fn empty_pattern_matches_all_lines() {
+        let content = b"line one\nline two\r\nline three";
+        let matches = verify_empty(Path::new("f"), content, false);
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches[0].line_number, 1);
+        assert_eq!(matches[0].line_content, b"line one");
+        assert_eq!(matches[1].line_number, 2);
+        assert_eq!(matches[1].line_content, b"line two");
+        assert_eq!(matches[2].line_number, 3);
+        assert_eq!(matches[2].line_content, b"line three");
     }
 }

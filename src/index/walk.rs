@@ -166,10 +166,7 @@ fn collect_symlink_entry(
     let target = match fs::read_link(symlink_path) {
         Ok(target) => target,
         Err(e) => {
-            log_symlink_skip(
-                symlink_path,
-                format_args!("failed to read link: {e}"),
-            );
+            log_symlink_skip(symlink_path, format_args!("failed to read link: {e}"));
             return;
         }
     };
@@ -181,10 +178,7 @@ fn collect_symlink_entry(
     let target_meta = match fs::symlink_metadata(&target_path) {
         Ok(meta) => meta,
         Err(e) => {
-            log_symlink_skip(
-                symlink_path,
-                format_args!("failed to stat target: {e}"),
-            );
+            log_symlink_skip(symlink_path, format_args!("failed to stat target: {e}"));
             return;
         }
     };

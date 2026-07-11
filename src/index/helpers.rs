@@ -50,9 +50,8 @@ pub(super) fn open_dir_lock_file(index_dir: &Path) -> std::io::Result<std::fs::F
         .open(index_dir.join("lock"))
 }
 
-#[cfg(feature = "fs2")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
-    use fs2::FileExt;
     let write_lock_path = index_dir.join("write.lock");
     let write_lock = std::fs::OpenOptions::new()
         .read(true)
@@ -61,7 +60,7 @@ pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, Ind
         .truncate(false)
         .open(&write_lock_path)?;
     write_lock
-        .try_lock_exclusive()
+        .try_lock()
         .map_err(|_| IndexError::LockConflict(index_dir.to_path_buf()))?;
     Ok(write_lock)
 }

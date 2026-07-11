@@ -86,8 +86,15 @@ fn rg_double_dash_escaped_leading_dash_pattern_reemits_separator() {
     // `rg -- -foo src` must search for the literal `-foo`, not parse it as a
     // flag bundle. The rewriter must put `--` back before the positionals.
     let args = rewrite_rg_args(&words(&["--", "-foo", "src"])).expect("must rewrite");
-    let sep = args.iter().position(|a| a == "--").expect("`--` re-emitted");
-    assert_eq!(args[sep + 1], "-foo", "`--` must sit immediately before -foo");
+    let sep = args
+        .iter()
+        .position(|a| a == "--")
+        .expect("`--` re-emitted");
+    assert_eq!(
+        args[sep + 1],
+        "-foo",
+        "`--` must sit immediately before -foo"
+    );
     assert!(args.contains(&"src".to_string()));
 }
 
@@ -104,10 +111,14 @@ fn rg_pattern_matching_subcommand_name_is_escaped() {
 
 #[test]
 fn grep_binary_files_without_match_inline_and_spaced_agree() {
-    let inline =
-        rewrite_grep_args(&words(&["--binary-files=without-match", "-rn", "foo", "."]));
-    let spaced =
-        rewrite_grep_args(&words(&["--binary-files", "without-match", "-rn", "foo", "."]));
+    let inline = rewrite_grep_args(&words(&["--binary-files=without-match", "-rn", "foo", "."]));
+    let spaced = rewrite_grep_args(&words(&[
+        "--binary-files",
+        "without-match",
+        "-rn",
+        "foo",
+        ".",
+    ]));
     assert!(inline.is_some(), "inline --binary-files must rewrite");
     assert_eq!(inline, spaced, "spaced form must match inline form");
     assert_eq!(inline.unwrap(), vec!["-n", "--", "foo", "."]);

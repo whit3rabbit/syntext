@@ -28,10 +28,10 @@
 //! ```
 
 // ── Public API ───────────────────────────────────────────────
-/// Core index management, writing, and snapshot components.
-pub mod index;
 /// Error types for index operations.
 pub mod error;
+/// Core index management, writing, and snapshot components.
+pub mod index;
 /// Tree-sitter symbol extraction and SQLite cache storage (optional).
 #[cfg(feature = "symbols")]
 pub mod symbol;
@@ -355,8 +355,6 @@ pub struct IndexStats {
     /// Number of dirty file edits buffered in the current overlay.
     pub pending_edits: usize,
 }
-
-
 
 #[cfg(test)]
 mod api_tests {

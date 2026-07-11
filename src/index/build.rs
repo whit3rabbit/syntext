@@ -9,8 +9,6 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(feature = "fs2")]
-use fs2::FileExt;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use xxhash_rust::xxh64::xxh64;
@@ -57,7 +55,7 @@ pub(super) fn build_index_from_file_list(
     // builds and blocks open() callers until the build completes.
     let lock_file = super::helpers::open_dir_lock_file(&config.index_dir)?;
     lock_file
-        .try_lock_exclusive()
+        .try_lock()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
     // Full builds and incremental commits both rewrite shared index state,
     // so they must serialize on the same writer lock.

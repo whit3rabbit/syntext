@@ -257,4 +257,3 @@ pub(crate) fn should_use_index(hashes: &[u64], snap: &IndexSnapshot) -> Result<b
 
     Ok(false)
 }
-

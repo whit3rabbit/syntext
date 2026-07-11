@@ -258,9 +258,8 @@ pub(in crate::cli) fn matched_file_bytes<'a>(
     if let Some(mf) = files.get(rel_path) {
         return Some(std::borrow::Cow::Borrowed(mf.normalized.as_ref()));
     }
-    read_matched_file(config, canonical_root, rel_path, quiet).map(|raw| {
-        std::borrow::Cow::Owned(crate::index::normalize_encoding(&raw).into_owned())
-    })
+    read_matched_file(config, canonical_root, rel_path, quiet)
+        .map(|raw| std::borrow::Cow::Owned(crate::index::normalize_encoding(&raw).into_owned()))
 }
 
 pub(in crate::cli) fn read_repo_file_bytes(

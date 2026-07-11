@@ -119,8 +119,6 @@ pub(crate) fn quote_env_assignment(text: &str) -> String {
     }
 }
 
-
-
 // rewrite_tests.rs is loaded as a sibling module via `mod rewrite_tests;` in
 // hook/core/mod.rs (its tests use absolute `crate::hook::core::...` paths), so
 // it is NOT re-declared here -- doing so would load the same file as two

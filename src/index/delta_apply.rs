@@ -13,8 +13,6 @@
 
 use std::sync::Arc;
 
-#[cfg(feature = "fs2")]
-use fs2::FileExt;
 use xxhash_rust::xxh64::xxh64;
 
 use super::{deletes_idx, helpers, paths_idx, Index};
@@ -40,7 +38,7 @@ pub(super) fn flush_overlay_as_delta(
 
     let lock_file = helpers::open_dir_lock_file(&config.index_dir)?;
     lock_file
-        .try_lock_exclusive()
+        .try_lock()
         .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
     let _write_lock = write_lock;
 

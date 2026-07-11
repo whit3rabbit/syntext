@@ -36,6 +36,15 @@ All notable changes to this project will be documented in this file.
 - Render-time file reads open guaranteed-beneath the repo root (`openat2(RESOLVE_BENEATH)` on Linux, else canonicalize + `O_NOFOLLOW` + fd-verify), closing the symlink-swap TOCTOU window between index time and render time.
 
 ### Fixed
+- Fixed a trailing `\r` slicing panic in `verify_regex` by clamping `submatch_end` to `line_content_end`.
+- Optimized same-line match checks in both `verify_literal` and `verify_regex` to run in $O(1)$ complexity by caching the previous line's end index and skipping backtracking to avoid adversarial $O(\text{line}^2)$ processing loops.
+- Built a custom `verify_empty` verifier to directly match line boundaries for empty string searches (`st ""`), bypassing costly `memmem` scans and regex compilation.
+- Standardized on standard-library file locking APIs (available since Rust 1.89) in `helpers.rs`, `update.rs`, `build.rs`, `delta_apply.rs`, and `compact.rs` and removed the `fs2` dependency completely.
+- Updated the threat model comments in `open.rs` to correctly describe page behavior under `DictVerify::Structural`.
+- Moved `gram_hashes()` in `mod.rs` to use `reader::read_exact_at` (pread path) on disk-backed native segments, protecting against `SIGBUS` or concurrency mutations during long compaction cycles.
+- Aligned the double quotes backslash escaping logic in `shell.rs` with the POSIX standard, preserving backslashes inside double quotes verbatim unless escaping `$`, `` ` ``, `"`, or `\`.
+- Added a 500ms read timeout via a worker thread to `read_stdin_json` in `protocols/mod.rs` to prevent hanging the editor tool calls when the stdin pipe remains open but stalled.
+- Refactored `globs_in_argv_order` in `globs.rs` to check against lists of value-taking short and long flags so arguments (such as `-tg rs`) are not mistakenly parsed as glob flags.
 - Throttled async catch-up spawning with a coarse TTL stamp so a burst of concurrent stale searches collapses to roughly one `st update` per window instead of stampeding the writer lock.
 - Truncated UTF-16 files (odd byte count after the BOM) now decode the incomplete trailing code unit as U+FFFD instead of dropping it, matching ripgrep and removing an `-x` false-positive divergence (oracle fixture `repro_e1c1603c26349124`).
 - `-x` (line-regexp) now matches CRLF mode like `rg --crlf`: a trailing `\r` at end-of-line is treated as part of the terminator, so `^pat$` matches a final line `pat\r` and submatch extraction stays consistent with the match decision (oracle fixture `repro_e1477df13c5a98f4`).

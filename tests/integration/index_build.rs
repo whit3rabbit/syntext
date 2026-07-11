@@ -99,7 +99,9 @@ fn search_grouped_groups_by_file_with_content() {
             g.path.display()
         );
         assert!(
-            g.matches.windows(2).all(|w| w[0].line_number <= w[1].line_number),
+            g.matches
+                .windows(2)
+                .all(|w| w[0].line_number <= w[1].line_number),
             "matches line-sorted within a file"
         );
         // context(line, 0, 0) is exactly the match line, and its bytes agree
