@@ -18,6 +18,7 @@ Hybrid code search index for agent workflows. Sparse n-gram content index + Roar
 ## General Rules
 
 - **Never put full file paths in documents.** Always use relative paths when referencing internal files. When referencing external repositories, use links to the original Git repository and lock it to a specific version or tag when possible.
+- **Platform Performance Characteristics**: Search speedup scales with repository size and query selectivity. On Windows/macOS, path verification requires user-space canonicalization checks to prevent directory traversal and symlink exploits. On Linux, search is significantly faster as it uses the kernel-level `openat2(RESOLVE_BENEATH)` path to bypass this user-space metadata overhead.
 - **Windows Compatibility & Testing**:
     - **Explicitly `drop(index)`**: Always call `drop(index)` at the end of tests that use `Index::open` or `Index::build`. Windows prevents deleting temporary directories or renaming files if file handles (locks) or memory maps are still active.
     - **MSRV is 1.89** (`Cargo.toml` `rust-version`; toolchain pinned to `stable` via `rust-toolchain.toml`, matching CI). `io::Error::other(...)` is fine (stable since 1.87) and is the form clippy prefers; the old `io::Error::new(io::ErrorKind::Other, ...)` still works but triggers `clippy::io_other_error`.

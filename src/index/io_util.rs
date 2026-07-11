@@ -69,6 +69,12 @@ pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Met
 ///
 /// Compares the volume serial number and 64-bit file index from the open handle
 /// against the pre-opened file's metadata to detect TOCTOU path swapping.
+///
+/// On stable Rust, `std::os::windows::fs::MetadataExt` does not expose
+/// `volume_serial_number()` or `file_index()` (both require the unstable
+/// `windows_by_handle` feature). As a pragmatic TOCTOU guard we compare
+/// `file_size`, `file_attributes`, and `last_write_time` — the strongest
+/// fingerprint available from stable APIs.
 #[cfg(windows)]
 pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
@@ -79,7 +85,6 @@ pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Met
         return false;
     }
 
-    // Query information for the open file handle.
     let mut info = unsafe {
         std::mem::zeroed::<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION>()
     };
@@ -90,17 +95,14 @@ pub fn verify_fd_matches_stat(file: &std::fs::File, pre_open_meta: &std::fs::Met
         return false;
     }
 
-    let fd_volume = info.dwVolumeSerialNumber;
-    let fd_index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+    let fd_size = ((info.nFileSizeHigh as u64) << 32) | (info.nFileSizeLow as u64);
+    let fd_attrs = info.dwFileAttributes;
+    let fd_write_time = ((info.ftLastWriteTime.dwHighDateTime as u64) << 32)
+        | (info.ftLastWriteTime.dwLowDateTime as u64);
 
-    // Compare with the pre-opened metadata fields.
-    match (
-        pre_open_meta.volume_serial_number(),
-        pre_open_meta.file_index(),
-    ) {
-        (Some(meta_volume), Some(meta_index)) => fd_volume == meta_volume && fd_index == meta_index,
-        _ => false,
-    }
+    fd_size == pre_open_meta.file_size()
+        && fd_attrs == pre_open_meta.file_attributes()
+        && fd_write_time == pre_open_meta.last_write_time()
 }
 
 /// WASM stub: filesystem is not used (WasmIndex receives content directly),

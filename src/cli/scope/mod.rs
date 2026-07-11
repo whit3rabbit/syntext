@@ -212,9 +212,15 @@ fn compile_glob(pattern: &str) -> Result<globset::Glob, globset::Error> {
 }
 
 /// Precompiled `-g`/`--glob` specs: each pattern is parsed once into a
-/// `GlobMatcher` (no per-path recompilation), tagged exclude-vs-include and
+/// `GlobSet` (no per-path recompilation), tagged exclude-vs-include and
 /// basename-vs-full-path, in CLI order for last-match-wins. Build once per
 /// search via [`CompiledGlobs::build`], then reuse across every candidate path.
+///
+/// `GlobSet` is used (not `GlobMatcher`) because its `MatchStrategy` system
+/// classifies patterns like `src/` as `Prefix`, correctly matching paths that
+/// *start with* the prefix. `GlobMatcher` compiles to a regex like `^src/$`
+/// which only matches the exact literal — a regression in prefix/suffix
+/// matching semantics.
 pub(super) struct CompiledGlobs {
     entries: Vec<GlobEntry>,
     /// True if any positive (non-`!`) glob is present. Drives the no-match
@@ -226,7 +232,7 @@ struct GlobEntry {
     is_exclude: bool,
     /// Pattern had no '/': match against the basename only (rg `-g` semantics).
     basename_only: bool,
-    matcher: globset::GlobMatcher,
+    set: globset::GlobSet,
 }
 
 impl CompiledGlobs {
@@ -251,10 +257,15 @@ impl CompiledGlobs {
             let Ok(glob) = compile_glob(pattern) else {
                 continue;
             };
+            let mut builder = globset::GlobSetBuilder::new();
+            builder.add(glob);
+            let Ok(set) = builder.build() else {
+                continue;
+            };
             entries.push(GlobEntry {
                 is_exclude,
                 basename_only: !pattern.contains('/'),
-                matcher: glob.compile_matcher(),
+                set,
             });
         }
         Self {
@@ -310,9 +321,9 @@ pub(super) fn matches_optional_glob(
     let mut state: Option<bool> = None; // None means Undecided
     for entry in &globs.entries {
         let matches = if entry.basename_only {
-            basename.is_some_and(|b| entry.matcher.is_match(b))
+            basename.is_some_and(|b| entry.set.is_match(b))
         } else {
-            entry.matcher.is_match(path)
+            entry.set.is_match(path)
         };
         if matches {
             state = Some(!entry.is_exclude);

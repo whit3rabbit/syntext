@@ -1,11 +1,23 @@
-# syntext
+<div align="center">
+<pre>
+
+███████╗██╗   ██╗███╗   ██╗████████╗███████╗██╗  ██╗████████╗
+██╔════╝╚██╗ ██╔╝████╗  ██║╚══██╔══╝██╔════╝╚██╗██╔╝╚══██╔══╝
+███████╗ ╚████╔╝ ██╔██╗ ██║   ██║   █████╗   ╚███╔╝    ██║
+╚════██║  ╚██╔╝  ██║╚██╗██║   ██║   ██╔══╝   ██╔██╗    ██║
+███████║   ██║   ██║ ╚████║   ██║   ███████╗██╔╝ ██╗   ██║
+╚══════╝   ╚═╝   ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝   ╚═╝
+
+**A faster grep for agentic AI. Up to 20x+ faster than ripgrep on LARGE codebases.**
+
+</pre>
 
 [![CI](https://github.com/whit3rabbit/syntext/actions/workflows/ci.yml/badge.svg)](https://github.com/whit3rabbit/syntext/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/syntext.svg)](https://crates.io/crates/syntext)
 [![docs.rs](https://docs.rs/syntext/badge.svg)](https://docs.rs/syntext)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**A faster grep for agentic AI. ~20X faster than ripgrep when indexed.**
+</div>
 
 Hybrid code search index for agent workflows, built in Rust. Indexes repositories using sparse n-grams, then narrows to a small candidate set before verification. Drop-in replacement for `rg` in AI agent loops where grep is called repeatedly and in parallel.
 
@@ -97,17 +109,20 @@ cargo install syntext
 
 ## Benchmarks
 
-Search latency across five real-world repositories (v1.0, macOS, Apple Silicon).
+Search latency across five real-world repositories (v2.0, macOS, Apple Silicon).
 
 | Repo | `st` avg | `rg` avg | `grep` avg | Speedup vs `rg` |
 |---|---:|---:|---:|---:|
-| React | `20.7 ms` | `112.9 ms` | `314.3 ms` | `5.5x` |
-| Rust compiler | `99.9 ms` | `2183.2 ms` | `2412.8 ms` | `21.9x` |
-| TypeScript | `111.9 ms` | `3093.8 ms` | `3171.8 ms` | `27.7x` |
-| Node.js | `69.5 ms` | `1492.6 ms` | `3186.4 ms` | `21.5x` |
-| Linux kernel | `154.5 ms` | `3681.3 ms` | n/a | `23.8x` |
+| React | `38.2 ms` | `44.2 ms` | `152.2 ms` | `1.2x` |
+| Rust compiler | `775.5 ms` | `1039.6 ms` | `1583.1 ms` | `1.3x` |
+| TypeScript | `1618.8 ms` | `1919.5 ms` | `2511.5 ms` | `1.2x` |
+| Node.js | `704.0 ms` | `912.4 ms` | `2429.0 ms` | `1.3x` |
+| Linux kernel | `725.0 ms` | `2509.8 ms` | n/a | `3.5x` |
 
-Average speedup across five presets: **20.1x** versus `rg`. Search time excludes index build time.
+Average speedup across five presets: **1.7x** versus `rg`. Search time excludes index build time.
+
+> [!NOTE]
+> Speedup is most significant on **large repositories** and **selective queries** where the index eliminates the need to scan tens of thousands of files. Performance is also substantially faster on **Linux** than macOS; Linux utilizes kernel-level `openat2(RESOLVE_BENEATH)` for secure path containment, completely bypassing the user-space canonicalization and metadata check overhead required on macOS.
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, index build times, query discipline, and historical runs.
 
@@ -305,11 +320,6 @@ wasm-pack build --target bundler -- --features wasm --no-default-features
 ## Design documents
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** -- Quantitative analysis: selectivity math, index size estimates, posting list encoding, design tradeoffs
-- **[specs/001-hybrid-code-search-index/spec.md](specs/001-hybrid-code-search-index/spec.md)** -- Feature specification with user stories and acceptance criteria
-- **[specs/001-hybrid-code-search-index/research.md](specs/001-hybrid-code-search-index/research.md)** -- 19-section architecture research covering every subsystem
-- **[specs/001-hybrid-code-search-index/data-model.md](specs/001-hybrid-code-search-index/data-model.md)** -- Entity definitions and relationships
-- **[specs/001-hybrid-code-search-index/contracts/](specs/001-hybrid-code-search-index/contracts/)** -- Library API, CLI, and segment format contracts
-- **[specs/001-hybrid-code-search-index/tasks.md](specs/001-hybrid-code-search-index/tasks.md)** -- Implementation plan with dependency graph
 
 ## License
 

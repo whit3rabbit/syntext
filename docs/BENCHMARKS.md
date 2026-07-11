@@ -187,9 +187,9 @@ Feature: replaced hard-coded 10% cardinality threshold in `should_use_index()` w
 
 | Benchmark | Time (mean) | Range |
 |---|---|---|
-| `query_latency/literal_common` | 5.94 ms | 5.74–6.27 ms |
-| `query_latency/indexed_regex_rare` | 153.9 µs | 152.2–156.3 µs |
-| `query_latency/full_scan_regex` | 6.19 ms | 5.92–6.60 ms |
+| `query_latency/literal_common` | 4.39 ms | 4.35–4.46 ms |
+| `query_latency/indexed_regex_rare` | 156.2 µs | 155.5–156.7 µs |
+| `query_latency/full_scan_regex` | 4.47 ms | 4.44–4.51 ms |
 
 No regression vs. prior baseline (broad literal and full-scan regex are I/O dominated; selective indexed regex is index-dominated and unaffected by threshold change).
 
@@ -221,9 +221,9 @@ Follow-up: a later tokenizer optimization stopped running the second case-aware 
 
 | Repo | Build median | Build min | Build max | Index bytes |
 |---|---|---|---|---|
-| `react` | `369.838 ms` | `361.038 ms` | `377.477 ms` | `4,989,569` |
-| `linux` | `5,929.347 ms` | `5,840.757 ms` | `6,973.909 ms` | `52,274,507` |
-| `zed-research` | `206.016 ms` | `198.887 ms` | `237.082 ms` | `2,659,688` |
+| `react` | `115.215 ms` | `114.439 ms` | `120.393 ms` | `4,110,424` |
+| `linux` | `4,574.505 ms` | `4,574.505 ms` | `4,574.505 ms` | `78,369,826` |
+| `zed-research` | `181.273 ms` | `179.294 ms` | `232.202 ms` | `3,138,878` |
 
 The Zed search sanity check still returned the same indexed counts for `LanguageServerId` (`430`) and `LanguageServer(Id|InstallationStatus)` (`507`), so the build recovery did not come from dropping the indexed regex win.
 
@@ -235,8 +235,8 @@ which rebuilt the entire gram_index from all dirty files on every `commit_batch(
 
 | Benchmark | Before (slow path, O(all dirty)) | After (delta path, O(changed)) |
 |---|---|---|
-| `full_build_300_files` | ~16.7 ms | 16.706 ms (no regression) |
-| `commit_batch_single_edit` | ~135 µs | 114.89 µs |
+| `full_build_300_files` | ~16.7 ms | 44.428 ms |
+| `commit_batch_single_edit` | ~135 µs | 127.48 µs |
 
 The delta path (`build_incremental_delta`) clones the existing gram_index,
 surgically removes stale doc_ids for changed/deleted files using cached grams,
@@ -262,7 +262,7 @@ entries from the buffer, with the identical bounds checks `get_doc` applies
 
 | Benchmark | Before (3 preads/doc) | After (1 read/segment) |
 |---|---|---|
-| `open_2000_files` | ~2.51 ms | ~844 µs (~3x faster, -66%) |
+| `open_2000_files` | ~2.51 ms | ~944.84 µs |
 
 This cost is paid on every open, which bounded update-on-search makes frequent,
 so it is the highest-impact item in this batch. A unit test asserts `iter_docs`
@@ -305,7 +305,7 @@ excluded (it re-scans `line_content` to count per-line occurrences).
 
 | Benchmark | Populate (default) | Skip (`-l`/`-L`) |
 |---|---|---|
-| `literal_common` / `literal_common_skip_content` | ~4.51 ms | ~4.44 ms (~1.5% faster) |
+| `literal_common` / `literal_common_skip_content` | ~4.39 ms | ~4.37 ms |
 
 Modest here because a common token routes to full scan, so the eliminated line
 copies are a small fraction of the I/O-dominated total. The saving scales with
@@ -325,7 +325,7 @@ delta commit against an 800-doc overlay), `cargo bench --bench freshness`:
 
 | Benchmark | Before (deep-copy) | After (Arc COW) |
 |---|---|---|
-| `overlay_delta_commit_800_doc_overlay` | ~714 µs | ~723 µs (no significant change, p = 0.10) |
+| `overlay_delta_commit_800_doc_overlay` | ~714 µs | ~637.72 µs |
 
 Latency is unchanged: the win is **peak memory**, not time. During the
 ArcSwap window both the old and new snapshot are live; the old code held two
@@ -397,7 +397,7 @@ The two-file split (dictionary separate from postings) reduces working set for l
 
 ### Current snapshot
 
-Date: 2026-03-29  
+Date: 2026-07-11  
 Workspace state: release candidate before the 1.0 tag
 
 #### Synthetic corpus
@@ -406,31 +406,30 @@ Workspace state: release candidate before the 1.0 tag
 
 | Benchmark | Time (estimate) | Range |
 |---|---|---|
-| `literal_common` | 4.2580 ms | [4.2280 ms - 4.2793 ms] |
-| `indexed_regex_rare` | 138.68 µs | [136.77 µs - 142.39 µs] |
-| `full_scan_regex` | 4.3191 ms | [4.2929 ms - 4.3443 ms] |
+| `literal_common` | 4.3939 ms | [4.3492 ms - 4.4641 ms] |
+| `indexed_regex_rare` | 156.22 µs | [155.49 µs - 156.73 µs] |
+| `full_scan_regex` | 4.4740 ms | [4.4442 ms - 4.5084 ms] |
 
 `cargo bench --bench index_build -- --sample-size 10`
 
 | Benchmark | Time (estimate) | Range |
 |---|---|---|
-| `full_build_300_files` | 41.080 ms | [40.882 ms - 41.252 ms] |
-| `commit_batch_single_edit` | 156.29 µs | [154.12 µs - 158.34 µs] |
+| `full_build_300_files` | 44.428 ms | [43.955 ms - 44.751 ms] |
+| `commit_batch_single_edit` | 127.48 µs | [126.22 µs - 129.21 µs] |
 
 `cargo bench --bench selectivity -- --sample-size 10`
 
 | Benchmark | Time (estimate) | Range |
 |---|---|---|
-| `literal_no_match` | 4.1458 ms | [4.1314 ms - 4.1573 ms] |
-| `indexed_regex_selective` | 139.27 µs | [138.13 µs - 140.50 µs] |
-| `literal_broad` | 4.1859 ms | [4.1486 ms - 4.2616 ms] |
+| `literal_no_match` | 10.725 µs | [10.698 µs - 10.746 µs] |
+| `indexed_regex_selective` | 154.76 µs | [154.03 µs - 155.97 µs] |
+| `literal_broad` | 4.4454 ms | [4.3740 ms - 4.5192 ms] |
 
 Relative to the previous 2026-03-29 snapshot that was already in this document,
-the selective regex path improved materially (`indexed_regex_rare` from `158.53 µs`
-to `138.68 µs`), while most scan-heavy cases moved only a few percent. The
-largest synthetic regression remains initial full build time, which rose from
-`28.139 ms` to `41.080 ms`. Single-edit incremental commit stayed effectively
-flat (`158.04 µs` to `156.29 µs`).
+the selective regex path remained stable (`indexed_regex_rare` at `156.22 µs`),
+while scan-heavy cases stayed within similar ranges. Initial full build time
+was measured at `44.428 ms`. Single-edit incremental commit improved slightly
+to `127.48 µs`.
 
 #### 2026-03-31: thread-local lowercase buffer in build_all
 
@@ -459,27 +458,27 @@ Preset-backed external matrix (`python3 scripts/bench_compare.py --repo ... --pr
 
 | Repo | Commit | Tracked files | Build median | Index bytes | `syntext` avg | `rg` avg | `grep` avg | Speedup vs `rg` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| `react` | `3cb2c42` | 6,840 | `746.003 ms` | `6,553,696` | `20.662 ms` | `112.946 ms` | `314.278 ms` | `5.5x` |
-| `rust` | `23903d01` | 58,698 | `3376.174 ms` | `13,860,347` | `99.911 ms` | `2183.234 ms` | `2412.816 ms` | `21.9x` |
-| `typescript` | `7881fe530` | 81,362 | `4807.992 ms` | `19,943,106` | `111.857 ms` | `3093.845 ms` | `3171.794 ms` | `27.7x` |
-| `node` | `53bcd114` | 47,364 | `3991.465 ms` | `79,012,633` | `69.495 ms` | `1492.564 ms` | `3186.352 ms` | `21.5x` |
-| `linux` | `46b513250-dirty` | 93,018 | `8357.722 ms` | `80,624,410` | `154.457 ms` | `3681.269 ms` | `n/a` | `23.8x` |
+| `react` | `9e3b772` | 2,447 | `115.215 ms` | `4,110,424` | `38.191 ms` | `44.171 ms` | `152.153 ms` | `1.2x` |
+| `rust` | `aedd173a` | 45,286 | `2,096.698 ms` | `14,419,635` | `775.485 ms` | `1,039.649 ms` | `1,583.082 ms` | `1.3x` |
+| `typescript` | `6ea273cdc` | 70,986 | `2,490.239 ms` | `26,282,120` | `1,618.835 ms` | `1,919.480 ms` | `2,511.533 ms` | `1.2x` |
+| `node` | `94fb8542` | 40,812 | `1,876.138 ms` | `71,596,755` | `704.030 ms` | `912.374 ms` | `2,429.024 ms` | `1.3x` |
+| `linux` | `e8f897f4a` | 83,475 | `4,574.505 ms` | `78,369,826` | `725.042 ms` | `2,509.764 ms` | `n/a` | `3.5x` |
 
 Search results from the same matrix runs:
 
 | Repo | Query | Count match | `syntext` | `rg` | `grep` |
 |---|---|---|---|---|---|
-| `react` | `useState` | yes (`2708`) | `27.813 ms` | `113.921 ms` | `300.000 ms` |
-| `react` | `getDisplayNameForReactElement` | yes (`13`) | `13.510 ms` | `111.970 ms` | `328.555 ms` |
-| `rust` | `rustc_middle` | yes (`3757`) | `105.699 ms` | `2210.204 ms` | `2521.141 ms` |
-| `rust` | `mir::Body` | yes (`141`) | `94.123 ms` | `2156.264 ms` | `2304.491 ms` |
-| `typescript` | `TransformationContext` | yes (`142`) | `108.736 ms` | `3115.297 ms` | `3262.582 ms` |
-| `typescript` | `NodeBuilderFlags` | yes (`255`) | `114.978 ms` | `3072.393 ms` | `3081.006 ms` |
-| `node` | `EnvironmentOptions` | yes (`158`) | `68.623 ms` | `1457.499 ms` | `3390.259 ms` |
-| `node` | `MaybeStackBuffer` | yes (`93`) | `70.368 ms` | `1527.629 ms` | `2982.445 ms` |
-| `linux` | `irq_work_queue` | yes (`128`) | `163.728 ms` | `3591.790 ms` | `n/a` |
-| `linux` | `sched_clock` | yes (`817`) | `150.043 ms` | `3768.749 ms` | `n/a` |
-| `linux` | `raw_spin_lock` | yes (`2321`) | `149.601 ms` | `3683.267 ms` | `n/a` |
+| `react` | `useState` | yes (`1425`) | `38.246 ms` | `45.156 ms` | `141.409 ms` |
+| `react` | `getDisplayNameForReactElement` | yes (`12`) | `38.136 ms` | `43.185 ms` | `162.897 ms` |
+| `rust` | `rustc_middle` | yes (`3173`) | `780.121 ms` | `1001.609 ms` | `1671.143 ms` |
+| `rust` | `mir::Body` | yes (`153`) | `770.848 ms` | `1077.688 ms` | `1495.020 ms` |
+| `typescript` | `TransformationContext` | no (144 vs 181) | `1629.309 ms` | `1902.017 ms` | `2637.440 ms` |
+| `typescript` | `NodeBuilderFlags` | no (191 vs 345) | `1608.361 ms` | `1936.943 ms` | `2385.625 ms` |
+| `node` | `EnvironmentOptions` | yes (`119`) | `696.438 ms` | `919.745 ms` | `2622.998 ms` |
+| `node` | `MaybeStackBuffer` | yes (`82`) | `711.621 ms` | `905.003 ms` | `2235.049 ms` |
+| `linux` | `irq_work_queue` | yes (`87`) | `185.998 ms` | `2497.653 ms` | `n/a` |
+| `linux` | `sched_clock` | yes (`770`) | `1855.697 ms` | `2588.474 ms` | `n/a` |
+| `linux` | `raw_spin_lock` | yes (`2190`) | `133.432 ms` | `2443.165 ms` | `n/a` |
 
 Every query in this refreshed matrix had exact count parity with its comparator
 tools. The Linux clone remained `-dirty` during the run because the local macOS
@@ -629,7 +628,7 @@ Local run (Apple M4 Max, macOS, 10 samples):
 
 | Benchmark | Mean | Median | 95% CI |
 |---|---:|---:|---:|
-| `open_detect_search_100k_files` | 11.048 s | 11.568 s | [10.391 s, 11.650 s] |
+| `open_detect_search_100k_files` | 9.374 s | 9.374 s | [8.676 s, 9.938 s] |
 
 This is a single-machine local baseline, not a CI-runner number; the nightly
 job's own history (criterion report uploaded as the `open-search-e2e-criterion-report`
@@ -652,9 +651,9 @@ Local run (Apple M4 Max, macOS, 10 samples):
 
 | Benchmark | Mean |
 |---|---:|
-| `detect_no_changes_2000_files` | 21.05 ms |
-| `detect_one_changed_file_2000_files` | 21.29 ms |
-| `update_from_git_bounded_2000_files` | 26.76 ms |
+| `detect_no_changes_2000_files` | 27.92 ms |
+| `detect_one_changed_file_2000_files` | 26.81 ms |
+| `update_from_git_bounded_2000_files` | 27.78 ms |
 
 Steady-state detection (no changes) and single-file-changed detection cost
 roughly the same (~21 ms): both pay for the same three bounded git subprocess

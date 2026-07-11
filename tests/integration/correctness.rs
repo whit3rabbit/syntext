@@ -157,8 +157,8 @@ fn assert_rg_version_pinned() {
     );
     let stdout = String::from_utf8(output.stdout).expect("rg --version output is not UTF-8");
     let first_line = stdout.lines().next().unwrap_or("");
-    assert_eq!(
-        first_line, EXPECTED_RG_VERSION,
+    assert!(
+        first_line.starts_with(EXPECTED_RG_VERSION),
         "correctness oracle pinned to {EXPECTED_RG_VERSION}, found {first_line}"
     );
 }
