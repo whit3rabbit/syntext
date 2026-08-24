@@ -1,8 +1,9 @@
 //! ripgrep/grep fallback for un-indexed searches.
 //!
-//! When `Index::open` reports a missing index and the user has opted in
-//! (`--fallback` or `SYNTEXT_FALLBACK_RG=1`), `st` shells out to `ripgrep`
+//! When `Index::open` reports a missing index, `st` shells out to `ripgrep`
 //! (preferred) or `grep` (last resort) so the search still returns results.
+//! This is the default; opt out with `SYNTEXT_FALLBACK_RG=0` (the `--fallback`
+//! flag stays accepted and overrides the env var).
 //!
 //! Design notes:
 //! - Triggered ONLY on a missing index. A corrupt index or lock conflict still
@@ -40,11 +41,12 @@ pub(super) fn handle_missing_index(_config: &Config, args: &SearchArgs, index_di
     }
 
     if !fallback_enabled(args) {
-        // Opt-in is off: keep the actionable error, but advertise both remedies.
+        // Fallback disabled via env: keep the actionable error, but say how to
+        // get the fallback back.
         eprintln!("st: no index found at {dir}");
         eprintln!("st:   build one with `st index` (run inside the repo you want to search), or");
         eprintln!(
-            "st:   set SYNTEXT_FALLBACK_RG=1 (or pass --fallback) to search with ripgrep/grep"
+            "st:   unset SYNTEXT_FALLBACK_RG (or pass --fallback) to search with ripgrep/grep"
         );
         return 2;
     }
@@ -84,17 +86,18 @@ pub(super) fn handle_missing_index(_config: &Config, args: &SearchArgs, index_di
     2
 }
 
-/// True when the user opted into fallback via the flag or the env var.
+/// True unless the user opted out via `SYNTEXT_FALLBACK_RG=0/false/no/off`.
+/// The `--fallback` flag forces fallback on even when the env var disables it.
 fn fallback_enabled(args: &SearchArgs) -> bool {
     if args.fallback {
         return true;
     }
     match std::env::var("SYNTEXT_FALLBACK_RG") {
-        Ok(v) => matches!(
+        Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
+            "0" | "false" | "no" | "off"
         ),
-        Err(_) => false,
+        Err(_) => true,
     }
 }
 

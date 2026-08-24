@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - **`cmd | st 'pat'` previously ignored stdin and silently searched the whole repo index** (exit 0 with wrong results); it now filters the stream. Scripts relying on the old (incorrect) behavior must pass an explicit path argument.
 - `st 'pat' -` previously matched nothing (the `-` was a literal path filter, exit 1); it now reads stdin.
 - `--column` now forces line numbers on when neither `-n` nor `-N` was passed (`line:col:text`, matching rg); previously a piped `st --column 'pat'` printed `col:text`. An explicit `-N --column` still prints `col:text` (divergence #17 resolved).
+- **rg/grep fallback on a missing index is now the default.** Previously `st` exited 2 with guidance unless `--fallback`/`SYNTEXT_FALLBACK_RG=1` was set; now the search transparently runs `rg` (or `grep`). Disable with `SYNTEXT_FALLBACK_RG=0`; `--fallback` overrides the env var. **Scripts that parsed the exit-2 no-index error will see rg output and rg exit codes instead.** The notice stays suppressible via `-q`/`SYNTEXT_QUIET_FALLBACK`. Corrupt-index/lock failures still error loudly.
 
 ### Known divergences (see `tests/oracle/DIVERGENCES.md`)
 - Trailing `\r` is stripped from rendered lines and binary content is skipped entirely (pre-existing, all modes) — documented since stdin byte-equality comparisons exposed them.

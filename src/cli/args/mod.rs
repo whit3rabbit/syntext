@@ -317,8 +317,8 @@ pub struct Cli {
     pub verbose: bool,
 
     /// On a missing index, fall back to ripgrep (or grep) instead of erroring.
-    /// Also enabled by SYNTEXT_FALLBACK_RG=1. Slower and lower-fidelity than the
-    /// index; intended for searching un-indexed paths.
+    /// This is the default; SYNTEXT_FALLBACK_RG=0 disables it (this flag
+    /// overrides the env var). Slower and lower-fidelity than the index.
     #[arg(long = "fallback", global = true)]
     pub fallback: bool,
 

@@ -1663,12 +1663,13 @@ fn fallback_to_ripgrep_when_index_missing() {
     let index = repo.path().join(".syntext"); // never created -> IndexNotFound
     write_text(&repo.path().join("a.rs"), "let FALLBACKNEEDLE = 1;\n");
 
+    // Fallback is default-on: no env var, no --fallback flag.
     let out = st()
         .arg("--repo-root")
         .arg(repo.path())
         .arg("--index-dir")
         .arg(&index)
-        .env("SYNTEXT_FALLBACK_RG", "1")
+        .env_remove("SYNTEXT_FALLBACK_RG")
         .arg("FALLBACKNEEDLE")
         .arg(repo.path())
         .output()
@@ -1688,7 +1689,7 @@ fn fallback_to_ripgrep_when_index_missing() {
 }
 
 #[test]
-fn missing_index_without_optin_errors_with_guidance() {
+fn missing_index_fallback_disabled_errors_with_guidance() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = repo.path().join(".syntext"); // never created -> IndexNotFound
 
@@ -1697,7 +1698,7 @@ fn missing_index_without_optin_errors_with_guidance() {
         .arg(repo.path())
         .arg("--index-dir")
         .arg(&index)
-        .env_remove("SYNTEXT_FALLBACK_RG")
+        .env("SYNTEXT_FALLBACK_RG", "0")
         .arg("anything")
         .output()
         .expect("run st");

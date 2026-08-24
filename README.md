@@ -187,17 +187,17 @@ Notes:
 
 ## Fallback to ripgrep/grep (un-indexed search)
 
-By default, searching a path with no index fails with exit code 2 and tells you
-to run `st index`. For agent harnesses that sometimes search outside an indexed
-checkout (e.g. a throwaway clone in `/tmp`), `st` can instead fall back to
-`ripgrep` (preferred) or `grep` so the search still returns results.
+Searching a path with no index falls back to `ripgrep` (preferred) or `grep`
+automatically, so searches in un-indexed checkouts (e.g. a throwaway clone in
+`/tmp`) still return results instead of failing with exit code 2.
 
-It is opt-in. Enable it with the `--fallback` flag or `SYNTEXT_FALLBACK_RG=1`
-(accepts `1`, `true`, `yes`, `on`):
+It is on by default. Disable it with `SYNTEXT_FALLBACK_RG=0` (accepts `0`,
+`false`, `no`, `off`); the `--fallback` flag overrides the env var:
 
 ```bash
-SYNTEXT_FALLBACK_RG=1 st "needle" /tmp/some-clone   # env var (set once in harness)
-st --fallback "needle" /tmp/some-clone              # per-invocation flag
+st "needle" /tmp/some-clone                          # default: rg fallback + notice
+SYNTEXT_FALLBACK_RG=0 st "needle" /tmp/some-clone    # opt out (exit 2, no fallback)
+st --fallback "needle" /tmp/some-clone               # force on despite the env var
 ```
 
 Behavior:
