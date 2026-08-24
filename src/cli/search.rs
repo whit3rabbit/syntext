@@ -28,18 +28,34 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
 
     // rg-style stdin filter: a pipe/redirect (or an explicit `-` path) is
     // searched in-memory before the index is ever opened, so it also works in
-    // directories with no `.syntext` at all. Everything else falls through to
-    // the index path below.
-    if let Some(code) = super::stdin_search::maybe_run_stdin_filter(&config, args) {
-        return code;
-    }
+    // directories with no `.syntext` at all. A `-` mixed with real paths
+    // searches BOTH: the stdin half is collected here, `-` is stripped from
+    // the path arguments, and the halves are merged before rendering.
+    let mut args = args.clone();
+    let stdin_half = match super::stdin_search::run_or_collect_stdin(&config, &args) {
+        super::stdin_search::StdinFilterOutcome::Done(code) => return code,
+        super::stdin_search::StdinFilterOutcome::Mixed(half) => {
+            args.paths.retain(|p| p.as_os_str() != "-");
+            Some(half)
+        }
+        super::stdin_search::StdinFilterOutcome::NotStdin => None,
+    };
 
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
         // Only a missing index is eligible for fallback; a corrupt index or lock
-        // conflict still fails loudly so we never mask real corruption.
+        // conflict still fails loudly so we never mask real corruption. The
+        // mixed-dash case cannot fall back: stdin was already consumed here,
+        // and the fallback child would silently search an empty stream.
+        Err(IndexError::IndexNotFound(dir)) if stdin_half.is_none() => {
+            return super::fallback::handle_missing_index(&config, &args, &dir);
+        }
         Err(IndexError::IndexNotFound(dir)) => {
-            return super::fallback::handle_missing_index(&config, args, &dir);
+            eprintln!("st: no index found at {}", dir.display());
+            eprintln!(
+                "st:   build one with `st index`; the rg fallback cannot re-read stdin after '-'"
+            );
+            return 2;
         }
         Err(e) => {
             eprintln!("st: {e}");
@@ -55,7 +71,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     // stale, never change the search's own exit code).
     let needs_async_catchup = super::catchup::run_bounded_auto_update(&index, &config, args.quiet);
 
-    let exit_code = run_and_render(&index, &config, args);
+    let exit_code = run_and_render(&index, &config, &args, stdin_half);
 
     // Spawn the async catch-up only after results have been printed, so the
     // extra process never delays or reorders the search's own stdout/stderr.
@@ -66,7 +82,12 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     exit_code
 }
 
-fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
+fn run_and_render(
+    index: &Index,
+    config: &Config,
+    args: &SearchArgs,
+    stdin_half: Option<super::stdin_search::StdinHalf>,
+) -> i32 {
     let output_args = args.with_effective_output_defaults(config);
 
     #[cfg(feature = "symbols")]
@@ -102,11 +123,27 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
             return 2;
         }
     };
+    let (mut results, mut files) = (outcome.matches, outcome.files);
+    if let Some(half) = stdin_half {
+        // rg processes `-` in argv position order; splice the stdin run
+        // accordingly. Per-path runs stay consecutive either way, which is
+        // what heading grouping and per-file truncation require.
+        if half.stdin_first {
+            let mut merged = half.matches;
+            merged.append(&mut results);
+            results = merged;
+        } else {
+            results.extend(half.matches);
+        }
+        for (p, mf) in half.files {
+            files.entry(p).or_insert(mf);
+        }
+    }
     render_results(
         config,
         Some(index),
-        outcome.matches,
-        outcome.files,
+        results,
+        files,
         &output_args,
         search_start.elapsed(),
     )

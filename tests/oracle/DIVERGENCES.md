@@ -63,11 +63,6 @@ This document enumerates the known, intentional, and documented correctness/sema
 - **Description**: `st`'s `normalize_encoding` converts UTF-16 / BOM / non-UTF-8 content to UTF-8 at index time, so `st` reports clean UTF-8 line text (e.g. `query`). `rg` decodes the same bytes and renders invalid sequences as U+FFFD (e.g. `query�`). Both engines agree on the match location and matched bytes; only the surrounding line *text* renders differently.
 - **Harness Action**: `CanonicalMatch` (Tier A/B) excludes line text — comparison is `(path, line_number, submatches)` per the Tier B contract. Line-text rendering is only checked at Tier C via raw-output comparison (`compare_rendered_output`).
 
-### 13. Stdin Filter Mode: `-` Mixed with Paths
-
-- **Description**: `rg 'pat' - src/` searches stdin *and* the path arguments. `st` rejects combining `-` with other paths (exit 2), because stdin results and indexed results come from different pipelines.
-- **Harness Action**: The stdin differential (`run_stdin_differential`) never mixes `-` with real paths.
-
 ### 14. Stdin Filter Mode: `-v` Is Per-Line Invert
 
 - **Description**: `st`'s indexed `-v` is corpus-wide (list files without matches, divergence #2). In stdin filter mode `-v` inverts line-by-line, matching `rg -v` in a pipe — corpus-invert is meaningless for a single stream. The two `st` modes therefore give `-v` different (mode-appropriate) semantics.

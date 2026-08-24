@@ -33,8 +33,9 @@ pub(super) enum StdinDecision {
     NotStdin,
     /// Read and search stdin.
     UseStdin,
-    /// `-` was combined with other path arguments (unsupported; an error).
-    MixedDash,
+    /// `-` was combined with other path arguments: search both. The stdin
+    /// half is collected here; the paths half runs on the index path.
+    StdinPlusPaths,
 }
 
 /// Decide whether this invocation searches stdin. Pure over
@@ -55,7 +56,7 @@ pub(super) fn decide_stdin(stdin_searchable: bool, args: &SearchArgs) -> StdinDe
         return if args.paths.len() == 1 {
             StdinDecision::UseStdin
         } else {
-            StdinDecision::MixedDash
+            StdinDecision::StdinPlusPaths
         };
     }
     // Explicit real paths win over stdin (ripgrep rule).
@@ -96,26 +97,81 @@ fn stdin_is_searchable() -> bool {
     false
 }
 
-/// Entry point from `cmd_search`: run the stdin filter and return its exit
-/// code, or `None` when this invocation is not a stdin search and the normal
-/// index path should proceed.
-pub(super) fn maybe_run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> Option<i32> {
+/// One half of a mixed `-` + paths search: the matches collected from stdin.
+pub(super) struct StdinHalf {
+    pub(super) matches: Vec<crate::SearchMatch>,
+    pub(super) files: HashMap<PathBuf, crate::search::MatchedFile>,
+    /// `-` preceded every real path in argv order; rg prints stdin results
+    /// before file results in that case (and after otherwise).
+    pub(super) stdin_first: bool,
+}
+
+/// What `cmd_search` should do after the stdin guard runs.
+pub(super) enum StdinFilterOutcome {
+    /// Not a stdin search; continue on the normal index path.
+    NotStdin,
+    /// The stdin search ran and rendered; exit with this code.
+    Done(i32),
+    /// `-` mixed with real paths: the stdin half is collected, and the caller
+    /// must strip `-` from the path arguments and merge before rendering.
+    Mixed(StdinHalf),
+}
+
+/// Entry point from `cmd_search`.
+pub(super) fn run_or_collect_stdin(
+    config: &crate::Config,
+    args: &SearchArgs,
+) -> StdinFilterOutcome {
     match decide_stdin(stdin_is_searchable(), args) {
-        StdinDecision::NotStdin => None,
-        StdinDecision::MixedDash => {
-            eprintln!("st: '-' (stdin) cannot be combined with other paths");
-            Some(2)
+        StdinDecision::NotStdin => StdinFilterOutcome::NotStdin,
+        StdinDecision::StdinPlusPaths => {
+            // stdin -v inverts per-line while indexed -v lists non-matching
+            // files corpus-wide; the two cannot be merged into one output.
+            if args.invert_match {
+                eprintln!(
+                    "st: '-' (stdin) cannot be combined with other paths under -v (stdin inverts per-line; files invert corpus-wide)"
+                );
+                return StdinFilterOutcome::Done(2);
+            }
+            match collect_stdin(args) {
+                Ok((matches, files)) => StdinFilterOutcome::Mixed(StdinHalf {
+                    matches,
+                    files,
+                    stdin_first: dash_precedes_real_paths(args),
+                }),
+                Err(code) => StdinFilterOutcome::Done(code),
+            }
         }
-        StdinDecision::UseStdin => Some(run_stdin_filter(config, args)),
+        StdinDecision::UseStdin => StdinFilterOutcome::Done(run_stdin_filter(config, args)),
     }
 }
 
-fn run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> i32 {
-    let start = Instant::now();
+/// True when the first `-` path argument precedes the first real path (rg
+/// processes `-` in argv position order).
+fn dash_precedes_real_paths(args: &SearchArgs) -> bool {
+    let first_dash = args.paths.iter().position(|p| p.as_os_str() == "-");
+    let first_real = args.paths.iter().position(|p| p.as_os_str() != "-");
+    match (first_dash, first_real) {
+        (Some(d), Some(r)) => d < r,
+        _ => true,
+    }
+}
+
+/// Read stdin and produce its match half. `Err` carries the process exit
+/// code for read/regex failures.
+fn collect_stdin(
+    args: &SearchArgs,
+) -> Result<
+    (
+        Vec<crate::SearchMatch>,
+        HashMap<PathBuf, crate::search::MatchedFile>,
+    ),
+    i32,
+> {
     let mut raw = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut raw) {
         eprintln!("st: failed to read stdin: {e}");
-        return 2;
+        return Err(2);
     }
     let raw_len = raw.len() as u64;
     let content = crate::index::normalize_encoding(&raw).into_owned();
@@ -142,7 +198,7 @@ fn run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> i32 {
         Ok(re) => re,
         Err(e) => {
             eprintln!("st: invalid pattern: {e}");
-            return 2;
+            return Err(2);
         }
     };
     let label = PathBuf::from(STDIN_LABEL);
@@ -155,15 +211,24 @@ fn run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> i32 {
 
     let mut files = HashMap::new();
     files.insert(
-        label.clone(),
+        label,
         crate::search::MatchedFile {
             normalized: content.into(),
             raw_len,
         },
     );
+    Ok((matches, files))
+}
+
+fn run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> i32 {
+    let start = Instant::now();
+    let (matches, files) = match collect_stdin(args) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
 
     // ripgrep's single-input rule: no filename prefix unless -H asks for one.
-    let mut output_args = filter_args.with_effective_output_defaults(config);
+    let mut output_args = args.with_effective_output_defaults(config);
     if !output_args.with_filename {
         output_args.no_filename = true;
     }

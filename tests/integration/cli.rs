@@ -2938,13 +2938,104 @@ fn stdin_dash_reads_piped_input() {
 }
 
 #[test]
-fn stdin_dash_mixed_with_paths_exits_2() {
-    let out = run_with_stdin(&["x", "-", "somefile"], b"x\n");
+fn stdin_dash_mixed_with_invert_exits_2() {
+    // stdin -v is per-line; indexed -v is corpus-wide. They cannot merge.
+    let out = run_with_stdin(&["-v", "x", "-", "somefile"], b"x\n");
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        stderr_text(&out).contains("cannot be combined with other paths"),
-        "expected mixed-dash error"
+        stderr_text(&out).contains("cannot be combined with other paths under -v"),
+        "expected mixed-dash -v error"
     );
+}
+
+/// rg semantics for `-` mixed with real paths: search both, stdin results
+/// ordered by the argv position of `-`.
+#[test]
+fn stdin_dash_mixed_with_paths_searches_both() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.txt"), "INDEXNEEDLE\n");
+    build_index(repo.path(), &index);
+
+    let run = |args: &[&str], input: &[u8]| {
+        let mut child = st()
+            .arg("--repo-root")
+            .arg(repo.path())
+            .arg("--index-dir")
+            .arg(&index)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn st");
+        child
+            .stdin
+            .as_mut()
+            .expect("piped stdin")
+            .write_all(input)
+            .expect("write stdin");
+        child.wait_with_output().expect("wait st")
+    };
+
+    // `-` first: stdin results precede index results, like rg.
+    let out = run(&["-n", "-H", "NEEDLE", "-", "."], b"STDINNEEDLE\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(
+        stdout_text(&out),
+        "<stdin>:1:STDINNEEDLE\na.txt:1:INDEXNEEDLE\n"
+    );
+
+    // `-` last: index results first.
+    let out = run(&["-n", "-H", "NEEDLE", ".", "-"], b"STDINNEEDLE\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(
+        stdout_text(&out),
+        "a.txt:1:INDEXNEEDLE\n<stdin>:1:STDINNEEDLE\n"
+    );
+
+    // Match on either side is enough for exit 0.
+    let out = run(&["-n", "-H", "STDINNEEDLE", "-", "."], b"STDINNEEDLE\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "<stdin>:1:STDINNEEDLE\n");
+
+    // No match on either side: exit 1.
+    let out = run(&["-n", "-H", "zzq", "-", "."], b"plain\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_text(&out), "");
+}
+
+#[test]
+fn stdin_dash_mixed_without_index_cannot_fallback() {
+    // stdin was already consumed by the time the missing index is detected,
+    // so the rg fallback (which would re-read stdin) must not run.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext"); // never created
+    write_text(&repo.path().join("a.txt"), "INDEXNEEDLE\n");
+
+    let mut child = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index)
+        .args(["-n", "NEEDLE", "-", "."])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn st");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"STDINNEEDLE\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait st");
+
+    assert_eq!(out.status.code(), Some(2));
+    let err = stderr_text(&out);
+    assert!(err.contains("no index found"), "stderr:\n{err}");
+    assert!(err.contains("cannot re-read stdin"), "stderr:\n{err}");
 }
 
 /// Explicit real path args win over a pipe (rg rule): the search must come

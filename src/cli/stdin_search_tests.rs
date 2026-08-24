@@ -40,15 +40,17 @@ fn explicit_dash_always_wins() {
 }
 
 #[test]
-fn dash_mixed_with_paths_is_an_error() {
+fn dash_mixed_with_paths_searches_both() {
     assert_eq!(
         decide_stdin(true, &args("pat", &["-", "src"])),
-        StdinDecision::MixedDash
+        StdinDecision::StdinPlusPaths
     );
     assert_eq!(
         decide_stdin(true, &args("pat", &["src", "-"])),
-        StdinDecision::MixedDash
+        StdinDecision::StdinPlusPaths
     );
+    assert!(dash_precedes_real_paths(&args("pat", &["-", "src"])));
+    assert!(!dash_precedes_real_paths(&args("pat", &["src", "-"])));
 }
 
 #[test]

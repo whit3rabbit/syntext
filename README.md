@@ -180,10 +180,11 @@ Notes:
   when no paths are given (a tty, socket, or `/dev/null` is not), an explicit `-`
   always reads stdin, explicit path arguments win over stdin, and `-v` inverts
   per-line on a stream. Output matches `rg` reading the same pipe (no filename
-  prefix by default, `<stdin>` under `-H`/`-l`/`--json`). `-` cannot be combined
-  with other paths. A pattern word that collides with a subcommand name
-  (`st -F 'index'`) misroutes to that subcommand; use `st -e 'index'` or
-  `st -- 'index'` to search for it.
+  prefix by default, `<stdin>` under `-H`/`-l`/`--json`). `st 'pat' - src/`
+  searches both the stream and the paths (stdin results ordered by the argv
+  position of `-`), except under `-v`, which still exits 2. A pattern word that
+  collides with a subcommand name (`st -F 'index'`) misroutes to that subcommand;
+  use `st -e 'index'` or `st -- 'index'` to search for it.
 
 ## Fallback to ripgrep/grep (un-indexed search)
 
