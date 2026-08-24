@@ -26,16 +26,15 @@ fn regex_reports_match_start_offset() {
 
 #[test]
 fn literal_pattern_ending_in_cr_clamps_submatch_end() {
-    // Pattern ends in '\r' and matches right before the '\n'. The '\r' is
-    // trimmed from line_content, so submatch_end must clamp to
-    // line_content.len() instead of running one byte past (which would
-    // panic a `line_content[..submatch_end]` slice for library consumers).
+    // Pattern ends in '\r' and matches right before the '\n'. line_content
+    // keeps the rendered '\r' (rg parity), but the match span must clamp to
+    // the matchable content so it never covers that byte.
     let matches = verify_literal("abc\r", Path::new("f"), b"abc\r\n", false);
     assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].line_content, b"abc");
+    assert_eq!(matches[0].line_content, b"abc\r");
     assert!(
-        matches[0].submatch_end <= matches[0].line_content.len(),
-        "submatch_end {} must not exceed line_content len {}",
+        matches[0].submatch_end < matches[0].line_content.len(),
+        "submatch_end {} must stay short of the rendered \\r at {}",
         matches[0].submatch_end,
         matches[0].line_content.len()
     );
@@ -54,7 +53,7 @@ fn crlf_offsets_include_line_break_bytes_before_match() {
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].line_number, 2);
     assert_eq!(matches[0].byte_offset, 9);
-    assert_eq!(matches[0].line_content, b"two needle");
+    assert_eq!(matches[0].line_content, b"two needle\r");
 }
 
 #[test]
@@ -126,10 +125,10 @@ fn regex_pattern_ending_in_cr_clamps_submatch_end() {
     let re = Regex::new("abc\r").unwrap();
     let matches = verify_regex(&re, Path::new("f"), b"abc\r\n", false);
     assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].line_content, b"abc");
+    assert_eq!(matches[0].line_content, b"abc\r");
     assert!(
-        matches[0].submatch_end <= matches[0].line_content.len(),
-        "submatch_end {} must not exceed line_content len {}",
+        matches[0].submatch_end < matches[0].line_content.len(),
+        "submatch_end {} must stay short of the rendered \\r at {}",
         matches[0].submatch_end,
         matches[0].line_content.len()
     );
@@ -144,7 +143,7 @@ fn empty_pattern_matches_all_lines() {
     assert_eq!(matches[0].line_number, 1);
     assert_eq!(matches[0].line_content, b"line one");
     assert_eq!(matches[1].line_number, 2);
-    assert_eq!(matches[1].line_content, b"line two");
+    assert_eq!(matches[1].line_content, b"line two\r");
     assert_eq!(matches[2].line_number, 3);
     assert_eq!(matches[2].line_content, b"line three");
 }
@@ -163,4 +162,31 @@ assert_eq!(matches.len(), 2, "{matches:?}");
 fn empty_pattern_does_not_emit_phantom_trailing_line() {
 let matches = verify_empty(Path::new("f"), b"alpha\nbeta\n", false);
 assert_eq!(matches.len(), 2, "{matches:?}");
+}
+
+#[test]
+fn crlf_output_regex_semantics_on_r_included_lines() {
+    // Pins the multi_line+crlf semantics the rendering path relies on
+    // (compile_output_regex builds exactly this): \r\n, a lone \r, and \n
+    // are all line boundaries, so a $-anchored pattern behaves the same on
+    // a \r-included line slice as on the stripped one, and `.` does not
+    // consume the \r. Rendering therefore only needs to widen the displayed
+    // bytes (`rendered_line`); matching semantics are unchanged.
+    let b = |p: &str| {
+        regex::bytes::RegexBuilder::new(p)
+            .crlf(true)
+            .multi_line(true)
+            .build()
+            .unwrap()
+    };
+    assert!(
+        b("parse$").is_match(b"parse\r"),
+        "$ anchors before a lone trailing \\r"
+    );
+    assert!(b("parse$").is_match(b"parse\r\n"), "$ anchors before \\r\\n");
+    assert!(
+        !b("parse.$").is_match(b"parse\r"),
+        "`.` must not consume the \\r"
+    );
+    assert!(b("parse\\r$").is_match(b"parse\r"), "an explicit \\r is still matchable");
 }

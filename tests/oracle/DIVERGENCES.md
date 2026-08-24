@@ -68,10 +68,10 @@ This document enumerates the known, intentional, and documented correctness/sema
 - **Description**: `st`'s indexed `-v` is corpus-wide (list files without matches, divergence #2). In stdin filter mode `-v` inverts line-by-line, matching `rg -v` in a pipe — corpus-invert is meaningless for a single stream. The two `st` modes therefore give `-v` different (mode-appropriate) semantics.
 - **Harness Action**: The stdin differential compares `-v` output byte-for-byte against `rg -v` reading the same pipe; no bypass is needed.
 
-### 15. Trailing `\r` Stripped from Rendered Lines (all modes)
+### 15. CRLF Matching Semantics (`rg --crlf`-like) vs rg's Default
 
-- **Description**: `st` strips a line's trailing `\r` (from `\r\n`) from rendered output text; `rg` keeps it. Pre-existing rendering policy (`verify_*` trims `\r` from `line_content`), not stdin-specific — stdin byte-equality comparisons exposed it.
-- **Harness Action**: Stdin comparisons normalize `\r` away before comparing (`stdin_raw_outputs` callers strip it); Tier C file-output comparisons that hit `\r`-terminated lines would need the same.
+- **Description**: rendered output now keeps a CRLF line's trailing `\r` (byte-identical to rg), but `st` still *matches* against the `\r`-stripped line: a `$`-anchored pattern matches without `--crlf`-style concerns, and a `.` cannot consume the `\r`. rg's default can match the `\r` itself (e.g. `parse.` matches `parse\r`). Only patterns that would match the `\r` byte differ, and only in submatch spans — never in which lines match.
+- **Harness Action**: stdin comparisons are byte-exact (no `\r` normalization). The proptest query pool is token-aligned (no `\r`-matching patterns), so this residual does not surface; a targeted golden could pin it if it ever regresses.
 
 ### 16. Binary Streams: `st` Skips, `rg` Reports "binary file matches" (all modes)
 

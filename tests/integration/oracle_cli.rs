@@ -314,20 +314,13 @@ fn stdin_golden_no_match_exits_1() {
 #[test]
 #[cfg(unix)]
 fn stdin_golden_crlf_stream() {
-    // Divergence (pre-existing, all modes): st strips a line's trailing \r
-    // from rendered output; rg keeps it. Compare with \r normalized away so
-    // the golden still proves identical line splitting on \r\n.
+    // st renders CRLF lines with the `\r` intact, byte-identical to rg.
     let stream = b"alpha parse_query beta\r\nreparse\r\n";
     for flags in [&[][..], &["-n"][..]] {
         let ((st_code, st_out), (rg_code, rg_out)) =
             stdin_raw_outputs(stream, "parse", flags).unwrap();
         assert_eq!(st_code, rg_code, "exit codes differ for flags {flags:?}");
-        let strip_cr = |v: Vec<u8>| -> Vec<u8> { v.into_iter().filter(|&b| b != b'\r').collect() };
-        assert_eq!(
-            strip_cr(st_out),
-            strip_cr(rg_out),
-            "cr-normalized stdout differs for flags {flags:?}"
-        );
+        assert_eq!(st_out, rg_out, "stdout differs for flags {flags:?}");
     }
 }
 
@@ -374,16 +367,14 @@ proptest! {
         for content in usable {
             stream.extend_from_slice(content);
         }
-        // The corpus generator emits \r\n separators, and st strips a line's
-        // trailing \r from rendered output while rg keeps it (documented
-        // divergence) — compare with \r normalized away.
+        // The corpus generator emits \r\n separators; st keeps the trailing
+        // \r in rendered lines like rg, so the comparison is byte-exact.
         let ((st_code, st_out), (rg_code, rg_out)) =
             stdin_raw_outputs(&stream, &query, &effective_flags).unwrap();
         let norm = |c: i32| if c == 0 { 0 } else if c == 1 { 1 } else { 2 };
-        let strip_cr = |v: Vec<u8>| -> Vec<u8> { v.into_iter().filter(|&b| b != b'\r').collect() };
         prop_assert!(norm(st_code) == norm(rg_code), "stdin exit mismatch st={st_code} rg={rg_code}");
         prop_assert!(
-            strip_cr(st_out) == strip_cr(rg_out),
+            st_out == rg_out,
             "stdin stdout mismatch for query {query:?} flags {effective_flags:?}"
         );
     }

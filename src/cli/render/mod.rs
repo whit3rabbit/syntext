@@ -150,6 +150,22 @@ pub(in crate::cli) fn json_elapsed(elapsed: Duration) -> serde_json::Value {
     })
 }
 
+/// The rendered form of a line: the `\r`-stripped slice plus its trailing
+/// `\r` when the original content carries one. rg prints CRLF lines with the
+/// `\r` intact; matching still runs on the stripped slice, so this is a
+/// display-only widening.
+pub(in crate::cli) fn rendered_line<'a>(
+    content: &'a [u8],
+    line_start: usize,
+    stripped: &[u8],
+) -> &'a [u8] {
+    let base = line_start + stripped.len();
+    match content.get(base) {
+        Some(b'\r') => &content[line_start..base + 1],
+        _ => &content[line_start..base],
+    }
+}
+
 pub(in crate::cli) fn json_submatches(
     re: &regex::bytes::Regex,
     line: &[u8],

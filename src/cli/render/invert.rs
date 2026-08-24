@@ -99,8 +99,11 @@ fn render_invert_match_scan(
                 if args.quiet {
                     return;
                 }
+                // Match on the \r-stripped slice (unchanged semantics); render
+                // with the `\r` re-included, like rg.
+                let display = super::rendered_line(file_bytes.as_ref(), line_start, line);
                 if args.json {
-                    file_selected.push((line_num as usize, line_start, line.to_vec()));
+                    file_selected.push((line_num as usize, line_start, display.to_vec()));
                 } else if !args.files_with_matches && !args.files_without_match && !args.count {
                     let _ = write_formatted_line(
                         &mut out,
@@ -113,7 +116,7 @@ fn render_invert_match_scan(
                         rel_path.as_path(),
                         line_num as usize,
                         b':',
-                        line,
+                        display,
                         &[],
                     );
                 }

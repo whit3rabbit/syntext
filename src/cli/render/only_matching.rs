@@ -10,8 +10,8 @@ use crate::Config;
 
 use super::color::write_styled;
 use super::{
-    compile_output_regex, group_matches_by_path, matched_file_bytes, repo_canonical_root,
-    write_formatted_line, ColorStyles,
+    compile_output_regex, group_matches_by_path, matched_file_bytes, rendered_line,
+    repo_canonical_root, write_formatted_line, ColorStyles,
 };
 use crate::cli::search::SearchArgs;
 
@@ -135,7 +135,7 @@ fn render_only_matching_with_context(
         // Keep the line-start byte offset for -b (see render_only_matching).
         let mut file_lines: Vec<(usize, Vec<u8>)> = Vec::new();
         for_each_line(file_content.as_ref(), |_, line_start, line| {
-            file_lines.push((line_start, line.to_vec()))
+            file_lines.push((line_start, rendered_line(file_content.as_ref(), line_start, line).to_vec()))
         });
 
         let match_set: BTreeSet<usize> = match_lines

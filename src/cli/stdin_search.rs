@@ -252,7 +252,8 @@ fn invert_matches(
             out.push(crate::SearchMatch {
                 path: path.to_path_buf(),
                 line_number: line_num,
-                line_content: line.to_vec(),
+                // rg -v prints the raw line, `\r` included.
+                line_content: render::rendered_line(content, line_start, line).to_vec(),
                 // No submatch exists on an inverted line; report the line's
                 // own offset so -b/--byte-offset stays truthful.
                 byte_offset: line_start as u64,

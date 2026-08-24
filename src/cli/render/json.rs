@@ -10,7 +10,8 @@ use crate::Config;
 
 use super::{
     compile_output_regex, group_matches_by_path, json_data, json_elapsed, json_line_message,
-    json_stats, json_submatches, matched_file_bytes, repo_canonical_root, write_json_line,
+    json_stats, json_submatches, matched_file_bytes, rendered_line, repo_canonical_root,
+    write_json_line,
 };
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
@@ -99,7 +100,13 @@ pub(in crate::cli) fn render_json(
         total_bytes_searched += raw_len;
         let mut file_lines: Vec<(usize, usize, Vec<u8>)> = Vec::new();
         for_each_line(file_content.as_ref(), |line_num, line_start, line| {
-            file_lines.push((line_num as usize, line_start, line.to_vec()))
+            // json_submatches strips the trailing `\r` itself; the displayed
+            // `lines` text keeps it, matching rg.
+            file_lines.push((
+                line_num as usize,
+                line_start,
+                rendered_line(file_content.as_ref(), line_start, line).to_vec(),
+            ))
         });
 
         let match_set: std::collections::BTreeSet<usize> = match_lines

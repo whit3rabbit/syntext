@@ -92,14 +92,17 @@ pub fn verify_literal(
             line_content: if skip_line_content {
                 Vec::new()
             } else {
-                content[line_start..line_content_end].to_vec()
+                // Rendered bytes run through line_end so a CRLF line keeps
+                // its `\r` (rg prints the raw line); spans stay clamped short
+                // of it below.
+                content[line_start..line_end].to_vec()
             },
             byte_offset: match_start as u64,
             submatch_start: match_start - line_start,
-            // Clamp to line_content_end: a pattern ending in '\r' can match at
-            // end-of-line where the '\r' was trimmed from line_content, so the
-            // raw `match_start + pattern.len()` would run one byte past
-            // line_content and panic a `line_content[..submatch_end]` slice.
+            // Clamp to line_content_end so spans never cover the rendered
+            // `\r`: a pattern ending in '\r' can match at end-of-line, and
+            // the raw `match_start + pattern.len()` would run one byte past
+            // the matchable content.
             submatch_end: (match_start + pattern.len()).min(line_content_end) - line_start,
         });
 
@@ -196,7 +199,9 @@ pub fn verify_regex(
             line_content: if skip_line_content {
                 Vec::new()
             } else {
-                content[line_start..line_content_end].to_vec()
+                // Rendered bytes keep a CRLF line's `\r` (rg parity); spans
+                // are clamped short of it.
+                content[line_start..line_end].to_vec()
             },
             byte_offset: match_start as u64,
             submatch_start: match_start - line_start,
@@ -220,19 +225,14 @@ pub fn verify_empty(path: &Path, content: &[u8], skip_line_content: bool) -> Vec
     let mut line_num = 1;
 
     for pos in memchr_iter(b'\n', content) {
-        let line_end = pos;
-        let line_content_end = if line_end > line_start && content[line_end - 1] == b'\r' {
-            line_end - 1
-        } else {
-            line_end
-        };
+        // Rendered bytes include a CRLF line's `\r` (rg parity).
         matches.push(SearchMatch {
             path: path.to_path_buf(),
             line_number: line_num,
             line_content: if skip_line_content {
                 Vec::new()
             } else {
-                content[line_start..line_content_end].to_vec()
+                content[line_start..pos].to_vec()
             },
             byte_offset: line_start as u64,
             submatch_start: 0,
@@ -246,19 +246,13 @@ pub fn verify_empty(path: &Path, content: &[u8], skip_line_content: bool) -> Vec
     // '\n' the loop above already emitted every line, and position len is not
     // a line (same phantom-trailing-empty-line rule as verify_regex).
     if line_start < content.len() {
-        let line_end = content.len();
-        let line_content_end = if line_end > line_start && content[line_end - 1] == b'\r' {
-            line_end - 1
-        } else {
-            line_end
-        };
         matches.push(SearchMatch {
             path: path.to_path_buf(),
             line_number: line_num,
             line_content: if skip_line_content {
                 Vec::new()
             } else {
-                content[line_start..line_content_end].to_vec()
+                content[line_start..].to_vec()
             },
             byte_offset: line_start as u64,
             submatch_start: 0,

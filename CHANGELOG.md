@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - `-f/--file PATTERNFILE` (rg parity): patterns read one per line and OR-combined with any `-e` patterns (interior empty lines are always-matching empty patterns; trailing newline is a terminator; `-F` escapes each alternative; empty file exits 1 silently like rg; unreadable file exits 2). Previously a hard exit-2 no-op.
 - `--rust` / `--rs`: select Rust source files only (equivalent to `-t rs`; a grep-ism seen in mined agent logs).
 - Fixed a pre-existing phantom trailing empty line: a zero-width regex match at end-of-content (e.g. an empty `-e ''`/`-f` pattern line, or `x|`) after a final newline used to render as an extra empty numbered line; rg prints none.
+- **Rendered lines keep a CRLF line's trailing `\r`** (byte-identical to rg output, all modes: flat, heading, vimgrep, only-matching, context, invert, JSON `lines` text). Matching still runs against the `\r`-stripped line, so which lines match is unchanged; only patterns that would match the `\r` byte itself report different submatch spans (divergence #15 narrowed). The stdin oracle comparisons are now byte-exact instead of `\r`-normalized.
 
 ### Behavior changes
 - **`cmd | st 'pat'` previously ignored stdin and silently searched the whole repo index** (exit 0 with wrong results); it now filters the stream. Scripts relying on the old (incorrect) behavior must pass an explicit path argument.
@@ -20,7 +21,7 @@ All notable changes to this project will be documented in this file.
 - **rg/grep fallback on a missing index is now the default.** Previously `st` exited 2 with guidance unless `--fallback`/`SYNTEXT_FALLBACK_RG=1` was set; now the search transparently runs `rg` (or `grep`). Disable with `SYNTEXT_FALLBACK_RG=0`; `--fallback` overrides the env var. **Scripts that parsed the exit-2 no-index error will see rg output and rg exit codes instead.** The notice stays suppressible via `-q`/`SYNTEXT_QUIET_FALLBACK`. Corrupt-index/lock failures still error loudly.
 
 ### Known divergences (see `tests/oracle/DIVERGENCES.md`)
-- Trailing `\r` is stripped from rendered lines and binary content is skipped entirely (pre-existing, all modes) — documented since stdin byte-equality comparisons exposed them.
+- Binary content is skipped entirely (pre-existing, all modes); `\r`-byte-matching patterns report `rg --crlf`-style spans.
 
 ### Changed
 - Differential-oracle ripgrep pin bumped 15.1.0 → 15.2.0 (`tests/oracle/ORACLE_VERSION`, `EXPECTED_RG_VERSION`, CI rg install URLs in `ci.yml`/`nightly.yml`). All correctness/oracle suites re-baselined green against 15.2.0 with no behavioral divergence.
