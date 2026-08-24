@@ -2,7 +2,8 @@
 mod oracle_helpers;
 
 use oracle_helpers::{
-    generate_corpus, generate_flags, generate_query, run_differential, run_differential_with_tier_c,
+    generate_corpus, generate_flags, generate_query, run_differential,
+    run_differential_with_tier_c, run_stdin_differential, stdin_raw_outputs,
 };
 use proptest::prelude::*;
 
@@ -256,6 +257,134 @@ proptest! {
 
         let res = run_differential_with_tier_c(&corpus, &query, &effective_flags);
         assert!(res.is_ok(), "differential test failed: {:?}", res);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stdin-Filter Goldens (byte-identical to rg reading the same pipe)
+// ---------------------------------------------------------------------------
+
+const STDIN_STREAM: &[u8] = b"alpha parse_query beta\nreparse gamma\ndelta Parse\n";
+
+#[test]
+#[cfg(unix)]
+fn stdin_golden_basic() {
+    run_stdin_differential(STDIN_STREAM, "parse", &[], false).unwrap();
+}
+
+/// Same stream via the explicit `-` path argument, which works on every
+/// platform (no /dev/stdin probing involved).
+#[test]
+fn stdin_golden_explicit_dash() {
+    run_stdin_differential(STDIN_STREAM, "parse", &[], true).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_golden_flag_matrix() {
+    for flags in [
+        &["-n"][..],
+        &["-i"][..],
+        &["-w"][..],
+        &["-x"][..],
+        &["-c"][..],
+        &["-l"][..],
+        &["-v"][..],
+        &["-o"][..],
+        &["-F"][..],
+        &["-H"][..],
+        &["--byte-offset"][..],
+        &["--vimgrep"][..],
+        &["-n", "-i"][..],
+        &["-c", "-i"][..],
+        &["-n", "-A", "1"][..],
+    ] {
+        run_stdin_differential(STDIN_STREAM, "parse", flags, false)
+            .unwrap_or_else(|e| panic!("stdin flags {flags:?}: {e}"));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_golden_no_match_exits_1() {
+    run_stdin_differential(b"alpha\nbeta\n", "zzq", &[], false).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_golden_crlf_stream() {
+    // Divergence (pre-existing, all modes): st strips a line's trailing \r
+    // from rendered output; rg keeps it. Compare with \r normalized away so
+    // the golden still proves identical line splitting on \r\n.
+    let stream = b"alpha parse_query beta\r\nreparse\r\n";
+    for flags in [&[][..], &["-n"][..]] {
+        let ((st_code, st_out), (rg_code, rg_out)) =
+            stdin_raw_outputs(stream, "parse", flags).unwrap();
+        assert_eq!(st_code, rg_code, "exit codes differ for flags {flags:?}");
+        let strip_cr = |v: Vec<u8>| -> Vec<u8> { v.into_iter().filter(|&b| b != b'\r').collect() };
+        assert_eq!(
+            strip_cr(st_out),
+            strip_cr(rg_out),
+            "cr-normalized stdout differs for flags {flags:?}"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_golden_binary_stream_suppressed() {
+    // st skips a NUL-containing stream entirely (documented binary policy,
+    // recorded in DIVERGENCES.md: rg searches past NULs on stdin, so no
+    // byte-equality differential is possible for binary streams).
+    let ((st_code, st_out), _) = stdin_raw_outputs(b"lead-in\0more parse\n", "parse", &[]).unwrap();
+    assert_eq!(st_code, 1);
+    assert!(st_out.is_empty());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+    #[test]
+    #[cfg(unix)]
+    fn test_cli_stdin_differential((corpus, query, flags) in generate_cli_run()) {
+        // Concatenate the corpus into one stream; -F is dropped for queries
+        // containing regex metacharacters (same rule as the file-based test).
+        let has_regex_meta = query.chars().any(|c| matches!(c, '.' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '^' | '$' | '\\'));
+        // --column diverges (pre-existing st flat-render gap, see
+        // DIVERGENCES.md); --json key order differs by design. Both are
+        // outside stdin scope; filter them from this byte-equality oracle.
+        let effective_flags: Vec<&str> = flags.iter()
+            .filter(|&&f| f != "--column" && f != "--json" && !(f == "-F" && has_regex_meta))
+            .copied()
+            .collect();
+        // Concatenate only plain UTF-8 text files: a UTF-16 BOM landing
+        // mid-stream is an input no engine contract covers (rg/st transcode
+        // it differently), and a NUL makes rg print "binary file matches"
+        // while st skips the stream (documented binary-policy divergence).
+        let starts_with_bom = |c: &[u8]| {
+            c.starts_with(&[0xFF, 0xFE]) || c.starts_with(&[0xFE, 0xFF]) || c.starts_with(&[0xEF, 0xBB, 0xBF])
+        };
+        let usable: Vec<&Vec<u8>> = corpus
+            .iter()
+            .map(|(_, c)| c)
+            .filter(|c| !starts_with_bom(c) && !c.contains(&0))
+            .collect();
+        prop_assume!(!usable.is_empty());
+        let mut stream = Vec::new();
+        for content in usable {
+            stream.extend_from_slice(content);
+        }
+        // The corpus generator emits \r\n separators, and st strips a line's
+        // trailing \r from rendered output while rg keeps it (documented
+        // divergence) — compare with \r normalized away.
+        let ((st_code, st_out), (rg_code, rg_out)) =
+            stdin_raw_outputs(&stream, &query, &effective_flags).unwrap();
+        let norm = |c: i32| if c == 0 { 0 } else if c == 1 { 1 } else { 2 };
+        let strip_cr = |v: Vec<u8>| -> Vec<u8> { v.into_iter().filter(|&b| b != b'\r').collect() };
+        prop_assert!(norm(st_code) == norm(rg_code), "stdin exit mismatch st={st_code} rg={rg_code}");
+        prop_assert!(
+            strip_cr(st_out) == strip_cr(rg_out),
+            "stdin stdout mismatch for query {query:?} flags {effective_flags:?}"
+        );
     }
 }
 

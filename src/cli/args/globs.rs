@@ -10,7 +10,8 @@ impl Cli {
         // later `--glob`/`--include`. Reconstruct true CLI-occurrence order from
         // `env::args_os()`; on any count mismatch (programmatic construction, or
         // globs after a `--`) fall back to field order rather than drop a filter.
-        let total = self.glob.len() + self.include.len() + self.exclude.len();
+        let total =
+            self.glob.len() + self.include.len() + self.exclude.len() + self.exclude_dir.len();
         if total == 0 {
             return Vec::new();
         }
@@ -20,16 +21,17 @@ impl Cli {
         let mut globs = self.glob.clone();
         globs.extend(self.include.iter().cloned());
         globs.extend(self.exclude.iter().map(|glob| format!("!{glob}")));
+        globs.extend(exclude_dir_globs(&self.exclude_dir));
         globs
     }
 
     /// Collect glob specs in true occurrence order, returning `None` unless the
     /// per-source counts exactly match the stored fields. Stops at a bare `--`.
     fn globs_in_argv_order(&self) -> Option<Vec<String>> {
-        let mut counts = [0usize; 3]; // [glob, include, exclude]
+        let mut counts = [0usize; 4]; // [glob, include, exclude, exclude_dir]
         let mut ordered: Vec<String> = Vec::new();
         let mut pending: Option<usize> = None; // index into counts/LONG
-        const LONG: [&str; 3] = ["--glob", "--include", "--exclude"];
+        const LONG: [&str; 4] = ["--glob", "--include", "--exclude", "--exclude-dir"];
         const VALUE_SHORTS: &[char] = &[
             'e', 'm', 'r', 'A', 'B', 'C', 't', 'T', 'M', 'd', 'f', 'E', 'j',
         ];
@@ -64,13 +66,16 @@ impl Cli {
             "--context-separator",
         ];
 
-        let emit = |i: usize, v: &str, counts: &mut [usize; 3], out: &mut Vec<String>| {
+        let emit = |i: usize, v: &str, counts: &mut [usize; 4], out: &mut Vec<String>| {
             counts[i] += 1;
-            out.push(if i == 2 {
-                format!("!{v}")
-            } else {
-                v.to_string()
-            });
+            match i {
+                // --exclude negates the glob as-is.
+                2 => out.push(format!("!{v}")),
+                // --exclude-dir covers both a root-level dir and any nested
+                // occurrence (grep's --exclude-dir matches by name anywhere).
+                3 => out.extend(exclude_dir_globs(std::slice::from_ref(&v.to_string()))),
+                _ => out.push(v.to_string()),
+            }
         };
 
         let mut skip_next = false;
@@ -140,7 +145,16 @@ impl Cli {
 
         (counts[0] == self.glob.len()
             && counts[1] == self.include.len()
-            && counts[2] == self.exclude.len())
+            && counts[2] == self.exclude.len()
+            && counts[3] == self.exclude_dir.len())
         .then_some(ordered)
     }
+}
+
+/// Negated glob specs for grep-style `--exclude-dir DIR`: exclude a root-level
+/// directory and any nested directory of the same name, plus everything under
+/// them.
+fn exclude_dir_globs(dirs: &[String]) -> impl Iterator<Item = String> + '_ {
+    dirs.iter()
+        .flat_map(|dir| [format!("!{dir}/**"), format!("!**/{dir}/**")].into_iter())
 }

@@ -209,6 +209,18 @@ Decision:
 
 Posting list inflation from chunk-level documents outweighs the selectivity gains for typical source files. Block-level positional data is the preferred v2 alternative.
 
+### Stdin filter mode outside the index pipeline
+
+`cmd | st 'pat'` (and `st 'pat' -`) searches the stream in-memory without opening the index at all (`src/cli/stdin_search.rs`, dispatched before `Index::open` in `cmd_search`).
+
+**Decision**: implicit-stdin detection accepts only a pipe (FIFO) or a regular-file redirect, checked via `metadata("/dev/stdin")`. A tty, socket, `/dev/null`, or unresolvable stdin falls through to the repo-index path.
+
+**Rationale**: agents' shells (Claude Code's Bash tool, CI) attach `/dev/null` or a socket to stdin, not a tty. A naive "stdin is not a terminal → read stdin" rule (rg's documented contract, softened by its own /dev/null special case) would make every bare `st pat` from an agent silently search an empty stream and exit 1 — a regression of the primary use case, and the failure mode is silent. The conservative type check fails toward the old behavior (repo search), never toward an empty wrong result. This mirrors ripgrep's observed behavior (15.2.0, verified empirically): `/dev/null` stdin + no paths → searches the cwd; explicit `-` always reads stdin.
+
+**Alternatives considered**: extending the n-gram index to cover stream documents (rejected: streams are one-shot and usually small; a single in-memory `verify_regex` pass is fast enough and reuses the exact verifier used for candidate checking); streaming line-by-line instead of `read_to_end` (rejected: context rendering (`-A/-B/-C`) and `--json` re-scan whole content through the shared render pipeline, so full buffering is required anyway for identical output).
+
+The rg-contract behaviors, the discovered pre-existing divergences it exposed (`\r` stripping, binary policy, `--column`), and the mixed `-`/per-line `-v` decisions are recorded in `tests/oracle/DIVERGENCES.md` #13-#17, with byte-equality goldens plus a proptest in `tests/integration/oracle_cli.rs`.
+
 ## Key invariant
 
 For any document D and any token-aligned substring Q of D, every gram in `build_covering(Q)` must appear in `build_all(D)`. "Token-aligned" means Q starts and ends at forced boundary positions. This invariant is what makes index narrowing correct.

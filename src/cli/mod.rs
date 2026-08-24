@@ -18,6 +18,7 @@ mod render;
 mod scope;
 mod search;
 mod search_args;
+mod stdin_search;
 #[cfg(feature = "symbols")]
 mod sym;
 
@@ -37,7 +38,20 @@ use search::{cmd_search, SearchArgs};
 
 /// Run the CLI. Returns the process exit code.
 pub fn run() -> i32 {
-    let cli = Cli::parse();
+    // try_parse (not parse) so a parse failure can be annotated with the
+    // pattern-vs-subcommand collision hint below before exiting.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // Print clap's error first, then the hint, so the note reads as
+            // advice attached to the failure rather than preamble.
+            let _ = e.print();
+            if e.kind() == clap::error::ErrorKind::UnknownArgument {
+                args::print_subcommand_collision_hint();
+            }
+            std::process::exit(e.exit_code());
+        }
+    };
 
     // Install the only logger the library's `log` diagnostics route through.
     // `st index` re-derives its own level below (defaults to verbose); every
@@ -343,6 +357,9 @@ pub fn run() -> i32 {
                 refs: cli.refs,
                 #[cfg(not(feature = "symbols"))]
                 refs: None,
+                // We are the CLI binary: this process's stdin shape is the
+                // user's pipe/redirect and may drive the stdin filter.
+                allow_implicit_stdin: true,
             };
             cmd_search(config, &search_args)
         }

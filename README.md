@@ -157,9 +157,15 @@ st "needle" src/lib.rs tests/       # search multiple files/directories
 # Additional filters and output modes
 st -t rs "impl.*Iterator"           # restrict to Rust files
 st -g "src/" "TODO"                 # restrict by glob
+st --exclude-dir node_modules "fn " # skip directories by name (grep compat)
 st -c "parse_query" src/lib.rs      # count matches in one file
 st -l "parse_query"                 # print matching file paths
 st --json "TODO"                    # NDJSON output for tooling
+
+# Search a stream instead of the repo (no index needed)
+cargo test 2>&1 | st "FAILED"       # implicit: stdin is a pipe/redirect
+st "FAILED" -                       # explicit: `-` always means stdin
+git log --oneline | st -c "fix"     # bare count, like rg
 
 # Status
 st status
@@ -170,6 +176,14 @@ Notes:
 - Search is the default command, there is no `st search` subcommand.
 - Like ripgrep, file names are shown by default when searching a directory, the whole repo, or multiple positional paths.
 - Like ripgrep, line numbers are off by default when stdout is not a TTY. Use `-n` to force them on.
+- Stdin filtering follows ripgrep's rules: a pipe or `< file` redirect is searched
+  when no paths are given (a tty, socket, or `/dev/null` is not), an explicit `-`
+  always reads stdin, explicit path arguments win over stdin, and `-v` inverts
+  per-line on a stream. Output matches `rg` reading the same pipe (no filename
+  prefix by default, `<stdin>` under `-H`/`-l`/`--json`). `-` cannot be combined
+  with other paths. A pattern word that collides with a subcommand name
+  (`st -F 'index'`) misroutes to that subcommand; use `st -e 'index'` or
+  `st -- 'index'` to search for it.
 
 ## Fallback to ripgrep/grep (un-indexed search)
 

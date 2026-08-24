@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Stdin filter mode** (rg parity): `cmd | st 'pat'` and `st 'pat' -` now search the piped/redirected stream in-memory, with rg-compatible output (no filename prefix by default, `<stdin>` label under `-H`/`-l`/`--json`, bare `-c` counts) and exit codes. Implicit-stdin detection is conservative: only a pipe (FIFO) or regular-file redirect engages it — a tty, socket, or `/dev/null` still searches the repo index, so agent shells that attach `/dev/null` to stdin are unaffected. Works without any `.syntext` index. `-v` inverts per-line on a stream (corpus-wide `-v` is meaningless for stdin); `-` mixed with other paths is rejected with exit 2. New module `src/cli/stdin_search.rs`; shared render/exit dispatch extracted into `search::render_results`.
+- `--exclude-dir DIR` (grep compatibility): mapped to negated globs covering the directory at any depth.
+- Subcommand-collision hint: when a clap `unexpected argument` error was caused by a pattern word matching a subcommand name (`st -F 'index' -n` routes to `st index`), stderr now suggests `st -e <word>` or `st -- <word>`.
+- `SYNTEXT_QUIET_FALLBACK=1` env var to silence the per-search fallback notice (same effect as `-q`, without suppressing match output).
+
+### Behavior changes
+- **`cmd | st 'pat'` previously ignored stdin and silently searched the whole repo index** (exit 0 with wrong results); it now filters the stream. Scripts relying on the old (incorrect) behavior must pass an explicit path argument.
+- `st 'pat' -` previously matched nothing (the `-` was a literal path filter, exit 1); it now reads stdin.
+
+### Known divergences (see `tests/oracle/DIVERGENCES.md` #13-#17)
+- Trailing `\r` is stripped from rendered lines (pre-existing, all modes), binary content is skipped entirely, and `--column` without `-n` omits the line number — all now explicitly documented since stdin byte-equality comparisons exposed them.
+
+### Changed
+- Differential-oracle ripgrep pin bumped 15.1.0 → 15.2.0 (`tests/oracle/ORACLE_VERSION`, `EXPECTED_RG_VERSION`, CI rg install URLs in `ci.yml`/`nightly.yml`). All correctness/oracle suites re-baselined green against 15.2.0 with no behavioral divergence.
+
 ## [2.0.0] - 2026-07-11
 
 ### Added

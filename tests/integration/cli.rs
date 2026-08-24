@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, Read};
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -1364,6 +1364,9 @@ fn broken_pipe_exits_cleanly_instead_of_panicking() {
         .arg("--index-dir")
         .arg(index.path())
         .arg("needle")
+        // Pin stdin so a piped test-harness stdin cannot engage the stdin
+        // filter; this test targets broken-pipe handling, not stdin search.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2657,4 +2660,285 @@ fn unsupported_search_flags_warn_but_still_search() {
         stdout_text(&out).contains("needle here"),
         "search must still run despite the warnings"
     );
+}
+
+// ---------------------------------------------------------------------------
+// stdin filter mode (rg-style `cat ... | st pat`)
+// ---------------------------------------------------------------------------
+
+fn run_with_stdin(args: &[&str], input: &[u8]) -> Output {
+    let mut child = st()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn st");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(input)
+        .expect("write stdin");
+    child.wait_with_output().expect("wait st")
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_matches_without_filename_prefix() {
+    let out = run_with_stdin(&["-n", "b"], b"a\nb\nb\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "2:b\n3:b\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_no_match_exits_1() {
+    let out = run_with_stdin(&["zzq"], b"a\nb\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_text(&out), "");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_h_count_uses_stdin_label() {
+    let out = run_with_stdin(&["-H", "-c", "b"], b"a\nb\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout_text(&out), "<stdin>:1\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_count_is_bare_by_default() {
+    let out = run_with_stdin(&["-c", "b"], b"a\nb\nb\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout_text(&out), "2\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_files_with_matches_uses_stdin_label() {
+    let out = run_with_stdin(&["-l", "b"], b"a\nb\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout_text(&out), "<stdin>\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_json_uses_stdin_label() {
+    let out = run_with_stdin(&["--json", "foo"], b"a\nfoo\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(
+        stdout.contains("\"path\":{\"text\":\"<stdin>\"}"),
+        "expected <stdin> path in json, got:\n{stdout}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_inverts_per_line() {
+    let out = run_with_stdin(&["-v", "b"], b"a\nb\nc\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout_text(&out), "a\nc\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_binary_content_exits_1() {
+    let out = run_with_stdin(&["a"], b"a\0b\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_text(&out), "");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_glob_filters_warn_and_are_ignored() {
+    let out = run_with_stdin(&["-g", "*.rs", "-t", "rust", "a"], b"a\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "a\n");
+    assert!(
+        stderr_text(&out).contains("are ignored when reading stdin"),
+        "expected stdin glob warning"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_max_count_truncates() {
+    let out = run_with_stdin(&["-m", "1", "-n", "b"], b"b\nb\n");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(stdout_text(&out), "1:b\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_after_context_prints_context_lines() {
+    let out = run_with_stdin(&["-n", "-A", "1", "b"], b"b\nafter\nnope\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "1:b\n2-after\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_works_without_index_or_git_repo() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut child = st()
+        .args(["hi"])
+        .current_dir(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn st");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"hi\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait st");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "hi\n");
+}
+
+/// An explicit `-` always means stdin, even when stdin is /dev/null (rg rule).
+#[test]
+fn stdin_dash_with_null_stdin_reads_empty_and_exits_1() {
+    let out = st()
+        .args(["zzq", "-"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run st");
+    assert_eq!(out.status.code(), Some(1), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "");
+}
+
+#[test]
+fn stdin_dash_reads_piped_input() {
+    let out = run_with_stdin(&["foo", "-"], b"x\nfoo\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "foo\n");
+}
+
+#[test]
+fn stdin_dash_mixed_with_paths_exits_2() {
+    let out = run_with_stdin(&["x", "-", "somefile"], b"x\n");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr_text(&out).contains("cannot be combined with other paths"),
+        "expected mixed-dash error"
+    );
+}
+
+/// Explicit real path args win over a pipe (rg rule): the search must come
+/// from the index, and the piped bytes must be ignored.
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_loses_to_explicit_path_arg() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("f.txt"), "needle-in-file\n");
+    build_index(repo.path(), index.path());
+    let mut child = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index.path())
+        .args(["--no-update", "-l", "needle", "f.txt"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn st");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"needle-in-stdin\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait st");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "f.txt\n");
+}
+
+/// The Claude Code / CI shape: stdin is /dev/null (not a tty, not a pipe) and
+/// no paths are given. The repo index must still be searched; reading the
+/// empty stdin instead would silently return exit 1.
+#[test]
+fn stdin_null_does_not_hijack_repo_search() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("f.txt"), "needle-in-file\n");
+    build_index(repo.path(), index.path());
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index.path())
+        .args(["--no-update", "-l", "needle"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run st");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "f.txt\n");
+}
+
+// ---------------------------------------------------------------------------
+// pattern-vs-subcommand collision hint
+// ---------------------------------------------------------------------------
+
+#[test]
+fn collision_hint_after_unknown_argument_error() {
+    let out = run(&["-F", "index", "-n"]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = stderr_text(&out);
+    assert!(
+        stderr.contains("unexpected argument"),
+        "expected clap error, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("matched the 'index' subcommand"),
+        "expected collision hint, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("st -e index"),
+        "hint should name the -e escape hatch"
+    );
+}
+
+#[test]
+fn no_collision_hint_for_intended_subcommand() {
+    let out = run(&["index", "--bogus"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!stderr_text(&out).contains("matched the"));
+}
+
+// ---------------------------------------------------------------------------
+// --exclude-dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exclude_dir_drops_matching_directory_results() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("keep.rs"), "needle\n");
+    write_text(&repo.path().join("node_modules/x/f.js"), "needle\n");
+    write_text(&repo.path().join("src/node_modules/g.js"), "needle\n");
+    build_index(repo.path(), index.path());
+    let out = run_repo(
+        repo.path(),
+        index.path(),
+        &[
+            "--no-update",
+            "--exclude-dir",
+            "node_modules",
+            "-l",
+            "needle",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "keep.rs\n");
 }

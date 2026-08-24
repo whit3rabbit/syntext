@@ -133,7 +133,7 @@ cargo bench --bench freshness -- --sample-size 10
 
 To ensure search correctness, prevent false-negatives/positives, and maintain robust query routing, `syntext` integrates a differential testing framework comparing its outputs directly against `ripgrep` (`rg`).
 
-- **Oracle Version**: Locked to `ripgrep 15.1.0` (specified in `tests/oracle/ORACLE_VERSION`).
+- **Oracle Version**: Locked to `ripgrep 15.2.0` (specified in `tests/oracle/ORACLE_VERSION`).
 - **Divergence Policy**: Allowed/intentional differences (e.g. smart-case handling, result ordering, and `-v` candidate-only scope filter) are detailed in `tests/oracle/DIVERGENCES.md` and parsed/normalized gracefully during comparisons.
 - **Self-Differential Test (`oracle_self`)**: An in-process `proptest`-based target comparing the standard routed query match results against forced full-scan results.
 - **CLI Subprocess Differential Test (`oracle_cli`)**: A subprocess-based target executing CLI runs of `st` against `rg` on dynamically generated corpora.
@@ -283,6 +283,7 @@ All PRs must pass before merge:
 
 ## Key Design Decisions
 
+- **Stdin filter mode** (rg parity): `cmd | st 'pat'` and `st 'pat' -` search the stream in-memory before the index is opened (`src/cli/stdin_search.rs`), so they work with no `.syntext`. Implicit-stdin detection accepts only a FIFO/regular-file stdin (via `metadata("/dev/stdin")`), NOT merely "not a tty": agent shells attach `/dev/null` or a socket to stdin, and reading those would silently search an empty stream. `-` mixed with other paths exits 2; `-v` inverts per-line on streams (see `tests/oracle/DIVERGENCES.md` #13-#17 for the exposed pre-existing render divergences).
 - **No probabilistic masks** (Cursor's locMask/nextMask). 8-bit masks saturate after ~12 occurrences. Sparse n-grams provide better selectivity.
 - **No FM-index for v1**. Construction time 10x slower, locate is expensive, zero incrementality. Valid v2 path.
 - **No content-defined chunking for v1**. Most files are small, posting list inflation outweighs gains. Block-level positional data is the preferred v2 alternative.

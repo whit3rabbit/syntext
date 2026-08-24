@@ -62,3 +62,28 @@ This document enumerates the known, intentional, and documented correctness/sema
 
 - **Description**: `st`'s `normalize_encoding` converts UTF-16 / BOM / non-UTF-8 content to UTF-8 at index time, so `st` reports clean UTF-8 line text (e.g. `query`). `rg` decodes the same bytes and renders invalid sequences as U+FFFD (e.g. `query�`). Both engines agree on the match location and matched bytes; only the surrounding line *text* renders differently.
 - **Harness Action**: `CanonicalMatch` (Tier A/B) excludes line text — comparison is `(path, line_number, submatches)` per the Tier B contract. Line-text rendering is only checked at Tier C via raw-output comparison (`compare_rendered_output`).
+
+### 13. Stdin Filter Mode: `-` Mixed with Paths
+
+- **Description**: `rg 'pat' - src/` searches stdin *and* the path arguments. `st` rejects combining `-` with other paths (exit 2), because stdin results and indexed results come from different pipelines.
+- **Harness Action**: The stdin differential (`run_stdin_differential`) never mixes `-` with real paths.
+
+### 14. Stdin Filter Mode: `-v` Is Per-Line Invert
+
+- **Description**: `st`'s indexed `-v` is corpus-wide (list files without matches, divergence #2). In stdin filter mode `-v` inverts line-by-line, matching `rg -v` in a pipe — corpus-invert is meaningless for a single stream. The two `st` modes therefore give `-v` different (mode-appropriate) semantics.
+- **Harness Action**: The stdin differential compares `-v` output byte-for-byte against `rg -v` reading the same pipe; no bypass is needed.
+
+### 15. Trailing `\r` Stripped from Rendered Lines (all modes)
+
+- **Description**: `st` strips a line's trailing `\r` (from `\r\n`) from rendered output text; `rg` keeps it. Pre-existing rendering policy (`verify_*` trims `\r` from `line_content`), not stdin-specific — stdin byte-equality comparisons exposed it.
+- **Harness Action**: Stdin comparisons normalize `\r` away before comparing (`stdin_raw_outputs` callers strip it); Tier C file-output comparisons that hit `\r`-terminated lines would need the same.
+
+### 16. Binary Streams: `st` Skips, `rg` Reports "binary file matches" (all modes)
+
+- **Description**: `st` skips NUL-containing content entirely (exit 1, no output; pre-existing whole-file binary policy). On stdin, `rg` searches past NUL bytes and prints `binary file matches (found "\0" byte ...)` with exit 0 when a match exists; for files `rg` reports matches found before the first NUL. The policies differ in both directions depending on match position.
+- **Harness Action**: The stdin differential and proptest exclude NUL-containing streams from comparison; `st`-only assertions cover the skip policy (`stdin_pipe_binary_content_exits_1` in `tests/integration/cli.rs`, `stdin_golden_binary_stream_suppressed` in `oracle_cli.rs`).
+
+### 17. `--column` Without `-n` Omits the Line Number (all modes)
+
+- **Description**: `rg --column` (without `-n`) prints `line:col:text`; `st` prints `col:text` (its line-number default is stdout-tty-gated, and `--column` alone does not force line numbers). Pre-existing rendering gap, not stdin-specific.
+- **Harness Action**: The stdin proptest filters `--column` (and `--json`, whose key order differs by design) from the flag pool.

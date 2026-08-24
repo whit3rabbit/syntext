@@ -538,8 +538,14 @@ fn overlay_full_correctness() {
     let index = Index::build(config).expect("build");
 
     // Verify baseline: st and rg agree on the initial corpus
-    assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 0, Config::default().max_file_size)
-        .expect("baseline differential mismatch");
+    assert_st_matches_rg(
+        repo.path(),
+        &index_dir,
+        "parse_query",
+        0,
+        Config::default().max_file_size,
+    )
+    .expect("baseline differential mismatch");
 
     // Now: create enough overlay entries to exceed 50% of base docs.
     // Base has 1 doc. OverlayFull triggers when overlay_docs > 50% * base_docs.
@@ -557,18 +563,28 @@ fn overlay_full_correctness() {
         Err(IndexError::OverlayFull { .. }) => {
             // Expected — now verify Tier A still holds on the pre-error tree state.
             // st should not return fabricated matches (verifier re-reads live files).
-            assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 99, Config::default().max_file_size)
-                .expect(
-                    "post-OverlayFull differential mismatch: verifier must not fabricate matches",
-                );
+            assert_st_matches_rg(
+                repo.path(),
+                &index_dir,
+                "parse_query",
+                99,
+                Config::default().max_file_size,
+            )
+            .expect("post-OverlayFull differential mismatch: verifier must not fabricate matches");
         }
         Ok(()) => {
             // The overlay didn't fill up with this corpus size.
             // This means the index has more base docs than expected (proptest shrinking,
             // or the threshold wasn't crossed). Not a failure — just skip the assertion.
             // We still verify correctness.
-            assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 99, Config::default().max_file_size)
-                .expect("post-commit differential mismatch");
+            assert_st_matches_rg(
+                repo.path(),
+                &index_dir,
+                "parse_query",
+                99,
+                Config::default().max_file_size,
+            )
+            .expect("post-commit differential mismatch");
         }
         Err(e) => panic!("unexpected commit_batch error: {e}"),
     }
@@ -617,8 +633,14 @@ fn golden_incremental_rename() {
     let index = Index::build(config).expect("build");
 
     // Verify initial state
-    assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 0, Config::default().max_file_size)
-        .unwrap();
+    assert_st_matches_rg(
+        repo.path(),
+        &index_dir,
+        "parse_query",
+        0,
+        Config::default().max_file_size,
+    )
+    .unwrap();
 
     // Rename src/old.rs -> src/new.rs
     let abs_old = repo.path().join("src/old.rs");
@@ -633,8 +655,14 @@ fn golden_incremental_rename() {
     git(&["add", "src/new.rs"]);
 
     // After rename: st must find the match in the new path, not the old
-    assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 1, Config::default().max_file_size)
-        .unwrap();
+    assert_st_matches_rg(
+        repo.path(),
+        &index_dir,
+        "parse_query",
+        1,
+        Config::default().max_file_size,
+    )
+    .unwrap();
 
     drop(index);
 }

@@ -1,0 +1,105 @@
+//! Unit tests for the stdin filter-mode guard and per-line invert.
+
+use super::*;
+
+fn args(pattern: &str, paths: &[&str]) -> SearchArgs {
+    SearchArgs {
+        pattern: pattern.to_string(),
+        paths: paths.iter().map(PathBuf::from).collect(),
+        // Unit tests of the guard assume the CLI-binary context.
+        allow_implicit_stdin: true,
+        ..SearchArgs::default()
+    }
+}
+
+#[test]
+fn no_paths_uses_stdin_only_when_searchable() {
+    assert_eq!(
+        decide_stdin(true, &args("pat", &[])),
+        StdinDecision::UseStdin
+    );
+    // /dev/null, socket, tty, or closed stdin: stay on the repo-index path.
+    assert_eq!(
+        decide_stdin(false, &args("pat", &[])),
+        StdinDecision::NotStdin
+    );
+}
+
+#[test]
+fn explicit_dash_always_wins() {
+    // `-` means stdin regardless of what is attached, matching ripgrep (it
+    // reads stdin for `-` even when stdin is /dev/null).
+    assert_eq!(
+        decide_stdin(false, &args("pat", &["-"])),
+        StdinDecision::UseStdin
+    );
+    assert_eq!(
+        decide_stdin(true, &args("pat", &["-"])),
+        StdinDecision::UseStdin
+    );
+}
+
+#[test]
+fn dash_mixed_with_paths_is_an_error() {
+    assert_eq!(
+        decide_stdin(true, &args("pat", &["-", "src"])),
+        StdinDecision::MixedDash
+    );
+    assert_eq!(
+        decide_stdin(true, &args("pat", &["src", "-"])),
+        StdinDecision::MixedDash
+    );
+}
+
+#[test]
+fn real_paths_beat_stdin() {
+    // Explicit path arguments override stdin (ripgrep rule).
+    assert_eq!(
+        decide_stdin(true, &args("pat", &["src"])),
+        StdinDecision::NotStdin
+    );
+}
+
+#[test]
+fn implicit_stdin_requires_cli_context() {
+    // In-process callers (unit tests, library use) never get implicit stdin
+    // mode; only the CLI binary entry opts in.
+    let mut a = args("pat", &[]);
+    a.allow_implicit_stdin = false;
+    assert_eq!(decide_stdin(true, &a), StdinDecision::NotStdin);
+    // The explicit dash still means stdin without the flag.
+    a.paths = vec![PathBuf::from("-")];
+    assert_eq!(decide_stdin(false, &a), StdinDecision::UseStdin);
+}
+
+#[test]
+fn empty_pattern_or_index_only_modes_never_use_stdin() {
+    assert_eq!(decide_stdin(true, &args("", &[])), StdinDecision::NotStdin);
+    let mut a = args("pat", &[]);
+    a.files_without_match = true;
+    assert_eq!(decide_stdin(true, &a), StdinDecision::NotStdin);
+    let mut a = args("pat", &[]);
+    a.sym = Some("Foo".to_string());
+    assert_eq!(decide_stdin(true, &a), StdinDecision::NotStdin);
+}
+
+#[test]
+fn invert_matches_yields_non_matching_lines() {
+    let re = regex::bytes::Regex::new("b").unwrap();
+    let matches = invert_matches(&re, Path::new(STDIN_LABEL), b"a\nbb\nc\n");
+    let lines: Vec<&str> = matches
+        .iter()
+        .map(|m| std::str::from_utf8(&m.line_content).unwrap())
+        .collect();
+    assert_eq!(lines, vec!["a", "c"]);
+    assert_eq!(matches[0].line_number, 1);
+    assert_eq!(matches[1].line_number, 3);
+    assert_eq!(matches[0].byte_offset, 0);
+    assert_eq!(matches[1].byte_offset, 5);
+}
+
+#[test]
+fn invert_matches_skips_binary_content() {
+    let re = regex::bytes::Regex::new("b").unwrap();
+    assert!(invert_matches(&re, Path::new(STDIN_LABEL), b"a\0b\n").is_empty());
+}

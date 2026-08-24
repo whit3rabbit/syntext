@@ -49,15 +49,20 @@ pub(super) fn handle_missing_index(_config: &Config, args: &SearchArgs, index_di
         return 2;
     }
 
-    // A `--quiet` search wants silence; suppress the informational notice but
-    // still run the fallback tool (rg/grep honor their own -q via argv).
-    let notice = !args.quiet;
+    // A `--quiet` search (or SYNTEXT_QUIET_FALLBACK) wants silence; suppress
+    // the informational notice but still run the fallback tool (rg/grep honor
+    // their own -q via argv). Without -q, SYNTEXT_QUIET_FALLBACK=1 gives the
+    // same silence for standing env-var opt-ins, where a per-search notice
+    // repeated on every invocation is pure stderr noise.
+    let notice = !args.quiet && !quiet_fallback_requested();
 
     if let Some(rg) = resolve_rg_binary() {
         if notice {
             eprintln!(
                 "st: no index at {dir}; using ripgrep fallback (build with `st index` for full speed)"
             );
+        } else {
+            log::debug!("st: silently using ripgrep fallback for missing index at {dir}");
         }
         return exec(&rg, filter_st_args(std::env::args_os().collect()));
     }
@@ -67,6 +72,8 @@ pub(super) fn handle_missing_index(_config: &Config, args: &SearchArgs, index_di
             eprintln!(
                 "st: no index at {dir}; ripgrep (rg) not in PATH, using grep fallback (reduced fidelity)"
             );
+        } else {
+            log::debug!("st: silently using grep fallback for missing index at {dir}");
         }
         return exec(&grep, build_grep_args(args));
     }
@@ -83,6 +90,18 @@ fn fallback_enabled(args: &SearchArgs) -> bool {
         return true;
     }
     match std::env::var("SYNTEXT_FALLBACK_RG") {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+/// True when the user asked for fallback notices to be silenced
+/// (SYNTEXT_QUIET_FALLBACK=1/true/yes/on), separate from `-q`.
+fn quiet_fallback_requested() -> bool {
+    match std::env::var("SYNTEXT_QUIET_FALLBACK") {
         Ok(v) => matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"

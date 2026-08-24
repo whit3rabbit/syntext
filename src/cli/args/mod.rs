@@ -251,6 +251,11 @@ pub struct Cli {
     #[arg(long = "exclude", value_name = "GLOB", action = clap::ArgAction::Append)]
     pub exclude: Vec<String>,
 
+    /// Exclude directories named DIR and everything under them (grep
+    /// compatibility, mapped to negated --glob specs).
+    #[arg(long = "exclude-dir", value_name = "DIR", action = clap::ArgAction::Append)]
+    pub exclude_dir: Vec<String>,
+
     /// Show all supported file types and their extensions.
     #[arg(long = "type-list")]
     pub type_list: bool,
@@ -325,4 +330,43 @@ pub struct Cli {
     /// Management subcommands (index, update, status).
     #[command(subcommand)]
     pub command: Option<ManageCommand>,
+}
+
+/// After a clap `unexpected argument` failure, detect the shape where a
+/// search pattern word was swallowed by a same-named subcommand
+/// (`st -F 'index' -n` routes `index` to `st index` and then rejects `-n`)
+/// and print the escape hatches. clap prefers subcommands over the first
+/// positional, so any pattern equal to a subcommand name misroutes; `-e` and
+/// `--` both force it back into the pattern slot.
+pub(crate) fn print_subcommand_collision_hint() {
+    const SUBCOMMANDS: &[&str] = &[
+        "init",
+        "agent",
+        "hook",
+        "rewrite",
+        "index",
+        "status",
+        "verify",
+        "update",
+        "bench-search",
+    ];
+    let mut saw_flag = false;
+    for arg in std::env::args_os().skip(1) {
+        let Some(s) = arg.to_str() else {
+            continue;
+        };
+        if s == "--" {
+            break;
+        }
+        if s.starts_with('-') && s.len() > 1 {
+            saw_flag = true;
+            continue;
+        }
+        if saw_flag && SUBCOMMANDS.contains(&s) {
+            eprintln!(
+                "st: note: '{s}' matched the '{s}' subcommand; to search for that word use `st -e {s}` or `st -- {s}`"
+            );
+            return;
+        }
+    }
 }

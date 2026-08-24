@@ -1,11 +1,13 @@
 //! Search argument parsing, query execution, and result rendering.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::index::Index;
 use crate::path_util::path_bytes;
+use crate::search::MatchedFile;
 use crate::{Config, IndexError};
 
 // Re-export for render submodules that import via `crate::cli::search::collect_scoped_paths`.
@@ -22,6 +24,14 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     if let Err((spec, msg)) = super::scope::validate_globs(&args.globs) {
         eprintln!("st: invalid glob '{spec}': {msg}");
         return 2;
+    }
+
+    // rg-style stdin filter: a pipe/redirect (or an explicit `-` path) is
+    // searched in-memory before the index is ever opened, so it also works in
+    // directories with no `.syntext` at all. Everything else falls through to
+    // the index path below.
+    if let Some(code) = super::stdin_search::maybe_run_stdin_filter(&config, args) {
+        return code;
     }
 
     let index = match Index::open(config.clone()) {
@@ -92,11 +102,29 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
             return 2;
         }
     };
-    // Verified content of matched files, reused by content renderers so they
-    // emit the bytes that matched instead of re-reading churned files.
-    let files = outcome.files;
-    let results = outcome.matches;
-    let elapsed = search_start.elapsed();
+    render_results(
+        config,
+        Some(index),
+        outcome.matches,
+        outcome.files,
+        &output_args,
+        search_start.elapsed(),
+    )
+}
+
+/// Shared result rendering and exit-code dispatch for every content search
+/// that already has its matches in hand: the indexed path passes
+/// `Some(index)`, the stdin filter passes `None`. Branches that genuinely
+/// need the index (corpus `-L` listing) treat `None` as an empty scope, which
+/// the stdin guard makes unreachable.
+pub(super) fn render_results(
+    config: &Config,
+    index: Option<&Index>,
+    results: Vec<crate::SearchMatch>,
+    files: HashMap<PathBuf, MatchedFile>,
+    output_args: &SearchArgs,
+    elapsed: std::time::Duration,
+) -> i32 {
     if output_args.search_stats {
         let matched_files: std::collections::BTreeSet<_> =
             results.iter().map(|m| &m.path).collect();
@@ -115,7 +143,11 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
         let matched: std::collections::BTreeSet<_> =
             results.iter().map(|m| m.path.clone()).collect();
         let mut found_any = false;
-        for path in collect_scoped_paths(index, config, &output_args) {
+        let scoped: Vec<PathBuf> = match index {
+            Some(ix) => collect_scoped_paths(ix, config, output_args),
+            None => Vec::new(),
+        };
+        for path in scoped {
             if matched.contains(&path) {
                 continue;
             }
@@ -136,8 +168,7 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
     }
 
     if results.is_empty() && output_args.json {
-        if let Err(err) = super::render::render_json(index, config, &results, &files, &output_args)
-        {
+        if let Err(err) = super::render::render_json(index, config, &results, &files, output_args) {
             return handle_output(err);
         }
         return 1;
@@ -174,7 +205,7 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
         return handle_output_code(super::render::render_count_matches(
             config,
             &results,
-            &output_args,
+            output_args,
         ));
     }
 
@@ -205,17 +236,17 @@ fn run_and_render(index: &Index, config: &Config, args: &SearchArgs) -> i32 {
     let has_context = output_args.after_context > 0 || output_args.before_context > 0;
 
     let render = if output_args.json {
-        super::render::render_json(index, config, &results, &files, &output_args)
+        super::render::render_json(index, config, &results, &files, output_args)
     } else if output_args.vimgrep {
-        super::render::render_vimgrep(config, &results, &output_args)
+        super::render::render_vimgrep(config, &results, output_args)
     } else if output_args.only_matching {
-        super::render::render_only_matching(config, &results, &files, &output_args)
+        super::render::render_only_matching(config, &results, &files, output_args)
     } else if has_context {
-        super::render::render_with_context(config, &results, &files, &output_args)
+        super::render::render_with_context(config, &results, &files, output_args)
     } else if output_args.heading {
-        super::render::render_heading(&results, &output_args)
+        super::render::render_heading(&results, output_args)
     } else {
-        super::render::render_flat(&results, &output_args)
+        super::render::render_flat(&results, output_args)
     };
 
     if let Err(err) = render {
@@ -243,8 +274,7 @@ pub(super) fn run_search(
     config: &Config,
     args: &SearchArgs,
 ) -> Result<crate::search::SearchOutcome, crate::IndexError> {
-    use crate::search::{MatchedFile, SearchOutcome};
-    use std::collections::HashMap;
+    use crate::search::SearchOutcome;
 
     // Explicit symbol lookup (--sym). Bypasses content routing entirely; the flag
     // only exists when the symbols feature is built. No content map (renderers

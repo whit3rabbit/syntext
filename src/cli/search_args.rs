@@ -54,6 +54,12 @@ pub(super) struct SearchArgs {
     pub refs: Option<String>,
     /// Emit ANSI color (resolved from `--color`/`--pretty`/tty in `cli/mod.rs`).
     pub color: bool,
+    /// Allow the implicit stdin filter (no paths + FIFO/regular-file stdin).
+    /// Set only by the CLI binary entry (`run()`), so in-process `cmd_search`
+    /// callers (unit tests, library use) never get behavior that depends on
+    /// how the calling process's stdin was wired. An explicit `-` path arg
+    /// means stdin regardless of this flag.
+    pub allow_implicit_stdin: bool,
 }
 
 impl Default for SearchArgs {
@@ -99,6 +105,7 @@ impl Default for SearchArgs {
             sym_kind: None,
             refs: None,
             color: false,
+            allow_implicit_stdin: false,
         }
     }
 }

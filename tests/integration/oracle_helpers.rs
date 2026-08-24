@@ -3,6 +3,7 @@
 use proptest::prelude::*;
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
@@ -177,6 +178,126 @@ pub fn run_differential(
 
 pub fn rg_available() -> bool {
     Command::new("rg").arg("--version").output().is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Stdin-Filter Differential
+// ---------------------------------------------------------------------------
+
+/// Pipe `stream` into `st` and `rg` (no path arguments, no repo on disk) and
+/// require identical stdout bytes and normalized exit codes. ripgrep's
+/// implicit-stdin contract is the spec st's stdin filter mode implements, so
+/// byte equality is the bar for the flag shapes covered by the goldens.
+///
+/// `explicit_dash` appends `-` to st's argv instead of relying on implicit
+/// pipe detection, exercising the cross-platform path (implicit detection is
+/// unix-only: /dev/stdin is stat'd as FIFO/regular-file).
+pub fn run_stdin_differential(
+    stream: &[u8],
+    query: &str,
+    flags: &[&str],
+    explicit_dash: bool,
+) -> Result<(), String> {
+    if !rg_available() {
+        return Ok(());
+    }
+    // Rare macOS fdesc stat("/dev/stdin") EBADF races under heavy parallel
+    // spawning make st fall back to repo search for one invocation. A genuine
+    // divergence reproduces on every attempt, so retry once before failing.
+    match run_stdin_differential_once(stream, query, flags, explicit_dash) {
+        Ok(()) => Ok(()),
+        Err(_) => run_stdin_differential_once(stream, query, flags, explicit_dash),
+    }
+}
+
+/// Raw `(exit_code, stdout)` for `st` and `rg` reading the same piped stream,
+/// for tests that apply their own normalization before comparing.
+pub fn stdin_raw_outputs(
+    stream: &[u8],
+    query: &str,
+    flags: &[&str],
+) -> Result<((i32, Vec<u8>), (i32, Vec<u8>)), String> {
+    if !rg_available() {
+        return Ok(((0, Vec::new()), (0, Vec::new())));
+    }
+    let st_bin = env!("CARGO_BIN_EXE_st");
+    let mut st_args: Vec<&str> = flags.to_vec();
+    st_args.push(query);
+    let mut rg_args: Vec<&str> = flags.to_vec();
+    rg_args.push(query);
+    let (st_code, st_out, _) = run_piped(st_bin, &st_args, stream)?;
+    let (rg_code, rg_out, _) = run_piped("rg", &rg_args, stream)?;
+    Ok(((st_code, st_out), (rg_code, rg_out)))
+}
+
+/// Spawn `bin` with `args` and `stream` piped to its stdin; capture everything.
+fn run_piped(bin: &str, args: &[&str], stream: &[u8]) -> Result<(i32, Vec<u8>, Vec<u8>), String> {
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn {bin}: {e}"))?;
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(stream)
+        .map_err(|e| format!("failed to write stdin to {bin}: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to wait {bin}: {e}"))?;
+    Ok((out.status.code().unwrap_or(-1), out.stdout, out.stderr))
+}
+
+fn run_stdin_differential_once(
+    stream: &[u8],
+    query: &str,
+    flags: &[&str],
+    explicit_dash: bool,
+) -> Result<(), String> {
+    let st_bin = env!("CARGO_BIN_EXE_st");
+
+    let mut st_args: Vec<&str> = flags.to_vec();
+    st_args.push(query);
+    if explicit_dash {
+        st_args.push("-");
+    }
+    let mut rg_args: Vec<&str> = flags.to_vec();
+    rg_args.push(query);
+
+    let (st_code, st_out, st_err) = run_piped(st_bin, &st_args, stream)?;
+    let (rg_code, rg_out, rg_err) = run_piped("rg", &rg_args, stream)?;
+    let norm = |c: i32| {
+        if c == 0 {
+            0
+        } else if c == 1 {
+            1
+        } else {
+            2
+        }
+    };
+    if norm(st_code) != norm(rg_code) {
+        return Err(format!(
+            "stdin differential exit mismatch: st={st_code} rg={rg_code}\n\
+             st stderr: {}\nrg stderr: {}",
+            String::from_utf8_lossy(&st_err),
+            String::from_utf8_lossy(&rg_err),
+        ));
+    }
+    if st_out != rg_out {
+        return Err(format!(
+            "stdin differential stdout mismatch for query {query:?} flags {flags:?}\n\
+             st (exit {st_code}):\n{}\n\
+             st stderr: {}\n\
+             rg (exit {rg_code}):\n{}",
+            String::from_utf8_lossy(&st_out),
+            String::from_utf8_lossy(&st_err),
+            String::from_utf8_lossy(&rg_out),
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@
 //! cargo test --test correctness
 //! ```
 //!
-//! Requires `rg` on PATH. The oracle is pinned to `ripgrep 15.1.0`, and tests
+//! Requires `rg` on PATH. The oracle is pinned to `ripgrep 15.2.0`, and tests
 //! are skipped (not failed) if `rg` is absent.
 //!
 //! # Test Pattern Set (T011)
@@ -62,7 +62,7 @@ fn normalize_oracle_line_content(mut line_content: Vec<u8>) -> Vec<u8> {
 // Oracle helpers
 // ---------------------------------------------------------------------------
 
-const EXPECTED_RG_VERSION: &str = "ripgrep 15.1.0";
+const EXPECTED_RG_VERSION: &str = "ripgrep 15.2.0";
 
 /// Run `rg` on the corpus and return exact match tuples.
 ///

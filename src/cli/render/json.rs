@@ -49,8 +49,12 @@ fn get_file_size(snap: &crate::index::IndexSnapshot, path: &std::path::Path) -> 
 }
 
 /// Emit rg-compatible NDJSON for all matches: begin/match.../end per file + summary.
+///
+/// `index` is `None` for the stdin filter (no index was opened); the summary
+/// then reports the stdin stream as the single searched input and skips the
+/// per-path size lookup, which only the in-memory index can answer.
 pub(in crate::cli) fn render_json(
-    index: &Index,
+    index: Option<&Index>,
     config: &Config,
     matches: &[crate::SearchMatch],
     files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
@@ -68,7 +72,13 @@ pub(in crate::cli) fn render_json(
     let mut total_bytes_printed = 0usize;
     let mut total_matched_lines = 0usize;
     let mut total_matches = 0usize;
-    let scoped_paths = collect_scoped_paths(index, config, args);
+    let scoped_paths = match index {
+        Some(ix) => collect_scoped_paths(ix, config, args),
+        // stdin filter: the stream itself is the one searched input.
+        None => vec![std::path::PathBuf::from(
+            crate::cli::stdin_search::STDIN_LABEL,
+        )],
+    };
     let total_searches = scoped_paths.len();
     let searches_with_match = by_file.len();
     let canonical_root = repo_canonical_root(config);
@@ -157,12 +167,13 @@ pub(in crate::cli) fn render_json(
         write_json_line(&mut out, &end)?;
     }
 
-    let snap = index.snapshot();
-    for path in scoped_paths {
-        if by_file.contains_key(&path) {
-            continue;
+    if let Some(snap) = index.map(Index::snapshot) {
+        for path in scoped_paths {
+            if by_file.contains_key(&path) {
+                continue;
+            }
+            total_bytes_searched += get_file_size(&snap, &path);
         }
-        total_bytes_searched += get_file_size(&snap, &path);
     }
 
     // summary
