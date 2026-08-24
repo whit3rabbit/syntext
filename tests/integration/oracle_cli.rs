@@ -293,6 +293,7 @@ fn stdin_golden_flag_matrix() {
         &["-o"][..],
         &["-F"][..],
         &["-H"][..],
+        &["--column"][..],
         &["--byte-offset"][..],
         &["--vimgrep"][..],
         &["-n", "-i"][..],
@@ -349,11 +350,11 @@ proptest! {
         // Concatenate the corpus into one stream; -F is dropped for queries
         // containing regex metacharacters (same rule as the file-based test).
         let has_regex_meta = query.chars().any(|c| matches!(c, '.' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '|' | '^' | '$' | '\\'));
-        // --column diverges (pre-existing st flat-render gap, see
-        // DIVERGENCES.md); --json key order differs by design. Both are
-        // outside stdin scope; filter them from this byte-equality oracle.
+        // --json key order differs by design; filter it from this
+        // byte-equality oracle. (--column now participates: it forces
+        // line:col:text like rg.)
         let effective_flags: Vec<&str> = flags.iter()
-            .filter(|&&f| f != "--column" && f != "--json" && !(f == "-F" && has_regex_meta))
+            .filter(|&&f| f != "--json" && !(f == "-F" && has_regex_meta))
             .copied()
             .collect();
         // Concatenate only plain UTF-8 text files: a UTF-16 BOM landing

@@ -82,8 +82,3 @@ This document enumerates the known, intentional, and documented correctness/sema
 
 - **Description**: `st` skips NUL-containing content entirely (exit 1, no output; pre-existing whole-file binary policy). On stdin, `rg` searches past NUL bytes and prints `binary file matches (found "\0" byte ...)` with exit 0 when a match exists; for files `rg` reports matches found before the first NUL. The policies differ in both directions depending on match position.
 - **Harness Action**: The stdin differential and proptest exclude NUL-containing streams from comparison; `st`-only assertions cover the skip policy (`stdin_pipe_binary_content_exits_1` in `tests/integration/cli.rs`, `stdin_golden_binary_stream_suppressed` in `oracle_cli.rs`).
-
-### 17. `--column` Without `-n` Omits the Line Number (all modes)
-
-- **Description**: `rg --column` (without `-n`) prints `line:col:text`; `st` prints `col:text` (its line-number default is stdout-tty-gated, and `--column` alone does not force line numbers). Pre-existing rendering gap, not stdin-specific.
-- **Harness Action**: The stdin proptest filters `--column` (and `--json`, whose key order differs by design) from the flag pool.

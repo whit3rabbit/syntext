@@ -13,9 +13,10 @@ All notable changes to this project will be documented in this file.
 ### Behavior changes
 - **`cmd | st 'pat'` previously ignored stdin and silently searched the whole repo index** (exit 0 with wrong results); it now filters the stream. Scripts relying on the old (incorrect) behavior must pass an explicit path argument.
 - `st 'pat' -` previously matched nothing (the `-` was a literal path filter, exit 1); it now reads stdin.
+- `--column` now forces line numbers on when neither `-n` nor `-N` was passed (`line:col:text`, matching rg); previously a piped `st --column 'pat'` printed `col:text`. An explicit `-N --column` still prints `col:text` (divergence #17 resolved).
 
-### Known divergences (see `tests/oracle/DIVERGENCES.md` #13-#17)
-- Trailing `\r` is stripped from rendered lines (pre-existing, all modes), binary content is skipped entirely, and `--column` without `-n` omits the line number — all now explicitly documented since stdin byte-equality comparisons exposed them.
+### Known divergences (see `tests/oracle/DIVERGENCES.md`)
+- Trailing `\r` is stripped from rendered lines and binary content is skipped entirely (pre-existing, all modes) — documented since stdin byte-equality comparisons exposed them.
 
 ### Changed
 - Differential-oracle ripgrep pin bumped 15.1.0 → 15.2.0 (`tests/oracle/ORACLE_VERSION`, `EXPECTED_RG_VERSION`, CI rg install URLs in `ci.yml`/`nightly.yml`). All correctness/oracle suites re-baselined green against 15.2.0 with no behavioral divergence.

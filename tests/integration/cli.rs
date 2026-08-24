@@ -2717,6 +2717,37 @@ fn stdin_pipe_count_is_bare_by_default() {
 
 #[test]
 #[cfg(unix)]
+fn stdin_pipe_column_without_n_prints_line_and_column() {
+    // rg --column forces line:col:text even when piped stdout would
+    // otherwise disable line numbers (former DIVERGENCES.md #17).
+    let out = run_with_stdin(&["--column", "b"], b"a\nbb\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "2:1:bb\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_pipe_explicit_N_beats_column_line_numbers() {
+    // rg -N --column prints col:text; an explicit -N wins over --column.
+    let out = run_with_stdin(&["-N", "--column", "b"], b"a\nbb\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "1:bb\n");
+}
+
+#[test]
+fn indexed_column_without_n_prints_line_and_column() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.txt"), "alpha\nCOLUMNNEEDLE here\n");
+    build_index(repo.path(), &index);
+
+    let out = run_repo(repo.path(), &index, &["-H", "--column", "COLUMNNEEDLE"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "a.txt:2:1:COLUMNNEEDLE here\n");
+}
+
+#[test]
+#[cfg(unix)]
 fn stdin_pipe_files_with_matches_uses_stdin_label() {
     let out = run_with_stdin(&["-l", "b"], b"a\nb\n");
     assert_eq!(out.status.code(), Some(0));

@@ -116,7 +116,10 @@ impl SearchArgs {
         let stdout_is_tty = std::io::stdout().is_terminal();
 
         if !self.line_number && !self.no_line_number {
-            effective.no_line_number = !stdout_is_tty;
+            // rg --column forces line:col:text even when a non-tty stdout
+            // would otherwise drop line numbers. An explicit -N still wins
+            // (rg -N --column prints col:text).
+            effective.no_line_number = !stdout_is_tty && !self.column;
         }
 
         if self.with_filename {
