@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
 - `--exclude-dir DIR` (grep compatibility): mapped to negated globs covering the directory at any depth.
 - Subcommand-collision hint: when a clap `unexpected argument` error was caused by a pattern word matching a subcommand name (`st -F 'index' -n` routes to `st index`), stderr now suggests `st -e <word>` or `st -- <word>`.
 - `SYNTEXT_QUIET_FALLBACK=1` env var to silence the per-search fallback notice (same effect as `-q`, without suppressing match output).
+- `-f/--file PATTERNFILE` (rg parity): patterns read one per line and OR-combined with any `-e` patterns (interior empty lines are always-matching empty patterns; trailing newline is a terminator; `-F` escapes each alternative; empty file exits 1 silently like rg; unreadable file exits 2). Previously a hard exit-2 no-op.
+- `--rust` / `--rs`: select Rust source files only (equivalent to `-t rs`; a grep-ism seen in mined agent logs).
+- Fixed a pre-existing phantom trailing empty line: a zero-width regex match at end-of-content (e.g. an empty `-e ''`/`-f` pattern line, or `x|`) after a final newline used to render as an extra empty numbered line; rg prints none.
 
 ### Behavior changes
 - **`cmd | st 'pat'` previously ignored stdin and silently searched the whole repo index** (exit 0 with wrong results); it now filters the stream. Scripts relying on the old (incorrect) behavior must pass an explicit path argument.

@@ -96,11 +96,6 @@ pub struct CompatibilityArgs {
     #[arg(long = "regex-size-limit", value_name = "NUM")]
     pub regex_size_limit: Option<String>,
 
-    // --- Pattern source ---
-    /// Read patterns from file (no-op).
-    #[arg(short = 'f', long = "file", value_name = "PATTERNFILE")]
-    pub pattern_file: Option<PathBuf>,
-
     // --- Type management ---
     /// Add a custom file type definition (no-op).
     #[arg(long = "type-add", value_name = "TYPESPEC", action = clap::ArgAction::Append)]

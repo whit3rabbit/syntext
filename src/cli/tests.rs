@@ -1055,7 +1055,9 @@ fn noops_pattern_file_type_management_are_accepted() {
         "pat",
     ])
     .unwrap();
-    assert_eq!(cli.compat.pattern_file, Some(PathBuf::from("/tmp/p.txt")));
+    // -f/--file is a real flag now (patterns are read and ORed); only the
+    // type-management no-ops remain in the compat bag.
+    assert_eq!(cli.pattern_file, Some(PathBuf::from("/tmp/p.txt")));
     assert_eq!(cli.compat.type_add, ["mine:*.x"]);
     assert_eq!(cli.compat.type_clear, ["go"]);
     assert_eq!(cli.compat.iglob.as_deref(), Some("*.txt"));

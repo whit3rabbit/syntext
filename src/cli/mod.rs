@@ -40,7 +40,7 @@ use search::{cmd_search, SearchArgs};
 pub fn run() -> i32 {
     // try_parse (not parse) so a parse failure can be annotated with the
     // pattern-vs-subcommand collision hint below before exiting.
-    let cli = match Cli::try_parse() {
+    let mut cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
             // Print clap's error first, then the hint, so the note reads as
@@ -117,6 +117,34 @@ pub fn run() -> i32 {
             // no -e) under -F, `fixed_strings` stays set so
             // `build_effective_pattern` escapes it (preserving the shared
             // -w/-x wrapping path).
+            // -f/--file PATTERNFILE: one pattern per line, OR-combined with
+            // any -e patterns by the multi-e join below (empty pattern lines
+            // are kept — rg treats them as always-matching). A trailing
+            // newline is a file terminator, not an empty pattern; interior
+            // empty lines are. Lines are taken verbatim (no \r stripping).
+            if let Some(ref pf) = cli.pattern_file {
+                match std::fs::read_to_string(pf) {
+                    Ok(text) => {
+                        let mut lines: Vec<String> =
+                            text.split('\n').map(str::to_string).collect();
+                        if lines.last().is_some_and(String::is_empty) {
+                            lines.pop();
+                        }
+                        if lines.is_empty() && cli.regexp.is_empty() {
+                            // rg exits 1 silently on an empty pattern file
+                            // (any positional is a path by then, so there is
+                            // no pattern left to search with).
+                            return 1;
+                        }
+                        cli.regexp.extend(lines);
+                    }
+                    Err(e) => {
+                        eprintln!("st: -f/--file '{}': {e}", pf.display());
+                        return 2;
+                    }
+                }
+            }
+
             let globs = cli.combined_globs();
             // True when multiple -e patterns under -F have already been escaped
             // and joined into `pattern` below; used to suppress the second
@@ -182,16 +210,6 @@ pub fn run() -> i32 {
                 eprintln!(
                     "st: --iglob '{glob}' is not implemented; results may include excluded paths (use -g '!{glob}' for negation)"
                 );
-            }
-            if let Some(ref pf) = cli.compat.pattern_file {
-                eprintln!(
-                    "st: -f/--file '{}' is not implemented; no patterns were read from that file",
-                    pf.display()
-                );
-                // Without a pattern from the file there is nothing to search.
-                // Return 2 (error) so the caller can diagnose the issue rather
-                // than silently returning zero matches.
-                return 2;
             }
             if cli.compat.multiline {
                 eprintln!(
@@ -303,6 +321,13 @@ pub fn run() -> i32 {
             let color =
                 render::resolve_color(render::ColorWhen::parse(cli.color.as_deref()), cli.pretty);
 
+            // --rust (alias --rs): a grep-ism for "Rust files". st's -t is an
+            // extension filter, so this is exactly `-t rs`.
+            let mut file_types = cli.file_type;
+            if cli.rust {
+                file_types.push("rs".to_string());
+            }
+
             let ctx = cli.context.unwrap_or(0);
             let search_args = SearchArgs {
                 pattern,
@@ -328,7 +353,7 @@ pub fn run() -> i32 {
                 no_filename: cli.no_filename,
                 after_context: cli.after_context.unwrap_or(ctx),
                 before_context: cli.before_context.unwrap_or(ctx),
-                file_types: cli.file_type,
+                file_types,
                 type_nots: cli.type_not,
                 globs,
                 column: cli.column || cli.vimgrep,

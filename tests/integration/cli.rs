@@ -2664,6 +2664,88 @@ fn unsupported_search_flags_warn_but_still_search() {
 }
 
 // ---------------------------------------------------------------------------
+// -f/--file pattern files and --rust/--rs type selector
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn pattern_file_ors_patterns_like_multi_e() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let pats = dir.path().join("pats.txt");
+    fs::write(&pats, "alpha\ngamma\n").unwrap();
+    let out = run_with_stdin(&["-n", "-f", pats.to_str().unwrap(), "-"], b"alpha
+beta
+gamma
+");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "1:alpha\n3:gamma\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn pattern_file_empty_line_matches_everything() {
+    // rg semantics: an interior empty line is an empty pattern, which
+    // matches every line.
+    let dir = tempfile::TempDir::new().unwrap();
+    let pats = dir.path().join("pats.txt");
+    fs::write(&pats, "alpha\n\ngamma\n").unwrap();
+    let out = run_with_stdin(&["-n", "-f", pats.to_str().unwrap(), "-"], b"alpha
+beta
+gamma
+");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "1:alpha\n2:beta\n3:gamma\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn pattern_file_fixed_strings_escape_each_alternative() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let pats = dir.path().join("pats.txt");
+    fs::write(&pats, "al.ha\nga\n").unwrap();
+    let out = run_with_stdin(&["-n", "-F", "-f", pats.to_str().unwrap(), "-"], b"alpha
+al.ha
+");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    // Only the literal `al.ha` matches; under -F the dot is not a wildcard.
+    assert_eq!(stdout_text(&out), "2:al.ha\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn pattern_file_missing_exits_2() {
+    let out = run_with_stdin(&["-f", "/nonexistent-definitely-st"], b"x\n");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr_text(&out).contains("-f/--file"), "stderr:\n{}", stderr_text(&out));
+}
+
+#[test]
+#[cfg(unix)]
+fn pattern_file_empty_exits_1_like_rg() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let pats = dir.path().join("empty.pats");
+    fs::write(&pats, "").unwrap();
+    let out = run_with_stdin(&["-f", pats.to_str().unwrap()], b"x\n");
+    assert_eq!(out.status.code(), Some(1), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "");
+}
+
+#[test]
+fn rust_flag_selects_rs_files() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.rs"), "RUSTNEEDLE\n");
+    write_text(&repo.path().join("b.txt"), "RUSTNEEDLE\n");
+    build_index(repo.path(), &index);
+
+    for flag in ["--rust", "--rs"] {
+        let out = run_repo(repo.path(), &index, &[flag, "-l", "RUSTNEEDLE"]);
+        assert_eq!(out.status.code(), Some(0), "flag {flag}: {}", stderr_text(&out));
+        assert_eq!(stdout_text(&out), "a.rs\n", "flag {flag}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // stdin filter mode (rg-style `cat ... | st pat`)
 // ---------------------------------------------------------------------------
 

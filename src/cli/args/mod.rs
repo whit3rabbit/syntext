@@ -92,6 +92,11 @@ pub struct Cli {
     )]
     pub regexp: Vec<String>,
 
+    /// Read patterns from PATTERNFILE, one per line (OR-combined like -e).
+    /// Interior empty lines are empty patterns (match every line), like rg.
+    #[arg(short = 'f', long = "file", value_name = "PATTERNFILE")]
+    pub pattern_file: Option<PathBuf>,
+
     // --- Output format ---
     /// Print only paths of files with at least one match.
     #[arg(
@@ -224,6 +229,10 @@ pub struct Cli {
         action = clap::ArgAction::Append
     )]
     pub file_type: Vec<String>,
+
+    /// Search only Rust source files (equivalent to `-t rs`).
+    #[arg(long = "rust", alias = "rs")]
+    pub rust: bool,
 
     /// Exclude file type extension.
     #[arg(
