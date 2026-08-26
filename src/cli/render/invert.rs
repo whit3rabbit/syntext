@@ -112,6 +112,7 @@ fn render_invert_match_scan(
                             no_num: args.no_line_number,
                             null: args.null,
                             color: args.color,
+                    byte_offset: None,
                         },
                         rel_path.as_path(),
                         line_num as usize,

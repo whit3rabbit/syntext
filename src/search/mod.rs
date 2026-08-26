@@ -26,6 +26,7 @@ use resolver::resolve_doc;
 use rayon::prelude::*;
 use regex::bytes::RegexBuilder;
 
+use crate::index::is_binary;
 use crate::index::IndexSnapshot;
 use crate::path::filter::{build_filter, matches_path_filter};
 use crate::query::{literal_grams, route_query, GramQuery, QueryRoute};
@@ -258,7 +259,12 @@ pub(crate) fn search_with_content(
         }
 
         let file_path = rel_path.as_path();
-        let file_matches = if verify_pattern.is_empty() {
+        let file_matches = if is_binary(&content) {
+            // Indexed-path binary policy: never-indexed binary files stay
+            // invisible (documented DIVERGENCES.md #16 residual); a file
+            // that turned binary after indexing is skipped here too.
+            Vec::new()
+        } else if verify_pattern.is_empty() {
             verify_empty(file_path, &content, opts.skip_line_content)
         } else {
             match &route {

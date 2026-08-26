@@ -2810,7 +2810,7 @@ fn stdin_pipe_column_without_n_prints_line_and_column() {
 
 #[test]
 #[cfg(unix)]
-fn stdin_pipe_explicit_N_beats_column_line_numbers() {
+fn stdin_pipe_explicit_no_line_number_beats_column_line_numbers() {
     // rg -N --column prints col:text; an explicit -N wins over --column.
     let out = run_with_stdin(&["-N", "--column", "b"], b"a\nbb\n");
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
@@ -2859,8 +2859,18 @@ fn stdin_pipe_inverts_per_line() {
 
 #[test]
 #[cfg(unix)]
-fn stdin_pipe_binary_content_exits_1() {
+fn stdin_pipe_binary_content_prints_notice_like_rg() {
+    // rg semantics: a NUL in the stream replaces all line output with the
+    // binary notice, exit 0 (match position relative to the NUL is
+    // irrelevant); no match at all stays silent with exit 1.
     let out = run_with_stdin(&["a"], b"a\0b\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(
+        stdout_text(&out),
+        "binary file matches (found \"\\0\" byte around offset 1)\n"
+    );
+
+    let out = run_with_stdin(&["zzq"], b"a\0b\n");
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(stdout_text(&out), "");
 }
@@ -3003,6 +3013,41 @@ fn stdin_dash_mixed_with_paths_searches_both() {
     let out = run(&["-n", "-H", "zzq", "-", "."], b"plain\n");
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(stdout_text(&out), "");
+}
+
+#[test]
+fn stdin_dash_mixed_with_binary_stream_prints_notice_in_position() {
+    // rg semantics for a binary stdin half in a mixed search: the notice
+    // replaces the stdin lines but not the file results, in argv position.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.txt"), "INDEXNEEDLE\n");
+    build_index(repo.path(), &index);
+
+    let mut child = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index)
+        .args(["-n", "-H", "NEEDLE", "-", "."])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn st");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"STDIN\0NEEDLE\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait st");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(
+        stdout_text(&out),
+        "<stdin>: binary file matches (found \"\\0\" byte around offset 5)\na.txt:1:INDEXNEEDLE\n"
+    );
 }
 
 #[test]

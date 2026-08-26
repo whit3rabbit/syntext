@@ -34,12 +34,11 @@ pub(in crate::cli) fn render_flat_to(
     for m in matches {
         let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
         let line = apply_output_modifiers(&raw, &m.line_content, re.as_ref(), args);
-        if args.byte_offset {
-            // rg prints the 0-based byte offset of the line start, not the
-            // match. submatch_start is the match column within the line.
-            let line_start = m.byte_offset.saturating_sub(m.submatch_start as u64);
-            write!(out, "{}:", line_start)?;
-        }
+        // rg prints the 0-based byte offset of the line start, not the
+        // match, and places it last among the prefix fields.
+        let line_start = args
+            .byte_offset
+            .then(|| m.byte_offset.saturating_sub(m.submatch_start as u64));
         if args.column {
             let spans = match_spans(re.as_ref(), &line.content);
             if !args.no_filename {
@@ -55,6 +54,9 @@ pub(in crate::cli) fn render_flat_to(
                 .saturating_sub(line.trimmed_bytes)
                 .max(1);
             write!(out, "{col}:")?;
+            if let Some(byte) = line_start {
+                write!(out, "{byte}:")?;
+            }
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;
         } else {
@@ -66,6 +68,7 @@ pub(in crate::cli) fn render_flat_to(
                     no_num: args.no_line_number,
                     null: args.null,
                     color: args.color,
+                    byte_offset: line_start,
                 },
                 &m.path,
                 m.line_number as usize,
@@ -116,13 +119,14 @@ pub(in crate::cli) fn render_heading_to(
         let raw = apply_replace(re.as_ref(), args.replace.as_deref(), &m.line_content);
         let line = apply_output_modifiers(&raw, &m.line_content, re.as_ref(), args);
         let spans = match_spans(re.as_ref(), &line.content);
-        if args.byte_offset {
-            // rg prints the 0-based byte offset of the line start, not the
-            // match. submatch_start is the match column within the line.
-            let line_start = m.byte_offset.saturating_sub(m.submatch_start as u64);
-            write!(out, "{}:", line_start)?;
-        }
+        // rg's field order: [line:][col:]byte:content (byte last).
+        let line_start = args
+            .byte_offset
+            .then(|| m.byte_offset.saturating_sub(m.submatch_start as u64));
         if args.no_line_number {
+            if let Some(byte) = line_start {
+                write!(out, "{byte}:")?;
+            }
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;
         } else if args.column {
@@ -131,11 +135,17 @@ pub(in crate::cli) fn render_heading_to(
                 .max(1);
             write_styled_num(out, args.color, styles.line, m.line_number as usize)?;
             write!(out, ":{col}:")?;
+            if let Some(byte) = line_start {
+                write!(out, "{byte}:")?;
+            }
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;
         } else {
             write_styled_num(out, args.color, styles.line, m.line_number as usize)?;
             write!(out, ":")?;
+            if let Some(byte) = line_start {
+                write!(out, "{byte}:")?;
+            }
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;
         }
@@ -176,18 +186,19 @@ pub(in crate::cli) fn render_vimgrep_to(
             // replaced but the column still points at the pre-replacement match.
             let col = hit.start() + 1; // 1-based
             let col = col.saturating_sub(line.trimmed_bytes).max(1);
-            if args.byte_offset {
-                // Line-start offset, matching render_flat_to/render_heading_to
-                // and rg (byte-offset without -o is the line start, not the
-                // match). Constant across hits on the same line.
-                let line_start = m.byte_offset.saturating_sub(m.submatch_start as u64);
-                write!(out, "{}:", line_start)?;
-            }
             write_styled(out, args.color, styles.path, &path_bytes(&m.path))?;
             let path_sep = if args.null { b'\0' } else { b':' };
             out.write_all(&[path_sep])?;
             write_styled_num(out, args.color, styles.line, m.line_number as usize)?;
             write!(out, ":{col}:")?;
+            if args.byte_offset {
+                // Line-start offset, matching render_flat_to/render_heading_to
+                // and rg (byte-offset without -o is the line start, not the
+                // match). Constant across hits on the same line, printed
+                // last among the prefix fields like rg.
+                let line_start = m.byte_offset.saturating_sub(m.submatch_start as u64);
+                write!(out, "{line_start}:")?;
+            }
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;
         }

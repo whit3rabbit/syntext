@@ -124,11 +124,26 @@ fn run_and_render(
         }
     };
     let (mut results, mut files) = (outcome.matches, outcome.files);
+    let mut trailing_notice: Option<u64> = None;
+    let mut notice_printed = false;
     if let Some(half) = stdin_half {
-        // rg processes `-` in argv position order; splice the stdin run
-        // accordingly. Per-path runs stay consecutive either way, which is
-        // what heading grouping and per-file truncation require.
-        if half.stdin_first {
+        if let Some(offset) = half.binary_notice {
+            // rg replaces a binary stdin half's line output with the
+            // `binary file matches` notice, in this half's position.
+            if half.stdin_first {
+                super::stdin_search::print_binary_notice(
+                    offset,
+                    output_args.no_filename,
+                    output_args.vimgrep,
+                );
+                notice_printed = true;
+            } else {
+                trailing_notice = Some(offset);
+            }
+        } else if half.stdin_first {
+            // rg processes `-` in argv position order; splice the stdin run
+            // accordingly. Per-path runs stay consecutive either way, which
+            // is what heading grouping and per-file truncation require.
             let mut merged = half.matches;
             merged.append(&mut results);
             results = merged;
@@ -139,14 +154,27 @@ fn run_and_render(
             files.entry(p).or_insert(mf);
         }
     }
-    render_results(
+    let code = render_results(
         config,
         Some(index),
         results,
         files,
         &output_args,
         search_start.elapsed(),
-    )
+    );
+    if let Some(offset) = trailing_notice {
+        super::stdin_search::print_binary_notice(
+            offset,
+            output_args.no_filename,
+            output_args.vimgrep,
+        );
+        notice_printed = true;
+    }
+    // A printed notice means the stdin half matched; rg exits 0 overall.
+    if notice_printed && code == 1 {
+        return 0;
+    }
+    code
 }
 
 /// Shared result rendering and exit-code dispatch for every content search

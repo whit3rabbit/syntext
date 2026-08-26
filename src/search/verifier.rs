@@ -13,13 +13,14 @@ use std::path::Path;
 use memchr::{memchr, memchr_iter, memmem, memrchr};
 use regex::bytes::Regex;
 
-use crate::index::is_binary;
 use crate::SearchMatch;
 
 /// Verify a literal pattern against raw file bytes using `memchr::memmem`.
 ///
 /// Case-sensitive. Returns one `SearchMatch` per matching line.
-/// Binary content (null bytes) causes the file to be skipped entirely.
+/// NUL bytes are ordinary content here; callers own the binary-content
+/// policy (the indexed path skips binary files at the call site, the stdin
+/// path implements rg's notice semantics).
 ///
 /// When `skip_line_content` is true, `line_content` is left empty (no per-line
 /// byte copy) for callers that only need which files/lines matched (`-l`/`-L`).
@@ -29,9 +30,6 @@ pub fn verify_literal(
     content: &[u8],
     skip_line_content: bool,
 ) -> Vec<SearchMatch> {
-    if is_binary(content) {
-        return Vec::new(); // skip binary files
-    }
     let finder = memmem::Finder::new(pattern.as_bytes());
     let mut matches = Vec::new();
 
@@ -116,7 +114,8 @@ pub fn verify_literal(
 /// Verify a compiled regex against raw file bytes.
 ///
 /// Returns one `SearchMatch` per matching line.
-/// Binary content (null bytes) causes the file to be skipped entirely.
+/// NUL bytes are ordinary content here; callers own the binary-content
+/// policy (see [`verify_literal`]).
 ///
 /// When `skip_line_content` is true, `line_content` is left empty (see
 /// [`verify_literal`]).
@@ -126,9 +125,6 @@ pub fn verify_regex(
     content: &[u8],
     skip_line_content: bool,
 ) -> Vec<SearchMatch> {
-    if is_binary(content) {
-        return Vec::new(); // skip binary files
-    }
     let mut matches = Vec::new();
 
     let mut last_line_start = usize::MAX;
@@ -216,10 +212,9 @@ pub fn verify_regex(
 }
 
 /// Match every line of the file (for empty pattern searches).
+/// NUL bytes are ordinary content here; callers own the binary-content
+/// policy (see [`verify_literal`]).
 pub fn verify_empty(path: &Path, content: &[u8], skip_line_content: bool) -> Vec<SearchMatch> {
-    if is_binary(content) {
-        return Vec::new();
-    }
     let mut matches = Vec::new();
     let mut line_start = 0;
     let mut line_num = 1;

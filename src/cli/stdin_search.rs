@@ -104,6 +104,11 @@ pub(super) struct StdinHalf {
     /// `-` preceded every real path in argv order; rg prints stdin results
     /// before file results in that case (and after otherwise).
     pub(super) stdin_first: bool,
+    /// When the stream is binary (NUL) and line output was suppressed in
+    /// favor of rg's `binary file matches` notice: the offset of the first
+    /// NUL byte. The caller prints the notice in this half's position and
+    /// must not print the (cleared) line matches.
+    pub(super) binary_notice: Option<u64>,
 }
 
 /// What `cmd_search` should do after the stdin guard runs.
@@ -134,16 +139,34 @@ pub(super) fn run_or_collect_stdin(
                 return StdinFilterOutcome::Done(2);
             }
             match collect_stdin(args) {
-                Ok((matches, files)) => StdinFilterOutcome::Mixed(StdinHalf {
+                Ok((matches, files, binary_notice)) => StdinFilterOutcome::Mixed(StdinHalf {
                     matches,
                     files,
                     stdin_first: dash_precedes_real_paths(args),
+                    binary_notice,
                 }),
                 Err(code) => StdinFilterOutcome::Done(code),
             }
         }
         StdinDecision::UseStdin => StdinFilterOutcome::Done(run_stdin_filter(config, args)),
     }
+}
+
+/// rg's notice for binary input, honoring the mode's filename rules
+/// (`--vimgrep` always prefixes; the flat default does only when filenames
+/// are shown).
+pub(super) fn print_binary_notice(nul_offset: u64, no_filename: bool, vimgrep: bool) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    if !no_filename || vimgrep {
+        // rg's notice format is `path: text` (note the space), unlike its
+        // `path:line:content` match format.
+        let _ = write!(out, "{STDIN_LABEL}: ");
+    }
+    let _ = writeln!(
+        out,
+        "binary file matches (found \"\\0\" byte around offset {nul_offset})"
+    );
 }
 
 /// True when the first `-` path argument precedes the first real path (rg
@@ -157,24 +180,39 @@ fn dash_precedes_real_paths(args: &SearchArgs) -> bool {
     }
 }
 
+/// The collected stdin half of a search: line matches, the `<stdin>` file
+/// entry for renderers that re-read content, and (when rg's binary policy
+/// suppressed the line output) the offset of the first NUL byte.
+type StdinCollect = (
+    Vec<crate::SearchMatch>,
+    HashMap<PathBuf, crate::search::MatchedFile>,
+    Option<u64>,
+);
+
 /// Read stdin and produce its match half. `Err` carries the process exit
 /// code for read/regex failures.
-fn collect_stdin(
-    args: &SearchArgs,
-) -> Result<
-    (
-        Vec<crate::SearchMatch>,
-        HashMap<PathBuf, crate::search::MatchedFile>,
-    ),
-    i32,
-> {
+fn collect_stdin(args: &SearchArgs) -> Result<StdinCollect, i32> {
     let mut raw = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut raw) {
         eprintln!("st: failed to read stdin: {e}");
         return Err(2);
     }
     let raw_len = raw.len() as u64;
-    let content = crate::index::normalize_encoding(&raw).into_owned();
+    let mut content = crate::index::normalize_encoding(&raw).into_owned();
+
+    // rg's binary searcher treats NUL as a line terminator too: `-c` counts
+    // and `--json` line numbers split at NUL bytes, not only at `\n`
+    // (characterized against rg 15.2.0). Mirror that for the matching half
+    // by rewriting NUL to `\n` when the stream is binary. Line-printing
+    // modes never see these lines (the notice replaces them below).
+    let first_nul = content.iter().position(|&b| b == 0);
+    if first_nul.is_some() {
+        for b in content.iter_mut() {
+            if *b == 0 {
+                *b = b'\n';
+            }
+        }
+    }
 
     // Path filters can never match a stdin stream (`<stdin>` is not a repo
     // path); applying them would silently drop every match. Warn and strip,
@@ -207,7 +245,29 @@ fn collect_stdin(
     } else {
         verify_regex(&re, &label, &content, false)
     };
-    let matches = super::post_filter::apply_post_filters(matches, &filter_args, &[]);
+    let mut matches = super::post_filter::apply_post_filters(matches, &filter_args, &[]);
+
+    // rg binary policy (characterized against rg 15.2.0): with a NUL in the
+    // stream, every line-printing mode replaces ALL of its output with a
+    // single `binary file matches` notice (match position relative to the
+    // NUL is irrelevant); -c/-l/-q/--json keep the normal output; a stream
+    // with no match at all stays silent and exits 1. Under -v the notice
+    // always wins (rg prints it even when the inverted output would be
+    // empty). The notice reports the ORIGINAL first-NUL offset (the content
+    // was rewritten to `\n` above for matching).
+    let binary_notice = if first_nul.is_some()
+        && !filter_args.count
+        && !filter_args.count_matches
+        && !filter_args.files_with_matches
+        && !filter_args.quiet
+        && !filter_args.json
+        && (filter_args.invert_match || !matches.is_empty())
+    {
+        matches.clear();
+        first_nul.map(|nul| nul as u64)
+    } else {
+        None
+    };
 
     let mut files = HashMap::new();
     files.insert(
@@ -217,12 +277,12 @@ fn collect_stdin(
             raw_len,
         },
     );
-    Ok((matches, files))
+    Ok((matches, files, binary_notice))
 }
 
 fn run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> i32 {
     let start = Instant::now();
-    let (matches, files) = match collect_stdin(args) {
+    let (matches, files, binary_notice) = match collect_stdin(args) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -231,6 +291,10 @@ fn run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> i32 {
     let mut output_args = args.with_effective_output_defaults(config);
     if !output_args.with_filename {
         output_args.no_filename = true;
+    }
+    if let Some(offset) = binary_notice {
+        print_binary_notice(offset, output_args.no_filename, output_args.vimgrep);
+        return 0;
     }
     render_results(config, None, matches, files, &output_args, start.elapsed())
 }
@@ -243,9 +307,6 @@ fn invert_matches(
     path: &Path,
     content: &[u8],
 ) -> Vec<crate::SearchMatch> {
-    if crate::index::walk::is_binary(content) {
-        return Vec::new();
-    }
     let mut out = Vec::new();
     crate::search::lines::for_each_line(content, |line_num, line_start, line| {
         if !re.is_match(line) {

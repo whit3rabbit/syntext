@@ -326,13 +326,17 @@ fn stdin_golden_crlf_stream() {
 
 #[test]
 #[cfg(unix)]
-fn stdin_golden_binary_stream_suppressed() {
-    // st skips a NUL-containing stream entirely (documented binary policy,
-    // recorded in DIVERGENCES.md: rg searches past NULs on stdin, so no
-    // byte-equality differential is possible for binary streams).
-    let ((st_code, st_out), _) = stdin_raw_outputs(b"lead-in\0more parse\n", "parse", &[]).unwrap();
-    assert_eq!(st_code, 1);
-    assert!(st_out.is_empty());
+fn stdin_golden_binary_stream_notice_parity() {
+    // A NUL in the stream replaces ALL line output with rg's binary notice,
+    // byte-identically, with exit 0 when a match exists (no match: silent
+    // exit 1). See DIVERGENCES.md #16 for the narrowed file-path residual.
+    run_stdin_differential(b"lead-in\0more parse\n", "parse", &[], false).unwrap();
+    run_stdin_differential(b"lead-in\0more parse\n", "parse", &["-H"], false).unwrap();
+    run_stdin_differential(b"lead-in\0more parse\n", "parse", &["-n"], false).unwrap();
+    run_stdin_differential(b"lead-in\0more\n", "zzq", &[], false).unwrap();
+    run_stdin_differential(b"lead-in\0more parse\n", "parse", &["-c"], false).unwrap();
+    run_stdin_differential(b"lead-in\0more parse\n", "parse", &["-o"], false).unwrap();
+    run_stdin_differential(b"lead-in\0more\n", "parse", &["-v"], false).unwrap();
 }
 
 proptest! {
@@ -350,10 +354,13 @@ proptest! {
             .filter(|&&f| f != "--json" && !(f == "-F" && has_regex_meta))
             .copied()
             .collect();
-        // Concatenate only plain UTF-8 text files: a UTF-16 BOM landing
+        // Concatenate plain UTF-8 text files only: a UTF-16 BOM landing
         // mid-stream is an input no engine contract covers (rg/st transcode
-        // it differently), and a NUL makes rg print "binary file matches"
-        // while st skips the stream (documented binary-policy divergence).
+        // it differently), and a NUL triggers rg's chunked binary output
+        // (matches before the NUL's read chunk print normally, then the
+        // notice) which depends on rg's reader buffer size — see
+        // DIVERGENCES.md #16. Single-chunk binary streams are covered
+        // byte-exactly by stdin_golden_binary_stream_notice_parity instead.
         let starts_with_bom = |c: &[u8]| {
             c.starts_with(&[0xFF, 0xFE]) || c.starts_with(&[0xFE, 0xFF]) || c.starts_with(&[0xEF, 0xBB, 0xBF])
         };
@@ -369,14 +376,34 @@ proptest! {
         }
         // The corpus generator emits \r\n separators; st keeps the trailing
         // \r in rendered lines like rg, so the comparison is byte-exact.
+        // Exception: -x. st matches the \r-stripped line (rg --crlf-like,
+        // divergence #15), so under -x WHICH lines match can differ on CRLF
+        // lines — drop the flag rather than compare across that seam.
+        let effective_flags: Vec<&str> = if stream.contains(&b'\r') {
+            effective_flags.into_iter().filter(|f| *f != "-x").collect()
+        } else {
+            effective_flags
+        };
         let ((st_code, st_out), (rg_code, rg_out)) =
             stdin_raw_outputs(&stream, &query, &effective_flags).unwrap();
         let norm = |c: i32| if c == 0 { 0 } else if c == 1 { 1 } else { 2 };
         prop_assert!(norm(st_code) == norm(rg_code), "stdin exit mismatch st={st_code} rg={rg_code}");
-        prop_assert!(
-            st_out == rg_out,
-            "stdin stdout mismatch for query {query:?} flags {effective_flags:?}"
-        );
+        if st_out != rg_out {
+            // Show the first divergence byte-for-byte so a failing seed can be
+            // diagnosed without re-deriving the corpus.
+            let show = |v: &[u8]| String::from_utf8_lossy(&v[..v.len().min(300)]).into_owned();
+            panic!(
+                "stdin stdout mismatch for query {query:?} flags {effective_flags:?}\n\
+                 stream has_nul={}\n\
+                 st ({}B): {}\n--\n\
+                 rg ({}B): {}",
+                stream.contains(&0),
+                st_out.len(),
+                show(&st_out),
+                rg_out.len(),
+                show(&rg_out),
+            );
+        }
     }
 }
 

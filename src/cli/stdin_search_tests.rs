@@ -101,7 +101,12 @@ fn invert_matches_yields_non_matching_lines() {
 }
 
 #[test]
-fn invert_matches_skips_binary_content() {
+fn invert_matches_covers_binary_content() {
+    // The per-line inverter no longer skips NUL-containing streams; the
+    // rg binary policy (notice + exit 0) is applied by collect_stdin.
     let re = regex::bytes::Regex::new("b").unwrap();
-    assert!(invert_matches(&re, Path::new(STDIN_LABEL), b"a\0b\n").is_empty());
+    let matches = invert_matches(&re, Path::new(STDIN_LABEL), b"a\0z\nb\n");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].line_number, 1);
+    assert_eq!(matches[0].line_content, b"a\0z");
 }

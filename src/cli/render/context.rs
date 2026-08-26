@@ -117,10 +117,6 @@ pub(in crate::cli) fn render_with_context_to(
             let is_match = match_set.contains(&idx);
             let sep = if is_match { b':' } else { b'-' };
 
-            if args.byte_offset {
-                // Line-start offset prefix, matching render_flat_to/rg.
-                write!(out, "{line_start}:")?;
-            }
             let spans = if is_match {
                 match_spans(re.as_ref(), content)
             } else {
@@ -133,6 +129,10 @@ pub(in crate::cli) fn render_with_context_to(
                     no_num: args.no_line_number,
                     null: args.null,
                     color: args.color,
+                    // rg puts the line-start offset before the content, after
+                    // the path/line fields, and keeps the line separator
+                    // ('-' on context lines) after it.
+                    byte_offset: args.byte_offset.then_some(line_start as u64),
                 },
                 rel_path,
                 line_num,

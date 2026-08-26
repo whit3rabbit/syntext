@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
 - `--rust` / `--rs`: select Rust source files only (equivalent to `-t rs`; a grep-ism seen in mined agent logs).
 - Fixed a pre-existing phantom trailing empty line: a zero-width regex match at end-of-content (e.g. an empty `-e ''`/`-f` pattern line, or `x|`) after a final newline used to render as an extra empty numbered line; rg prints none.
 - **Rendered lines keep a CRLF line's trailing `\r`** (byte-identical to rg output, all modes: flat, heading, vimgrep, only-matching, context, invert, JSON `lines` text). Matching still runs against the `\r`-stripped line, so which lines match is unchanged; only patterns that would match the `\r` byte itself report different submatch spans (divergence #15 narrowed). The stdin oracle comparisons are now byte-exact instead of `\r`-normalized.
+- **Binary (NUL-containing) stdin now follows rg semantics** instead of exiting 1 silently: with a match, every line-printing mode emits exactly `binary file matches (found "\0" byte around offset N)` (filename prefix per mode rules) and exits 0; `-c`/`-l`/`-q`/`--json` keep their normal output (with NUL treated as a line terminator for counts and line numbers, like rg); no match stays silent with exit 1; under `-v` the notice always wins. Residual divergences, documented in #16: binary repo files stay unindexed, and when the first NUL lands beyond rg's first read chunk (~8KB) rg prints preceding matches before the notice while `st` prints only the notice.
+- **`--byte-offset` now prints in rg's field order** — last among the prefix fields, immediately before the content (`[path:][line:][col:]byte:content`), instead of leading; context lines keep the `-` separator after it. Exposed by the `--column` un-filtering in the stdin proptest.
+- On binary streams, rg's searcher treats NUL as a line terminator: `-c` counts and `--json` line numbers now split at NUL bytes, matching rg.
 
 ### Behavior changes
 - **`cmd | st 'pat'` previously ignored stdin and silently searched the whole repo index** (exit 0 with wrong results); it now filters the stream. Scripts relying on the old (incorrect) behavior must pass an explicit path argument.
@@ -21,7 +24,7 @@ All notable changes to this project will be documented in this file.
 - **rg/grep fallback on a missing index is now the default.** Previously `st` exited 2 with guidance unless `--fallback`/`SYNTEXT_FALLBACK_RG=1` was set; now the search transparently runs `rg` (or `grep`). Disable with `SYNTEXT_FALLBACK_RG=0`; `--fallback` overrides the env var. **Scripts that parsed the exit-2 no-index error will see rg output and rg exit codes instead.** The notice stays suppressible via `-q`/`SYNTEXT_QUIET_FALLBACK`. Corrupt-index/lock failures still error loudly.
 
 ### Known divergences (see `tests/oracle/DIVERGENCES.md`)
-- Binary content is skipped entirely (pre-existing, all modes); `\r`-byte-matching patterns report `rg --crlf`-style spans.
+- Binary repo files are never indexed (rg can report matches in them; `st` cannot — misses only, never false positives); `\r`-byte-matching patterns report `rg --crlf`-style spans.
 
 ### Changed
 - Differential-oracle ripgrep pin bumped 15.1.0 → 15.2.0 (`tests/oracle/ORACLE_VERSION`, `EXPECTED_RG_VERSION`, CI rg install URLs in `ci.yml`/`nightly.yml`). All correctness/oracle suites re-baselined green against 15.2.0 with no behavioral divergence.

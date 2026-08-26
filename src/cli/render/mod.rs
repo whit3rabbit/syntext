@@ -54,6 +54,10 @@ pub(in crate::cli) struct FormatOpts {
     /// Emit ANSI color for path/line-number/match text. When false, output is
     /// byte-identical to the uncolored path (spans are ignored).
     pub color: bool,
+    /// rg field order puts the byte offset LAST among the prefix fields,
+    /// immediately before the content (`[path:][line:][col:]byte:content`),
+    /// and it keeps the line separator ('-' for context lines) after it.
+    pub byte_offset: Option<u64>,
 }
 
 /// Sorted, non-overlapping match byte spans into `content`, for highlighting.
@@ -82,17 +86,30 @@ pub(in crate::cli) fn write_formatted_line(
     spans: &[(usize, usize)],
 ) -> io::Result<()> {
     let styles = ColorStyles::default();
+    // rg's byte-offset field comes last among the prefix fields, directly
+    // before the content, keeping the line separator after it.
+    let byte_prefix = |out: &mut dyn Write| -> io::Result<()> {
+        if let Some(byte) = opts.byte_offset {
+            write!(out, "{byte}{}", sep as char)?;
+        }
+        Ok(())
+    };
     match (opts.no_path, opts.no_num) {
-        (true, true) => color::write_highlighted(out, opts.color, styles, content, spans)?,
+        (true, true) => {
+            byte_prefix(out)?;
+            color::write_highlighted(out, opts.color, styles, content, spans)?
+        }
         (true, false) => {
             color::write_styled_num(out, opts.color, styles.line, line_num)?;
             write!(out, "{}", sep as char)?;
+            byte_prefix(out)?;
             color::write_highlighted(out, opts.color, styles, content, spans)?;
         }
         (false, true) => {
             color::write_styled(out, opts.color, styles.path, &path_bytes(path))?;
             let path_sep = if opts.null { b'\0' } else { sep };
             out.write_all(&[path_sep])?;
+            byte_prefix(out)?;
             color::write_highlighted(out, opts.color, styles, content, spans)?;
         }
         (false, false) => {
@@ -101,6 +118,7 @@ pub(in crate::cli) fn write_formatted_line(
             out.write_all(&[path_sep])?;
             color::write_styled_num(out, opts.color, styles.line, line_num)?;
             write!(out, "{}", sep as char)?;
+            byte_prefix(out)?;
             color::write_highlighted(out, opts.color, styles, content, spans)?;
         }
     }
