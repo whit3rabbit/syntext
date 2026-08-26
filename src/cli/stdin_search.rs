@@ -180,6 +180,26 @@ fn dash_precedes_real_paths(args: &SearchArgs) -> bool {
     }
 }
 
+/// Splice a collected stdin half into the index results. rg processes `-` in
+/// argv position order; per-path runs stay consecutive either way, which is
+/// what heading grouping and per-file truncation require.
+pub(super) fn splice_stdin_half(
+    half: StdinHalf,
+    results: &mut Vec<crate::SearchMatch>,
+    files: &mut HashMap<PathBuf, crate::search::MatchedFile>,
+) {
+    if half.stdin_first {
+        let mut merged = half.matches;
+        merged.append(results);
+        *results = merged;
+    } else {
+        results.extend(half.matches);
+    }
+    for (p, mf) in half.files {
+        files.entry(p).or_insert(mf);
+    }
+}
+
 /// The collected stdin half of a search: line matches, the `<stdin>` file
 /// entry for renderers that re-read content, and (when rg's binary policy
 /// suppressed the line output) the offset of the first NUL byte.

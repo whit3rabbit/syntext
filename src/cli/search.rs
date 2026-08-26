@@ -140,18 +140,8 @@ fn run_and_render(
             } else {
                 trailing_notice = Some(offset);
             }
-        } else if half.stdin_first {
-            // rg processes `-` in argv position order; splice the stdin run
-            // accordingly. Per-path runs stay consecutive either way, which
-            // is what heading grouping and per-file truncation require.
-            let mut merged = half.matches;
-            merged.append(&mut results);
-            results = merged;
         } else {
-            results.extend(half.matches);
-        }
-        for (p, mf) in half.files {
-            files.entry(p).or_insert(mf);
+            super::stdin_search::splice_stdin_half(half, &mut results, &mut files);
         }
     }
     let code = render_results(
