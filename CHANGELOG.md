@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-27
+
 ### Added
 - **Stdin filter mode** (rg parity): `cmd | st 'pat'` and `st 'pat' -` now search the piped/redirected stream in-memory, with rg-compatible output (no filename prefix by default, `<stdin>` label under `-H`/`-l`/`--json`, bare `-c` counts) and exit codes. Implicit-stdin detection is conservative: only a pipe (FIFO) or regular-file redirect engages it; a tty, socket, or `/dev/null` still searches the repo index, so agent shells that attach `/dev/null` to stdin are unaffected. Works without any `.syntext` index. `-v` inverts per-line on a stream (corpus-wide `-v` is meaningless for stdin). `-` mixed with other paths searches **both**: the stdin half is collected before the index opens, `-` is stripped from the path arguments, and the merged output orders the stdin run by the argv position of `-` (exit 0 if either side matches). Exceptions: `-v` mixed still exits 2 (the two invert semantics cannot merge), and a mixed search with no index errors instead of falling back (stdin is already consumed; the fallback child would search an empty stream). New module `src/cli/stdin_search.rs`; shared render/exit dispatch extracted into `search::render_results`.
 - `--exclude-dir DIR` (grep compatibility): mapped to negated globs covering the directory at any depth.
