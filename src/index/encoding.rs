@@ -35,15 +35,15 @@ pub(crate) fn normalize_encoding(content: &[u8]) -> Cow<'_, [u8]> {
 }
 
 fn decode_utf16(bytes: &[u8], from_bytes: fn([u8; 2]) -> u16) -> Vec<u8> {
-    let chunks = bytes.chunks_exact(2);
-    let truncated = !chunks.remainder().is_empty();
+    let (chunks, remainder) = bytes.as_chunks::<2>();
+    let truncated = !remainder.is_empty();
     if truncated {
         log::debug!(
             "UTF-16 file has odd byte count ({} bytes after BOM); trailing byte decoded as U+FFFD",
             bytes.len()
         );
     }
-    let mut out = char::decode_utf16(chunks.map(|c| from_bytes([c[0], c[1]])))
+    let mut out = char::decode_utf16(chunks.iter().map(|c| from_bytes(*c)))
         .map(|r| r.unwrap_or('\u{FFFD}'))
         .collect::<String>();
     if truncated {

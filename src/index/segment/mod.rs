@@ -205,7 +205,7 @@ impl MmapSegment {
             reader::read_exact_at(file, &mut dict, self.dict_offset as u64).map_err(|e| {
                 IndexError::CorruptIndex(format!("failed to read dictionary: {}", e))
             })?;
-            for entry in dict.chunks_exact(DICT_ENTRY_SIZE) {
+            for entry in dict.as_chunks::<DICT_ENTRY_SIZE>().0 {
                 hashes.push(u64::from_le_bytes(entry[0..8].try_into().map_err(
                     |_| IndexError::CorruptIndex("dictionary entry hash".into()),
                 )?));
@@ -218,7 +218,7 @@ impl MmapSegment {
             .get(self.dict_offset..self.dict_offset.saturating_add(dict_len))
             .ok_or_else(|| IndexError::CorruptIndex("truncated dictionary".into()))?;
 
-        for entry in dict.chunks_exact(DICT_ENTRY_SIZE) {
+        for entry in dict.as_chunks::<DICT_ENTRY_SIZE>().0 {
             hashes.push(u64::from_le_bytes(entry[0..8].try_into().map_err(
                 |_| IndexError::CorruptIndex("dictionary entry hash".into()),
             )?));
