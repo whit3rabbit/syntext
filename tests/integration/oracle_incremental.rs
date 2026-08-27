@@ -249,7 +249,7 @@ fn assert_st_matches_rg(
     ];
 
     let st_output = Command::new(st_bin)
-        .args(&st_args)
+        .args(st_args)
         .current_dir(repo)
         .env("SYNTEXT_DETERMINISTIC", "1")
         // Keep the subprocess's file-size policy in lock-step with the

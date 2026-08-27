@@ -138,7 +138,7 @@ fn run_and_render(
     #[cfg(feature = "symbols")]
     if args.sym.is_some() || args.refs.is_some() {
         // --sym and --refs are mutually exclusive; --sym-kind needs a name.
-        if let Some(code) = super::sym::reject_sym_refs_conflicts(&output_args) {
+        if let Some(code) = super::sym::reject_sym_refs_conflicts(output_args) {
             return code;
         }
     }
@@ -146,7 +146,7 @@ fn run_and_render(
     if args.sym.is_some() {
         // --sym is a pure lookup: grep-style output modifiers do not apply.
         // (--refs produces content matches, so it skips this check.)
-        if let Some(code) = super::sym::reject_incompatible_symbol_flags(&output_args) {
+        if let Some(code) = super::sym::reject_incompatible_symbol_flags(output_args) {
             return code;
         }
     }

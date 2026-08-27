@@ -212,6 +212,7 @@ pub fn run_stdin_differential(
 
 /// Raw `(exit_code, stdout)` for `st` and `rg` reading the same piped stream,
 /// for tests that apply their own normalization before comparing.
+#[allow(clippy::type_complexity)]
 pub fn stdin_raw_outputs(
     stream: &[u8],
     query: &str,
@@ -596,7 +597,7 @@ pub fn generate_flags() -> impl Strategy<Value = Vec<&'static str>> {
         }
 
         // Remove context-incompatible flags when output format selected
-        if output_flag.map_or(false, |f| NO_CONTEXT_FLAGS.contains(&f)) {
+        if output_flag.is_some_and(|f| NO_CONTEXT_FLAGS.contains(&f)) {
             other_flags.retain(|&f| !matches!(f, "-A" | "-B" | "-C"));
         }
 
@@ -663,8 +664,8 @@ pub fn compare_rendered_output(
 ) -> Result<(), String> {
     let normalize_line = |line: &str| -> String {
         // Strip leading "./" from paths
-        let line = if line.starts_with("./") {
-            &line[2..]
+        let line = if let Some(stripped) = line.strip_prefix("./") {
+            stripped
         } else {
             line
         };
@@ -805,7 +806,7 @@ pub fn run_differential_with_tier_c_raw(
     }
     rg_args.extend(flags.iter().copied());
     // If -e flags are present, rg already has the pattern; positional query would be a path.
-    let has_e_flag = flags.iter().any(|&f| f == "-e");
+    let has_e_flag = flags.contains(&"-e");
     if !has_e_flag {
         rg_args.push(query);
     }
@@ -951,6 +952,7 @@ pub fn run_differential_with_tier_c(
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 pub fn shrink_differential(
     corpus: &[(String, Vec<u8>)],
     query: &str,

@@ -235,6 +235,7 @@ fn golden_smoke_word_regexp() {
 // Property Tests via CLI Runner (Phase 3.3 + Phase 4.2)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::type_complexity)]
 fn generate_cli_run() -> impl Strategy<Value = (Vec<(String, Vec<u8>)>, String, Vec<&'static str>)>
 {
     generate_corpus().prop_flat_map(|corpus| {
