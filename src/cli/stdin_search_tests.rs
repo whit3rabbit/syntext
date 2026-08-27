@@ -1,6 +1,7 @@
 //! Unit tests for the stdin filter-mode guard and per-line invert.
 
 use super::*;
+use std::path::Path;
 
 fn args(pattern: &str, paths: &[&str]) -> SearchArgs {
     SearchArgs {
@@ -75,11 +76,18 @@ fn implicit_stdin_requires_cli_context() {
 }
 
 #[test]
-fn empty_pattern_or_index_only_modes_never_use_stdin() {
-    assert_eq!(decide_stdin(true, &args("", &[])), StdinDecision::NotStdin);
+fn empty_pattern_and_dashless_l_still_filter_the_stream() {
+    // rg `cmd | rg ''` prints every line, and `cmd | rg --files-without-match
+    // pat` lists `<stdin>` when the stream does not match: neither an empty
+    // pattern nor -L keeps the implicit pipe out of stdin mode.
+    assert_eq!(decide_stdin(true, &args("", &[])), StdinDecision::UseStdin);
     let mut a = args("pat", &[]);
     a.files_without_match = true;
-    assert_eq!(decide_stdin(true, &a), StdinDecision::NotStdin);
+    assert_eq!(decide_stdin(true, &a), StdinDecision::UseStdin);
+}
+
+#[test]
+fn sym_routes_to_the_index_even_with_a_pipe() {
     let mut a = args("pat", &[]);
     a.sym = Some("Foo".to_string());
     assert_eq!(decide_stdin(true, &a), StdinDecision::NotStdin);

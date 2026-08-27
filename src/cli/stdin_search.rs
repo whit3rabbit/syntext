@@ -4,7 +4,7 @@
 //! whole repo index (exit 0, wrong results). This module restores ripgrep's
 //! filter contract: when stdin carries the search subject (pipe or file
 //! redirect, or an explicit `-` path), the stream is searched in-memory and no
-//! index is opened — so it also works in directories with no `.syntext` at
+//! index is opened, so it also works in directories with no `.syntext` at
 //! all.
 //!
 //! Implicit-stdin detection is deliberately conservative: only a FIFO (pipe)
@@ -15,12 +15,17 @@
 //! empty stream and exit 1).
 
 use std::collections::HashMap;
-use std::io::{IsTerminal, Read};
-use std::path::{Path, PathBuf};
-use std::time::Instant;
+// The unix stdin probe uses the file-level import; the Windows one has its
+// own local `use` (it also needs the windows os trait), so gate this one or
+// the non-unix build warns about an unused import.
+#[cfg(unix)]
+use std::io::IsTerminal;
+use std::io::Read;
+use std::path::PathBuf;
 
 use super::render;
-use super::search::{render_results, SearchArgs};
+use super::search::SearchArgs;
+use run::{invert_matches, render_stdin_half};
 use crate::search::verifier::verify_regex;
 
 /// Label ripgrep uses for matches that came from stdin.
@@ -42,11 +47,8 @@ pub(super) enum StdinDecision {
 /// (`stdin_searchable`, `args`) so the routing table is unit-testable without
 /// touching real file descriptors.
 pub(super) fn decide_stdin(stdin_searchable: bool, args: &SearchArgs) -> StdinDecision {
-    // No pattern (or a symbols lookup) is never a content filter.
-    if args.pattern.is_empty() || args.files_without_match {
-        return StdinDecision::NotStdin;
-    }
-    // --sym/--refs route through the symbol index; they need the index.
+    // --sym/--refs route through the symbol index; they need the index. (A `-`
+    // combined with them is rejected by the caller before this runs.)
     if args.sym.is_some() || args.refs.is_some() {
         return StdinDecision::NotStdin;
     }
@@ -66,6 +68,9 @@ pub(super) fn decide_stdin(stdin_searchable: bool, args: &SearchArgs) -> StdinDe
     // Implicit stdin needs the CLI process boundary's blessing: in-process
     // `cmd_search` callers must not inherit stdin-mode behavior from however
     // their own process was launched (see SearchArgs::allow_implicit_stdin).
+    // An empty pattern still filters the stream (rg `cmd | rg ''` prints
+    // every line), and so does -L (rg --files-without-match lists `<stdin>`
+    // when the stream does not match): neither guards the implicit path.
     if args.allow_implicit_stdin && stdin_searchable {
         StdinDecision::UseStdin
     } else {
@@ -73,7 +78,7 @@ pub(super) fn decide_stdin(stdin_searchable: bool, args: &SearchArgs) -> StdinDe
     }
 }
 
-/// True when stdin is a pipe (FIFO) or a regular-file redirect — the only
+/// True when stdin is a pipe (FIFO) or a regular-file redirect, the only
 /// shapes that carry an implicit search subject. Everything else (tty, socket,
 /// /dev/null char device, closed fd, stat failure) stays on the repo path.
 #[cfg(unix)]
@@ -93,8 +98,30 @@ fn stdin_is_searchable() -> bool {
 
 #[cfg(not(unix))]
 fn stdin_is_searchable() -> bool {
-    // No /dev/stdin to stat on Windows; only the explicit `-` form engages.
-    false
+    // No /dev/stdin to stat on Windows; classify the stdin handle itself via
+    // GetFileType, the same call std uses under the hood for tty detection.
+    // DISK = regular-file redirect, PIPE = shell pipe; CHAR covers the
+    // console (already excluded above) and NUL, and UNKNOWN stays on the
+    // repo path so an odd handle never silently filters an empty stream.
+    use std::io::IsTerminal;
+    use std::os::windows::io::AsRawHandle;
+
+    // Safety: GetFileType only reads a type tag for our own stdin handle; it
+    // writes nothing, keeps no pointer, and the handle outlives the call.
+    // Declared inline because the crate has no windows-sys dependency.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileType(h_file: *mut core::ffi::c_void) -> u32;
+    }
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_PIPE: u32 = 3;
+
+    if std::io::stdin().is_terminal() {
+        return false;
+    }
+    // SAFETY: see the declaration above.
+    let kind = unsafe { GetFileType(std::io::stdin().as_raw_handle().cast()) };
+    kind == FILE_TYPE_DISK || kind == FILE_TYPE_PIPE
 }
 
 /// One half of a mixed `-` + paths search: the matches collected from stdin.
@@ -127,6 +154,17 @@ pub(super) fn run_or_collect_stdin(
     config: &crate::Config,
     args: &SearchArgs,
 ) -> StdinFilterOutcome {
+    // Symbol search cannot read a stream; an explicit `-` next to --sym/--refs
+    // would otherwise survive as a bogus repo-relative path named `-` and
+    // silently discard the stdin half the user asked for.
+    if (args.sym.is_some() || args.refs.is_some())
+        && args.paths.iter().any(|p| p.as_os_str() == "-")
+    {
+        eprintln!(
+            "st: '-' (stdin) cannot be combined with --sym/--refs (symbol search reads the index, not a stream)"
+        );
+        return StdinFilterOutcome::Done(2);
+    }
     match decide_stdin(stdin_is_searchable(), args) {
         StdinDecision::NotStdin => StdinFilterOutcome::NotStdin,
         StdinDecision::StdinPlusPaths => {
@@ -138,35 +176,38 @@ pub(super) fn run_or_collect_stdin(
                 );
                 return StdinFilterOutcome::Done(2);
             }
+            // `st pat - -`: every path argument is a dash, so after they are
+            // stripped the index half would have NO scope and silently search
+            // the whole repo. rg reads the stream once (a later `-` just sees
+            // EOF) and searches nothing else; render the stream with the
+            // multi-input naming rules the dash list implies.
+            let all_dashes = args.paths.iter().all(|p| p.as_os_str() == "-");
+            let start = std::time::Instant::now();
             match collect_stdin(args) {
-                Ok((matches, files, binary_notice)) => StdinFilterOutcome::Mixed(StdinHalf {
-                    matches,
-                    files,
-                    stdin_first: dash_precedes_real_paths(args),
-                    binary_notice,
-                }),
+                Ok((matches, files, binary_notice)) => {
+                    if all_dashes {
+                        return StdinFilterOutcome::Done(render_stdin_half(
+                            config,
+                            args,
+                            matches,
+                            files,
+                            binary_notice,
+                            false,
+                            start.elapsed(),
+                        ));
+                    }
+                    StdinFilterOutcome::Mixed(StdinHalf {
+                        matches,
+                        files,
+                        stdin_first: dash_precedes_real_paths(args),
+                        binary_notice,
+                    })
+                }
                 Err(code) => StdinFilterOutcome::Done(code),
             }
         }
         StdinDecision::UseStdin => StdinFilterOutcome::Done(run_stdin_filter(config, args)),
     }
-}
-
-/// rg's notice for binary input, honoring the mode's filename rules
-/// (`--vimgrep` always prefixes; the flat default does only when filenames
-/// are shown).
-pub(super) fn print_binary_notice(nul_offset: u64, no_filename: bool, vimgrep: bool) {
-    use std::io::Write;
-    let mut out = std::io::stdout().lock();
-    if !no_filename || vimgrep {
-        // rg's notice format is `path: text` (note the space), unlike its
-        // `path:line:content` match format.
-        let _ = write!(out, "{STDIN_LABEL}: ");
-    }
-    let _ = writeln!(
-        out,
-        "binary file matches (found \"\\0\" byte around offset {nul_offset})"
-    );
 }
 
 /// True when the first `-` path argument precedes the first real path (rg
@@ -218,7 +259,13 @@ fn collect_stdin(args: &SearchArgs) -> Result<StdinCollect, i32> {
         return Err(2);
     }
     let raw_len = raw.len() as u64;
-    let mut content = crate::index::normalize_encoding(&raw).into_owned();
+    // Take the owned conversion only when normalization actually rewrote
+    // something; `.into_owned()` on the Borrowed case (plain UTF-8, the
+    // common case) would copy the whole stream for nothing.
+    let mut content = match crate::index::normalize_encoding(&raw) {
+        std::borrow::Cow::Owned(converted) => converted,
+        std::borrow::Cow::Borrowed(_) => raw,
+    };
 
     // rg's binary searcher treats NUL as a line terminator too: `-c` counts
     // and `--json` line numbers split at NUL bytes, not only at `\n`
@@ -263,7 +310,15 @@ fn collect_stdin(args: &SearchArgs) -> Result<StdinCollect, i32> {
     let matches = if filter_args.invert_match {
         invert_matches(&re, &label, &content)
     } else {
-        verify_regex(&re, &label, &content, false)
+        // Mirror the indexed path's rule (scope/mod.rs): -l/-q only consume
+        // paths, so skip the per-line content copy for them. -L reaches here
+        // too and also never reads line content.
+        verify_regex(
+            &re,
+            &label,
+            &content,
+            filter_args.files_with_matches || filter_args.files_without_match || filter_args.quiet,
+        )
     };
     let mut matches = super::post_filter::apply_post_filters(matches, &filter_args, &[]);
 
@@ -279,9 +334,14 @@ fn collect_stdin(args: &SearchArgs) -> Result<StdinCollect, i32> {
         && !filter_args.count
         && !filter_args.count_matches
         && !filter_args.files_with_matches
+        // -L is a listing mode like -l: no line output to replace.
+        && !filter_args.files_without_match
         && !filter_args.quiet
         && !filter_args.json
-        && (filter_args.invert_match || !matches.is_empty())
+        // rg prints the notice only when there is line output to replace:
+        // matched lines normally, non-matching lines under -v. An empty
+        // result (including an empty invert) stays silent and exits 1.
+        && !matches.is_empty()
     {
         matches.clear();
         first_nul.map(|nul| nul as u64)
@@ -295,57 +355,16 @@ fn collect_stdin(args: &SearchArgs) -> Result<StdinCollect, i32> {
         crate::search::MatchedFile {
             normalized: content.into(),
             raw_len,
+            first_nul: first_nul.map(|n| n as u64),
         },
     );
     Ok((matches, files, binary_notice))
 }
 
-fn run_stdin_filter(config: &crate::Config, args: &SearchArgs) -> i32 {
-    let start = Instant::now();
-    let (matches, files, binary_notice) = match collect_stdin(args) {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
-
-    // ripgrep's single-input rule: no filename prefix unless -H asks for one.
-    let mut output_args = args.with_effective_output_defaults(config);
-    if !output_args.with_filename {
-        output_args.no_filename = true;
-    }
-    if let Some(offset) = binary_notice {
-        print_binary_notice(offset, output_args.no_filename, output_args.vimgrep);
-        return 0;
-    }
-    render_results(config, None, matches, files, &output_args, start.elapsed())
-}
-
-/// Per-line invert for stdin streams. st's indexed `-v` is corpus-wide (list
-/// non-matching files), which is meaningless for a single stream; a piped
-/// `st -v` therefore inverts line-by-line, like `rg -v` in a pipe.
-fn invert_matches(
-    re: &regex::bytes::Regex,
-    path: &Path,
-    content: &[u8],
-) -> Vec<crate::SearchMatch> {
-    let mut out = Vec::new();
-    crate::search::lines::for_each_line(content, |line_num, line_start, line| {
-        if !re.is_match(line) {
-            out.push(crate::SearchMatch {
-                path: path.to_path_buf(),
-                line_number: line_num,
-                // rg -v prints the raw line, `\r` included.
-                line_content: render::rendered_line(content, line_start, line).to_vec(),
-                // No submatch exists on an inverted line; report the line's
-                // own offset so -b/--byte-offset stays truthful.
-                byte_offset: line_start as u64,
-                submatch_start: 0,
-                submatch_end: 0,
-            });
-        }
-    });
-    out
-}
-
 #[cfg(test)]
 #[path = "stdin_search_tests.rs"]
 mod tests;
+
+mod run;
+pub(in crate::cli) use run::print_binary_notice_exit_code;
+use run::run_stdin_filter;

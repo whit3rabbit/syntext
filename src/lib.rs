@@ -210,7 +210,7 @@ pub struct SearchMatch {
     /// 1-based line number of the match within the file.
     pub line_number: u32,
     /// Full rendered bytes of the matching line (without the trailing
-    /// newline; a CRLF line's `\r` is included, like rg prints it — match
+    /// newline; a CRLF line's `\r` is included, like rg prints it, but match
     /// spans never cover that `\r`).
     pub line_content: Vec<u8>,
     /// Absolute byte offset of the start of the first match within the file.

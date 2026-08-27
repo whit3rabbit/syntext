@@ -151,10 +151,19 @@ impl Cli {
     }
 }
 
+/// The two negated globs one `--exclude-dir DIR` expands to: exclude a
+/// root-level directory of that name and any nested directory of the same
+/// name, plus everything under them. Shared with `cli::fallback`'s rg-argv
+/// translation: rg has no native `--exclude-dir` (unlike grep, which does and
+/// uses it directly instead), so the rg fallback path derives the same glob
+/// pair from one definition rather than a second copy of the format strings.
+pub(in crate::cli) fn exclude_dir_glob_pair(dir: &str) -> [String; 2] {
+    [format!("!{dir}/**"), format!("!**/{dir}/**")]
+}
+
 /// Negated glob specs for grep-style `--exclude-dir DIR`: exclude a root-level
 /// directory and any nested directory of the same name, plus everything under
 /// them.
 fn exclude_dir_globs(dirs: &[String]) -> impl Iterator<Item = String> + '_ {
-    dirs.iter()
-        .flat_map(|dir| [format!("!{dir}/**"), format!("!**/{dir}/**")].into_iter())
+    dirs.iter().flat_map(|dir| exclude_dir_glob_pair(dir))
 }

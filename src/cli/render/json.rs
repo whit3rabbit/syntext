@@ -54,12 +54,19 @@ fn get_file_size(snap: &crate::index::IndexSnapshot, path: &std::path::Path) -> 
 /// `index` is `None` for the stdin filter (no index was opened); the summary
 /// then reports the stdin stream as the single searched input and skips the
 /// per-path size lookup, which only the in-memory index can answer.
+///
+/// `stdin_scoped` mirrors the `-L`/`files_without_match` branch in
+/// `render_results`: `Some(_)` means a stdin half participates in this
+/// (`index = Some(_)`) search, in the argv position `true`/`false` encode.
+/// Without it, the summary's `searches`/`bytes_searched` stats silently
+/// dropped the stdin half of a mixed `-` + paths search.
 pub(in crate::cli) fn render_json(
     index: Option<&Index>,
     config: &Config,
     matches: &[crate::SearchMatch],
     files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
     args: &SearchArgs,
+    stdin_scoped: Option<bool>,
 ) -> io::Result<()> {
     let total_start = Instant::now();
     let re = compile_output_regex(args)?;
@@ -74,7 +81,23 @@ pub(in crate::cli) fn render_json(
     let mut total_matched_lines = 0usize;
     let mut total_matches = 0usize;
     let scoped_paths = match index {
-        Some(ix) => collect_scoped_paths(ix, config, args),
+        Some(ix) => {
+            let mut scoped = collect_scoped_paths(ix, config, args);
+            // A stdin half spliced into `matches`/`files` for this search is
+            // an input like any other; count it in argv position, the same
+            // way the `-L` branch in `render_results` lists `<stdin>`.
+            match stdin_scoped {
+                Some(true) => scoped.insert(
+                    0,
+                    std::path::PathBuf::from(crate::cli::stdin_search::STDIN_LABEL),
+                ),
+                Some(false) => {
+                    scoped.push(std::path::PathBuf::from(crate::cli::stdin_search::STDIN_LABEL))
+                }
+                None => {}
+            }
+            scoped
+        }
         // stdin filter: the stream itself is the one searched input.
         None => vec![std::path::PathBuf::from(
             crate::cli::stdin_search::STDIN_LABEL,
@@ -158,7 +181,11 @@ pub(in crate::cli) fn render_json(
             "type": "end",
             "data": {
                 "path": json_data(path_bytes(path).as_ref()),
-                "binary_offset": null,
+                // rg reports the first NUL byte's offset for binary input;
+                // only a stdin stream can be binary here (indexed files skip
+                // binaries), so the stdin collect path sets it and everyone
+                // else stays null, like rg on text files.
+                "binary_offset": files.get(path).and_then(|mf| mf.first_nul),
                 "stats": json_stats(
                     file_start.elapsed(),
                     1,
@@ -179,7 +206,16 @@ pub(in crate::cli) fn render_json(
             if by_file.contains_key(&path) {
                 continue;
             }
-            total_bytes_searched += get_file_size(&snap, &path);
+            // The stdin half always has a `files` entry (collect_stdin
+            // inserts one whether or not it matched), unlike an indexed
+            // path, which only gets one when it matched. Prefer it over
+            // get_file_size's index lookup, which cannot resolve `<stdin>`
+            // (not a real indexed doc) and would otherwise silently count
+            // an unmatched stdin half as zero bytes searched.
+            total_bytes_searched += files
+                .get(&path)
+                .map(|mf| mf.raw_len as usize)
+                .unwrap_or_else(|| get_file_size(&snap, &path));
         }
     }
 

@@ -58,12 +58,32 @@ pub(in crate::cli) fn render_only_matching(
         // In -o mode, rg prints the byte offset of each matched substring, not
         // the line start. line_start = first-submatch abs offset minus its column.
         let line_start = m.byte_offset.saturating_sub(m.submatch_start as u64);
+        if args.invert_match && m.submatch_start == m.submatch_end {
+            // Inverted (-v) matches carry no submatch; rg -v -o prints the
+            // whole (non-matching) line once. Keyed on invert_match, not the
+            // empty-submatch shape: a zero-width regex hit produces the same
+            // 0==0 span legitimately and must still go through the per-match
+            // loop below.
+            write_formatted_line(
+                &mut out,
+                super::FormatOpts {
+                    no_path: suppress_path_prefix || args.no_filename,
+                    no_num: args.no_line_number,
+                    null: args.null,
+                    color: args.color,
+                    byte_offset: args.byte_offset.then_some(line_start),
+                },
+                &m.path,
+                m.line_number as usize,
+                b':',
+                &m.line_content,
+                &[],
+            )?;
+            continue;
+        }
         for matched in re.find_iter(&m.line_content) {
             if matched.start() == matched.end() {
                 continue;
-            }
-            if args.byte_offset {
-                write!(out, "{}:", line_start + matched.start() as u64)?;
             }
             let matched_bytes = &m.line_content[matched.start()..matched.end()];
             let rendered = apply_match_replace(&re, args.replace.as_deref(), matched_bytes);
@@ -80,7 +100,7 @@ pub(in crate::cli) fn render_only_matching(
                     no_num: args.no_line_number,
                     null: args.null,
                     color: args.color,
-                    byte_offset: None,
+                    byte_offset: args.byte_offset.then_some(line_start + matched.start() as u64),
                 },
                 &m.path,
                 m.line_number as usize,
@@ -188,12 +208,30 @@ fn render_only_matching_with_context(
                 .map(|(s, l)| (*s, l.as_slice()))
                 .unwrap_or((0, &[][..]));
             if match_set.contains(&idx) {
+                if args.invert_match {
+                    // -v context: no submatch to extract; rg -v -o prints the
+                    // whole (non-matching) line once.
+                    write_formatted_line(
+                        &mut out,
+                        super::FormatOpts {
+                            no_path: suppress_path_prefix || args.no_filename,
+                            no_num: args.no_line_number,
+                            null: args.null,
+                            color: args.color,
+                            byte_offset: args.byte_offset.then_some(line_start as u64),
+                        },
+                        rel_path,
+                        line_num,
+                        b':',
+                        content,
+                        &[],
+                    )?;
+                    prev = Some(idx);
+                    continue;
+                }
                 for matched in re.find_iter(content) {
                     if matched.start() == matched.end() {
                         continue;
-                    }
-                    if args.byte_offset {
-                        write!(out, "{}:", (line_start + matched.start()) as u64)?;
                     }
                     let matched_bytes = &content[matched.start()..matched.end()];
                     let rendered = apply_match_replace(re, args.replace.as_deref(), matched_bytes);
@@ -209,7 +247,9 @@ fn render_only_matching_with_context(
                             no_num: args.no_line_number,
                             null: args.null,
                             color: args.color,
-                    byte_offset: None,
+                            byte_offset: args
+                                .byte_offset
+                                .then_some((line_start + matched.start()) as u64),
                         },
                         rel_path,
                         line_num,
@@ -219,9 +259,6 @@ fn render_only_matching_with_context(
                     )?;
                 }
             } else {
-                if args.byte_offset {
-                    write!(out, "{line_start}:")?;
-                }
                 write_formatted_line(
                     &mut out,
                     super::FormatOpts {
@@ -229,7 +266,7 @@ fn render_only_matching_with_context(
                         no_num: args.no_line_number,
                         null: args.null,
                         color: args.color,
-                    byte_offset: None,
+                        byte_offset: args.byte_offset.then_some(line_start as u64),
                     },
                     rel_path,
                     line_num,

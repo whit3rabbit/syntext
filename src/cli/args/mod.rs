@@ -10,7 +10,8 @@ pub use super::commands::ManageCommand;
 
 mod compat;
 pub use compat::CompatibilityArgs;
-mod globs;
+pub(crate) use compat::warn_unimplemented;
+pub(in crate::cli) mod globs;
 
 /// Fast code search with index acceleration. ripgrep-style interface.
 ///
@@ -348,17 +349,14 @@ pub struct Cli {
 /// positional, so any pattern equal to a subcommand name misroutes; `-e` and
 /// `--` both force it back into the pattern slot.
 pub(crate) fn print_subcommand_collision_hint() {
-    const SUBCOMMANDS: &[&str] = &[
-        "init",
-        "agent",
-        "hook",
-        "rewrite",
-        "index",
-        "status",
-        "verify",
-        "update",
-        "bench-search",
-    ];
+    // Derive the names from clap itself: a hand-maintained copy already
+    // drifted once (the hidden commands are registered as `__hook`/
+    // `__rewrite`, not "hook"/"rewrite"), and any future variant would
+    // silently miss the hint.
+    use clap::CommandFactory;
+    let command = super::Cli::command();
+    let subcommands: Vec<&str> =
+        command.get_subcommands().map(|sc| sc.get_name()).collect();
     let mut saw_flag = false;
     for arg in std::env::args_os().skip(1) {
         let Some(s) = arg.to_str() else {
@@ -371,7 +369,7 @@ pub(crate) fn print_subcommand_collision_hint() {
             saw_flag = true;
             continue;
         }
-        if saw_flag && SUBCOMMANDS.contains(&s) {
+        if saw_flag && subcommands.contains(&s) {
             eprintln!(
                 "st: note: '{s}' matched the '{s}' subcommand; to search for that word use `st -e {s}` or `st -- {s}`"
             );

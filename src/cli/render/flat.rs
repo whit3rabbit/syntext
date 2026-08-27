@@ -105,14 +105,24 @@ pub(in crate::cli) fn render_heading_to(
     let mut current_path: Option<PathBuf> = None;
     for m in matches {
         if current_path.as_ref() != Some(&m.path) {
+            // rg keeps the blank line between file groups even under
+            // --no-filename (verified against rg 15.2.0): only the printed
+            // path text is suppressed, not the group separator. Gating the
+            // `writeln!` inside the same `!args.no_filename` check as the
+            // path text dropped that separator for `--heading --no-filename`.
             if current_path.is_some() {
                 writeln!(out)?;
             }
-            write_styled(out, args.color, styles.path, path_bytes(&m.path).as_ref())?;
-            if args.null {
-                out.write_all(b"\0")?;
-            } else {
-                out.write_all(b"\n")?;
+            // rg prints no heading for a single-input search (--heading only
+            // groups when a filename would be shown); honor --no-filename and
+            // the single-input default instead of always emitting one.
+            if !args.no_filename {
+                write_styled(out, args.color, styles.path, path_bytes(&m.path).as_ref())?;
+                if args.null {
+                    out.write_all(b"\0")?;
+                } else {
+                    out.write_all(b"\n")?;
+                }
             }
             current_path = Some(m.path.clone());
         }
@@ -177,6 +187,24 @@ pub(in crate::cli) fn render_vimgrep_to(
         );
         let line = apply_output_modifiers(&raw, &m.line_content, Some(&re), args);
         let spans = match_spans(Some(&re), &line.content);
+        if args.invert_match && m.submatch_start == m.submatch_end {
+            // -v: no submatch exists; rg -v --vimgrep prints path:line:content
+            // with no column field. Keyed on invert_match, not the empty-span
+            // shape: a zero-width regex hit is 0==0 too and must reach the
+            // per-hit loop below.
+            write_styled(out, args.color, styles.path, &path_bytes(&m.path))?;
+            let path_sep = if args.null { b'\0' } else { b':' };
+            out.write_all(&[path_sep])?;
+            write_styled_num(out, args.color, styles.line, m.line_number as usize)?;
+            write!(out, ":")?;
+            if args.byte_offset {
+                let line_start = m.byte_offset.saturating_sub(m.submatch_start as u64);
+                write!(out, "{line_start}:")?;
+            }
+            write_highlighted(out, args.color, styles, &line.content, &spans)?;
+            out.write_all(b"\n")?;
+            continue;
+        }
         for hit in re.find_iter(&m.line_content) {
             if hit.start() == hit.end() {
                 continue;
@@ -192,12 +220,13 @@ pub(in crate::cli) fn render_vimgrep_to(
             write_styled_num(out, args.color, styles.line, m.line_number as usize)?;
             write!(out, ":{col}:")?;
             if args.byte_offset {
-                // Line-start offset, matching render_flat_to/render_heading_to
-                // and rg (byte-offset without -o is the line start, not the
-                // match). Constant across hits on the same line, printed
-                // last among the prefix fields like rg.
+                // vimgrep is a -o-style mode (one output line per match), so
+                // rg reports each hit's own absolute offset, not the line
+                // start: line_start + the hit's position within the line.
+                // Printed last among the prefix fields like rg.
                 let line_start = m.byte_offset.saturating_sub(m.submatch_start as u64);
-                write!(out, "{line_start}:")?;
+                let match_offset = line_start + hit.start() as u64;
+                write!(out, "{match_offset}:")?;
             }
             write_highlighted(out, args.color, styles, &line.content, &spans)?;
             out.write_all(b"\n")?;

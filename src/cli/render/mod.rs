@@ -17,6 +17,7 @@ pub(super) use context::render_with_context;
 pub(super) use context::render_with_context_to;
 pub(super) use count::render_count_matches;
 pub(super) use invert::render_invert_match;
+pub(in crate::cli) use invert::for_each_inverted_line;
 pub(super) use json::render_json;
 pub(super) use only_matching::render_only_matching;
 // Color decision + fixed styles, resolved in `cli/mod.rs` and consumed by the
@@ -188,16 +189,12 @@ pub(in crate::cli) fn json_submatches(
     re: &regex::bytes::Regex,
     line: &[u8],
 ) -> Vec<serde_json::Value> {
-    // Enumerate against the line with a bare trailing `\r` stripped (the last
-    // line of a file can carry one; CRLF-terminated lines are already trimmed
-    // by for_each_line). ripgrep matches on the terminator-stripped line, so
-    // without this a CRLF-aware regex sees a phantom empty line after the `\r`
-    // and emits a spurious empty submatch (e.g. `parse|` under `-x`). The `\r`
-    // is still kept in the displayed `lines` text, matching ripgrep.
-    let line = match line.split_last() {
-        Some((b'\r', head)) => head,
-        _ => line,
-    };
+    // Enumerate against the line INCLUDING its trailing `\r`: rg's JSON
+    // submatches cover a match on that `\r` too (verified against rg 15.2.0:
+    // `\s` on "needle here\r" yields the space AND the `\r`), and empty
+    // matches land where the regex crate's find_iter puts them (it skips an
+    // empty match adjacent to the previous match's end), which byte-matches
+    // rg's `parse|` / `a*` outputs on CRLF lines.
     re.find_iter(line)
         .map(|matched| {
             serde_json::json!({

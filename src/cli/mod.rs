@@ -119,14 +119,19 @@ pub fn run() -> i32 {
             // -w/-x wrapping path).
             // -f/--file PATTERNFILE: one pattern per line, OR-combined with
             // any -e patterns by the multi-e join below (empty pattern lines
-            // are kept — rg treats them as always-matching). A trailing
+            // are kept; rg treats them as always-matching). A trailing
             // newline is a file terminator, not an empty pattern; interior
-            // empty lines are. Lines are taken verbatim (no \r stripping).
+            // empty lines are. A trailing `\r` per line is stripped: rg reads
+            // CRLF pattern files as CRLF-terminated lines, not `\r`-suffixed
+            // patterns (verified against rg 15.2.0), and keeping it made
+            // every pattern from such a file silently unmatchable.
             if let Some(ref pf) = cli.pattern_file {
                 match std::fs::read_to_string(pf) {
                     Ok(text) => {
-                        let mut lines: Vec<String> =
-                            text.split('\n').map(str::to_string).collect();
+                        let mut lines: Vec<String> = text
+                            .split('\n')
+                            .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+                            .collect();
                         if lines.last().is_some_and(String::is_empty) {
                             lines.pop();
                         }
@@ -144,6 +149,10 @@ pub fn run() -> i32 {
                     }
                 }
             }
+
+            // Warnings about accepted-but-unimplemented flags go out before any
+            // of `cli`'s fields are moved into the search args below.
+            args::warn_unimplemented(&cli);
 
             let globs = cli.combined_globs();
             // True when multiple -e patterns under -F have already been escaped
@@ -198,101 +207,6 @@ pub fn run() -> i32 {
             // `fixed_strings` was already applied above for the multi-e case:
             // clear it so build_effective_pattern does not re-escape the regex.
             let fixed_strings = cli.fixed_strings && !multi_e_fixed;
-
-            // --pcre2 is not supported; warn and continue with default engine.
-            if cli.compat.pcre2 {
-                eprintln!("st: --pcre2 is not supported; using default regex engine");
-            }
-
-            // Flags that filter the result set but are not yet implemented.
-            // Warn so callers (including agents) know their filter was dropped.
-            if let Some(ref glob) = cli.compat.iglob {
-                eprintln!(
-                    "st: --iglob '{glob}' is not implemented; results may include excluded paths (use -g '!{glob}' for negation)"
-                );
-            }
-            if cli.compat.multiline {
-                eprintln!(
-                    "st: --multiline (-U) is not supported; patterns containing \\n will not match across lines"
-                );
-            }
-            if let Some(ref mfs) = cli.compat.max_filesize {
-                eprintln!(
-                    "st: --max-filesize '{mfs}' is not implemented; file-size filtering is skipped"
-                );
-            }
-            if let Some(ref ig) = cli.compat.ignore_file {
-                eprintln!(
-                    "st: --ignore-file '{}' is not implemented; ignore rules from that file are skipped",
-                    ig.display()
-                );
-            }
-            if !cli.colors.is_empty() {
-                eprintln!(
-                    "st: --colors is not implemented; default match/path/line colors are used"
-                );
-            }
-
-            // Semantically-dangerous silent flags: these are accepted (parsed)
-            // but have NO effect, and silence here would mislead an agent into
-            // thinking it searched more than it did. Warn so the dropped
-            // behavior is visible. (Truly cosmetic no-ops like --sort path,
-            // which is truthful since results are already path-sorted, are
-            // intentionally NOT warned.)
-            if cli.compat.unrestricted > 0 {
-                eprintln!(
-                    "st: -u/--unrestricted is not implemented; hidden/.gitignore/binary files are not searched"
-                );
-            }
-            if cli.compat.binary || cli.compat.text {
-                eprintln!(
-                    "st: --binary/-a/--text is not implemented; binary-file handling matches ripgrep's text-mode default"
-                );
-            }
-            if cli.compat.search_zip {
-                eprintln!(
-                    "st: -z/--search-zip is not implemented; compressed files are not transparently decompressed"
-                );
-            }
-            // --sort/--sortr are no-ops (results are always path-sorted), so
-            // `--sort path`/`--sort none` are truthful. Warn only for other
-            // sort keys, which the user expects to actually reorder results.
-            for (opt, val) in [
-                ("--sort", cli.compat.sort.as_deref()),
-                ("--sortr", cli.compat.sortr.as_deref()),
-            ] {
-                if let Some(v) = val {
-                    if v != "path" && v != "none" {
-                        eprintln!(
-                            "st: {opt} '{v}' is not implemented; results are always sorted by path"
-                        );
-                    }
-                }
-            }
-            // More search-affecting flags that are parsed but have no effect.
-            // Warn so a caller (including an agent) is not misled into trusting
-            // a preprocessor, alternate regex engine, encoding override, or
-            // ad-hoc type definition that silently did nothing.
-            if cli.compat.pre.is_some() || cli.compat.pre_glob.is_some() {
-                eprintln!(
-                    "st: --pre/--pre-glob is not implemented; files are searched as-is, not through a preprocessor"
-                );
-            }
-            if let Some(ref eng) = cli.compat.engine {
-                eprintln!(
-                    "st: --engine '{eng}' is not implemented; the default regex engine is always used"
-                );
-            }
-            if let Some(ref enc) = cli.compat.encoding {
-                eprintln!(
-                    "st: --encoding '{enc}' is not implemented; encoding is auto-detected (UTF-8/UTF-16 BOM) only"
-                );
-            }
-            if !cli.compat.type_add.is_empty() || !cli.compat.type_clear.is_empty() {
-                eprintln!(
-                    "st: --type-add/--type-clear is not implemented; -t/-T use the built-in type definitions only"
-                );
-            }
 
             // --smart-case: case-insensitive if the pattern has no uppercase
             // LITERAL characters.
@@ -356,6 +270,7 @@ pub fn run() -> i32 {
                 file_types,
                 type_nots: cli.type_not,
                 globs,
+                exclude_dirs: cli.exclude_dir,
                 column: cli.column || cli.vimgrep,
                 vimgrep: cli.vimgrep,
                 replace: cli.replace,

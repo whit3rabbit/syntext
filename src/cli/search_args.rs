@@ -30,6 +30,10 @@ pub(super) struct SearchArgs {
     pub file_types: Vec<String>,
     pub type_nots: Vec<String>,
     pub globs: Vec<String>,
+    /// Original `--exclude-dir` names, kept beside their derived `globs` so
+    /// the grep fallback can use grep's native `--exclude-dir` (its
+    /// `--exclude` is basename-only and cannot express a directory prune).
+    pub exclude_dirs: Vec<String>,
     pub column: bool,
     pub vimgrep: bool,
     pub replace: Option<String>,
@@ -90,6 +94,7 @@ impl Default for SearchArgs {
             file_types: Vec::new(),
             type_nots: Vec::new(),
             globs: Vec::new(),
+            exclude_dirs: Vec::new(),
             column: false,
             vimgrep: false,
             replace: None,

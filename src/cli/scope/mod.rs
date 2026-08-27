@@ -1,13 +1,17 @@
 //! Path-scope filtering helpers: CLI path resolution, glob matching, explicit
 //! path specs, file enumeration (--files mode), and result deduplication.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::index::Index;
 use crate::path::filter::matches_path_filter;
 use crate::{Config, SearchOptions};
 
 use super::search::SearchArgs;
+
+mod resolve;
+pub(super) use resolve::missing_explicit_paths;
+use resolve::{path_is_directory, relativize_cli_path};
 
 /// Count directory components in a relative path (0 = file at root).
 pub(super) fn path_depth(path: &Path) -> usize {
@@ -90,90 +94,23 @@ fn explicit_path_matches(path: &Path, spec: &ExplicitPathSpec) -> bool {
 }
 
 pub(super) fn shows_filename_by_default(config: &Config, paths: &[PathBuf]) -> bool {
+    // "-" (stdin) never produces an `explicit_path_specs` entry (it is not a
+    // filesystem path), so counting specs alone silently drops it from the
+    // input count. That let a mixed `-` + "." search (or any real path whose
+    // `rel_path` normalizes to empty, like the repo root) collapse to a
+    // single spec -- "-"'s, since "." is filtered out as an empty rel_path --
+    // and get misread as "one plain file", hiding the filename prefix rg
+    // shows on both halves of a mixed search. A lone `-` is the one true
+    // single-input case (no filename); combined with anything else (another
+    // `-`, or a real path) it is always multi-input, per rg.
+    if paths.iter().any(|p| p.as_os_str() == "-") {
+        return paths.len() > 1;
+    }
     match explicit_path_specs(config.repo_root.as_path(), paths).as_slice() {
         [] => true,
         [spec] => spec.is_dir,
         _ => true,
     }
-}
-
-fn path_is_directory(repo_root: &Path, cwd: &Path, path: &Path) -> bool {
-    cli_path_on_disk(repo_root, cwd, path)
-        .metadata()
-        .map(|meta| meta.is_dir())
-        .unwrap_or(false)
-}
-
-fn relativize_cli_path(repo_root: &Path, cwd: &Path, path: &Path) -> PathBuf {
-    // Absolute paths: strip the repo root to get the repo-relative path.
-    // Relative paths: see `resolve_relative_base` for the CWD-vs-repo-root rule.
-    let base = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        resolve_relative_base(repo_root, cwd, path)
-    };
-    let rel = match base.strip_prefix(repo_root) {
-        Ok(rel) => rel,
-        Err(_) => base.as_path(),
-    };
-    crate::path_util::normalize_to_forward_slashes(normalize_relative_path(rel))
-}
-
-fn cli_path_on_disk(repo_root: &Path, cwd: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        resolve_relative_base(repo_root, cwd, path)
-    }
-}
-
-/// Pick the absolute base a relative CLI path resolves against.
-///
-/// ripgrep resolves relative paths against CWD, so when CWD is inside the repo
-/// we do too: an agent standing in `<repo>/crates/foo` scopes `st pat src/` to
-/// `crates/foo/src`, not `<root>/src`, and `st pat .` scopes to the subdir
-/// instead of normalizing to an empty path that searches the whole repo.
-///
-/// When CWD is outside the repo (an explicit `--repo-root` pointing at a repo
-/// the caller is not standing in), fall back to repo-root-relative resolution
-/// so the path still reaches the index. This preserves the long-standing
-/// `--repo-root <repo> <relpath>` contract.
-fn resolve_relative_base(repo_root: &Path, cwd: &Path, path: &Path) -> PathBuf {
-    let via_cwd = cwd.join(path);
-    if via_cwd.starts_with(repo_root) {
-        via_cwd
-    } else {
-        repo_root.join(path)
-    }
-}
-
-fn normalize_relative_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => normalized.push(part),
-            Component::ParentDir => {
-                // Collapse `..` against the previous normal component so an
-                // in-repo `..` (e.g. `st pat ../sibling` from a subdir, which
-                // arrives here as `sub/../sibling`) maps to a real indexed path
-                // instead of the literal `sub/../sibling`, which matches nothing
-                // and silently returns zero results. A `..` that escapes the
-                // repo root (no normal component to pop) is kept verbatim; it
-                // still matches no indexed path, same as before.
-                if matches!(
-                    normalized.components().next_back(),
-                    Some(Component::Normal(_))
-                ) {
-                    normalized.pop();
-                } else {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
 }
 
 pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> SearchOptions {

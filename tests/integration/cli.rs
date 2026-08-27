@@ -594,6 +594,28 @@ fn heading_with_context_groups_results_by_file() {
 }
 
 #[test]
+fn heading_no_filename_still_separates_groups_with_a_blank_line() {
+    // Regression: rg keeps the blank line between file groups under
+    // `--heading --no-filename`; only the printed path text is suppressed,
+    // the group separator is not. A prior version nested the `writeln!`
+    // inside the same `!args.no_filename` check as the path text, dropping
+    // the separator entirely for this flag combination.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/one.txt"), "needle\n");
+    write_text(&repo.path().join("src/two.txt"), "needle\n");
+    build_index(repo.path(), index.path());
+
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--heading", "--no-filename", "-n", "needle", "src"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_text(&output), "1:needle\n\n1:needle\n");
+}
+
+#[test]
 fn default_filename_and_line_number_heuristics_match_scope() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
@@ -2668,7 +2690,6 @@ fn unsupported_search_flags_warn_but_still_search() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[cfg(unix)]
 fn pattern_file_ors_patterns_like_multi_e() {
     let dir = tempfile::TempDir::new().unwrap();
     let pats = dir.path().join("pats.txt");
@@ -2682,7 +2703,6 @@ gamma
 }
 
 #[test]
-#[cfg(unix)]
 fn pattern_file_empty_line_matches_everything() {
     // rg semantics: an interior empty line is an empty pattern, which
     // matches every line.
@@ -2698,7 +2718,6 @@ gamma
 }
 
 #[test]
-#[cfg(unix)]
 fn pattern_file_fixed_strings_escape_each_alternative() {
     let dir = tempfile::TempDir::new().unwrap();
     let pats = dir.path().join("pats.txt");
@@ -2712,7 +2731,6 @@ al.ha
 }
 
 #[test]
-#[cfg(unix)]
 fn pattern_file_missing_exits_2() {
     let out = run_with_stdin(&["-f", "/nonexistent-definitely-st"], b"x\n");
     assert_eq!(out.status.code(), Some(2));
@@ -2720,7 +2738,6 @@ fn pattern_file_missing_exits_2() {
 }
 
 #[test]
-#[cfg(unix)]
 fn pattern_file_empty_exits_1_like_rg() {
     let dir = tempfile::TempDir::new().unwrap();
     let pats = dir.path().join("empty.pats");
@@ -2767,7 +2784,6 @@ fn run_with_stdin(args: &[&str], input: &[u8]) -> Output {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_matches_without_filename_prefix() {
     let out = run_with_stdin(&["-n", "b"], b"a\nb\nb\n");
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
@@ -2775,7 +2791,6 @@ fn stdin_pipe_matches_without_filename_prefix() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_no_match_exits_1() {
     let out = run_with_stdin(&["zzq"], b"a\nb\n");
     assert_eq!(out.status.code(), Some(1));
@@ -2783,7 +2798,6 @@ fn stdin_pipe_no_match_exits_1() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_h_count_uses_stdin_label() {
     let out = run_with_stdin(&["-H", "-c", "b"], b"a\nb\n");
     assert_eq!(out.status.code(), Some(0));
@@ -2791,7 +2805,6 @@ fn stdin_pipe_h_count_uses_stdin_label() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_count_is_bare_by_default() {
     let out = run_with_stdin(&["-c", "b"], b"a\nb\nb\n");
     assert_eq!(out.status.code(), Some(0));
@@ -2799,7 +2812,6 @@ fn stdin_pipe_count_is_bare_by_default() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_column_without_n_prints_line_and_column() {
     // rg --column forces line:col:text even when piped stdout would
     // otherwise disable line numbers (former DIVERGENCES.md #17).
@@ -2809,7 +2821,6 @@ fn stdin_pipe_column_without_n_prints_line_and_column() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_explicit_no_line_number_beats_column_line_numbers() {
     // rg -N --column prints col:text; an explicit -N wins over --column.
     let out = run_with_stdin(&["-N", "--column", "b"], b"a\nbb\n");
@@ -2830,7 +2841,6 @@ fn indexed_column_without_n_prints_line_and_column() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_files_with_matches_uses_stdin_label() {
     let out = run_with_stdin(&["-l", "b"], b"a\nb\n");
     assert_eq!(out.status.code(), Some(0));
@@ -2838,7 +2848,6 @@ fn stdin_pipe_files_with_matches_uses_stdin_label() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_json_uses_stdin_label() {
     let out = run_with_stdin(&["--json", "foo"], b"a\nfoo\n");
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
@@ -2850,7 +2859,6 @@ fn stdin_pipe_json_uses_stdin_label() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_inverts_per_line() {
     let out = run_with_stdin(&["-v", "b"], b"a\nb\nc\n");
     assert_eq!(out.status.code(), Some(0));
@@ -2858,7 +2866,6 @@ fn stdin_pipe_inverts_per_line() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_binary_content_prints_notice_like_rg() {
     // rg semantics: a NUL in the stream replaces all line output with the
     // binary notice, exit 0 (match position relative to the NUL is
@@ -2876,7 +2883,6 @@ fn stdin_pipe_binary_content_prints_notice_like_rg() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_glob_filters_warn_and_are_ignored() {
     let out = run_with_stdin(&["-g", "*.rs", "-t", "rust", "a"], b"a\n");
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
@@ -2888,7 +2894,6 @@ fn stdin_pipe_glob_filters_warn_and_are_ignored() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_max_count_truncates() {
     let out = run_with_stdin(&["-m", "1", "-n", "b"], b"b\nb\n");
     assert_eq!(out.status.code(), Some(0));
@@ -2896,7 +2901,6 @@ fn stdin_pipe_max_count_truncates() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_after_context_prints_context_lines() {
     let out = run_with_stdin(&["-n", "-A", "1", "b"], b"b\nafter\nnope\n");
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
@@ -2904,7 +2908,6 @@ fn stdin_pipe_after_context_prints_context_lines() {
 }
 
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_works_without_index_or_git_repo() {
     let dir = tempfile::TempDir::new().unwrap();
     let mut child = st()
@@ -3083,10 +3086,127 @@ fn stdin_dash_mixed_without_index_cannot_fallback() {
     assert!(err.contains("cannot re-read stdin"), "stderr:\n{err}");
 }
 
+/// `st pat - -`: every path argument is a dash, so the index half has no
+/// scope. rg reads the stream once (the second `-` sees EOF) and searches
+/// nothing else; st must not fall back to a whole-repo index search.
+#[test]
+fn stdin_double_dash_searches_only_the_stream() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.txt"), "INDEXNEEDLE\n");
+    build_index(repo.path(), &index);
+
+    let mut child = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index)
+        .args(["--no-update", "-n", "-H", "NEEDLE", "-", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn st");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"STDINNEEDLE\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait st");
+
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    // Only the stream; a.txt must NOT leak in via an empty-scope index half.
+    assert_eq!(stdout_text(&out), "<stdin>:1:STDINNEEDLE\n");
+}
+
+/// A missing explicit path is reported like rg (stderr, exit 2) WITHOUT
+/// dropping the surviving inputs' output, including an already-consumed
+/// stdin half.
+#[test]
+fn missing_explicit_path_still_prints_other_inputs() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.txt"), "INDEXNEEDLE\n");
+    build_index(repo.path(), &index);
+
+    let out = run_repo(
+        repo.path(),
+        &index,
+        &["--no-update", "-n", "-H", "NEEDLE", "a.txt", "missing.txt"],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr_text(&out).contains("missing.txt: No such file"), "stderr:\n{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "a.txt:1:INDEXNEEDLE\n");
+
+    // Mixed `-`: the stdin half must survive the missing-path error too.
+    let mut child = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index)
+        .args(["--no-update", "-n", "-H", "NEEDLE", "-", "a.txt", "missing.txt"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn st");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"STDINNEEDLE\n")
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait st");
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stdout_text(&out), "<stdin>:1:STDINNEEDLE\na.txt:1:INDEXNEEDLE\n");
+}
+
+/// A zero-width regex hit (submatch 0..0) is NOT an inverted match: -o must
+/// not misread it as the -v sentinel and print the whole line.
+#[test]
+fn only_matching_zero_width_hit_is_not_whole_line() {
+    let out = run_with_stdin(&["-o", "b*"], b"abb\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    // rg prints an empty line then `bb`; st skips empty hits (documented),
+    // but must never print the whole source line.
+    assert_eq!(stdout_text(&out), "bb\n");
+}
+
+/// Listing modes (-L) and empty inverted output keep rg's silent-exit-1 rule
+/// on binary streams: no `binary file matches` notice.
+#[test]
+fn binary_stream_listing_and_empty_invert_stay_silent() {
+    let out = run_with_stdin(&["--files-without-match", "z"], b"a\0b z\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_text(&out), "");
+
+    let out = run_with_stdin(&["-v", "z"], b"z\0z\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_text(&out), "");
+}
+
+/// `st --files <missing path>` must error like `rg --files` instead of
+/// silently listing nothing.
+#[test]
+fn files_mode_missing_path_errors() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.txt"), "x\n");
+    build_index(repo.path(), &index);
+
+    let out = run_repo(repo.path(), &index, &["--no-update", "--files", "missing.txt"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr_text(&out).contains("missing.txt: No such file"),
+        "stderr:\n{}",
+        stderr_text(&out)
+    );
+}
+
 /// Explicit real path args win over a pipe (rg rule): the search must come
 /// from the index, and the piped bytes must be ignored.
 #[test]
-#[cfg(unix)]
 fn stdin_pipe_loses_to_explicit_path_arg() {
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
@@ -3191,4 +3311,298 @@ fn exclude_dir_drops_matching_directory_results() {
     );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     assert_eq!(stdout_text(&out), "keep.rs\n");
+}
+
+// ---------------------------------------------------------------------------
+// rg-parity regression tests for the code-review fix pass (2026-08-26).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pattern_file_crlf_lines_strip_trailing_cr_like_rg() {
+    // rg reads CRLF pattern files as CRLF-terminated lines; keeping the `\r`
+    // made every pattern from such a file silently unmatchable.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_bytes(&repo.path().join("f.txt"), b"needle here\r\nplain\r\n");
+    write_bytes(&repo.path().join("pats.txt"), b"needle\r\n");
+    build_index(repo.path(), index.path());
+    // -f resolves against CWD, not --repo-root; pass the absolute path.
+    let pats = repo.path().join("pats.txt");
+    let pats = pats.to_str().unwrap();
+    let out = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "-f", pats, "f.txt"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "needle here\r\n");
+}
+
+#[test]
+fn stdin_pipe_empty_pattern_filters_stream_like_rg() {
+    // `cmd | rg ''` prints every line; st used to hijack the pipe into a
+    // whole-index search.
+    let out = run_with_stdin(&[""], b"x\ny\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "x\ny\n");
+}
+
+#[test]
+fn stdin_pipe_blank_pattern_file_filters_stream_like_rg() {
+    let dir = tempfile::TempDir::new().unwrap();
+    write_bytes(&dir.path().join("blank.pats"), b"\n");
+    let out = st()
+        .current_dir(dir.path())
+        .args(["--no-update", "-f", "blank.pats"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .expect("piped stdin")
+                .write_all(b"x\ny\n")?;
+            child.wait_with_output()
+        })
+        .expect("run st");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "x\ny\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn files_without_match_stdin_dash_lists_stream_when_unmatched() {
+    // rg prints `<stdin>` (exit 0) when the stream itself does not match.
+    let out = run_with_stdin(&["--files-without-match", "zzz", "-"], b"alpha\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "<stdin>\n");
+    let out = run_with_stdin(&["--files-without-match", "alpha", "-"], b"alpha\n");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout_text(&out), "");
+}
+
+#[test]
+#[cfg(unix)]
+fn files_without_match_implicit_pipe_reads_stream_not_index() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("f.txt"), "needle\n");
+    build_index(repo.path(), index.path());
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index.path())
+        .args(["--no-update", "--files-without-match", "zzz"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .expect("piped stdin")
+                .write_all(b"alpha\n")?;
+            child.wait_with_output()
+        })
+        .expect("run st");
+    // The stream is the only input: it does not match, so rg lists it.
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "<stdin>\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn mixed_dash_and_path_label_both_halves() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("a.txt"), "zebra\n");
+    build_index(repo.path(), index.path());
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index.path())
+        .args(["--no-update", "-n", "zebra", "a.txt", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .expect("piped stdin")
+                .write_all(b"zebra\n")?;
+            child.wait_with_output()
+        })
+        .expect("run st");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(
+        stdout.contains("a.txt:1:zebra\n"),
+        "file half must carry its path prefix, got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("<stdin>:1:zebra\n"),
+        "stdin half must carry the <stdin> prefix, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn mixed_dash_and_whole_repo_path_labels_both_halves_without_h() {
+    // Regression: `explicit_path_specs` drops a spec whose `rel_path`
+    // normalizes to empty (e.g. "."), so `-` + "." previously collapsed to
+    // a single (`-`'s) spec and `shows_filename_by_default` misread this
+    // genuinely 2-input search as "one plain file", suppressing the
+    // filename prefix rg shows on both halves. Deliberately does not pass
+    // `-H`: the sibling `mixed_dash_and_path_label_both_halves` test uses a
+    // concrete filename (whose spec never collapses to empty) so it never
+    // exercised this auto-detect path.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("a.txt"), "zebra\n");
+    build_index(repo.path(), index.path());
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(index.path())
+        .args(["--no-update", "-n", "zebra", "-", "."])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .expect("piped stdin")
+                .write_all(b"zebra\n")?;
+            child.wait_with_output()
+        })
+        .expect("run st");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(
+        stdout.contains("a.txt:1:zebra\n"),
+        "file half must carry its path prefix, got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("<stdin>:1:zebra\n"),
+        "stdin half must carry the <stdin> prefix, got: {stdout:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_invert_only_matching_prints_whole_lines_like_rg() {
+    let out = run_with_stdin(&["-v", "-o", "zzq"], b"a\nb\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "a\nb\n");
+    let out = run_with_stdin(&["-v", "--vimgrep", "zzq"], b"a\nb\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "<stdin>:1:a\n<stdin>:2:b\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_only_matching_byte_offset_is_last_prefix_field() {
+    // rg prints [line:]byte:match; st used to print byte first.
+    let out = run_with_stdin(&["-n", "-b", "-o", "b"], b"ab\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "1:1:b\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_json_binary_offset_reports_first_nul() {
+    let out = run_with_stdin(&["--json", "parse"], b"a\0b parse\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert!(
+        stdout_text(&out).contains("\"binary_offset\":1"),
+        "end event must report the first NUL offset like rg"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn heading_single_stdin_input_prints_no_heading() {
+    let out = run_with_stdin(&["--heading", "foo"], b"foo bar\n");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "foo bar\n");
+}
+
+#[test]
+fn indexed_invert_match_byte_offsets_print_like_rg() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_bytes(&repo.path().join("f.txt"), b"foo\r\nbar baz\n");
+    build_index(repo.path(), index.path());
+    let out = run_repo(repo.path(), index.path(), &["--no-update", "-v", "-b", "zzq", "f.txt"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert_eq!(stdout_text(&out), "0:foo\r\n5:bar baz\n");
+}
+
+#[test]
+fn indexed_json_keeps_cr_submatches_on_crlf_lines() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_bytes(&repo.path().join("f.txt"), b"plain\r\n");
+    build_index(repo.path(), index.path());
+    let out = run_repo(repo.path(), index.path(), &["--no-update", "--json", "\\s", "f.txt"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    assert!(
+        stdout_text(&out).contains("\"text\":\"\\r\""),
+        "json submatches must include the \\r match like rg"
+    );
+}
+
+#[test]
+fn missing_explicit_path_exits_2_like_rg() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("f.txt"), "needle\n");
+    build_index(repo.path(), index.path());
+    let out = run_repo(repo.path(), index.path(), &["--no-update", "zzq", "no_such_file.txt"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr_text(&out).contains("no_such_file.txt"),
+        "error must name the missing path"
+    );
+}
+
+#[test]
+fn missing_explicit_path_searches_nothing_not_whole_repo() {
+    // Regression: when every explicitly named path is missing, `st` must
+    // report the IO error and match nothing else, exactly like `rg`. A prior
+    // version stripped missing paths from the search scope, which emptied
+    // the path list entirely and made `explicit_path_specs` fall back to its
+    // "no paths given" case -- silently searching (and leaking matches from)
+    // the whole repo instead of the nothing rg reports.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("unrelated.txt"), "needle here\n");
+    build_index(repo.path(), index.path());
+
+    let out = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "needle", "no_such_file.txt"],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr_text(&out).contains("no_such_file.txt"),
+        "error must name the missing path; stderr:\n{}",
+        stderr_text(&out)
+    );
+    assert_eq!(
+        stdout_text(&out),
+        "",
+        "a missing explicit path must not fall back to a whole-repo search; stdout:\n{}",
+        stdout_text(&out)
+    );
 }

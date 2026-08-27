@@ -1,12 +1,11 @@
 //! Search argument parsing, query execution, and result rendering.
 
 use std::collections::HashMap;
-use std::io::{self, Write};
+
 use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::index::Index;
-use crate::path_util::path_bytes;
 use crate::search::MatchedFile;
 use crate::{Config, IndexError};
 
@@ -17,6 +16,10 @@ pub(super) use super::scope::collect_scoped_paths;
 use super::scope::{explicit_path_specs, search_options, sort_and_dedup_matches};
 
 pub(super) use super::search_args::SearchArgs;
+
+mod output;
+pub(super) use output::render_results;
+use output::handle_output_code;
 
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     // Reject malformed -g/--glob specs before touching the index: a bad glob
@@ -31,15 +34,18 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     // directories with no `.syntext` at all. A `-` mixed with real paths
     // searches BOTH: the stdin half is collected here, `-` is stripped from
     // the path arguments, and the halves are merged before rendering.
-    let mut args = args.clone();
-    let stdin_half = match super::stdin_search::run_or_collect_stdin(&config, &args) {
+    let stdin_half = match super::stdin_search::run_or_collect_stdin(&config, args) {
         super::stdin_search::StdinFilterOutcome::Done(code) => return code,
-        super::stdin_search::StdinFilterOutcome::Mixed(half) => {
-            args.paths.retain(|p| p.as_os_str() != "-");
-            Some(half)
-        }
+        super::stdin_search::StdinFilterOutcome::Mixed(half) => Some(half),
         super::stdin_search::StdinFilterOutcome::NotStdin => None,
     };
+
+    // Output defaults must be computed while `-` still counts as a search
+    // input: rg labels BOTH halves of a mixed search (`<stdin>:...`,
+    // `path:...`), so shows_filename_by_default has to see the two path
+    // specs. Stripping `-` first (as the index half's run args require)
+    // would suppress the filename prefix for both halves.
+    let output_args = args.with_effective_output_defaults(&config);
 
     let index = match Index::open(config.clone()) {
         Ok(idx) => idx,
@@ -48,7 +54,7 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         // mixed-dash case cannot fall back: stdin was already consumed here,
         // and the fallback child would silently search an empty stream.
         Err(IndexError::IndexNotFound(dir)) if stdin_half.is_none() => {
-            return super::fallback::handle_missing_index(&config, &args, &dir);
+            return super::fallback::handle_missing_index(&config, args, &dir);
         }
         Err(IndexError::IndexNotFound(dir)) => {
             eprintln!("st: no index found at {}", dir.display());
@@ -63,6 +69,31 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         }
     };
 
+    // rg reports each missing explicitly named path, still searches the
+    // remaining inputs, and exits 2. Handling it here (after the fallback
+    // decision, which reports missing paths itself via the rg child) keeps
+    // every other input's output: the old early return dropped the surviving
+    // paths' matches AND an already-collected stdin half.
+    //
+    // A missing path is intentionally left in `search_args.paths` (not
+    // stripped): `explicit_path_specs`/`matches_any_explicit_path` treat a
+    // nonexistent path as an explicit spec that matches nothing (the same way
+    // `-L`'s `collect_scoped_paths` already does with the original, unfiltered
+    // args), not as an absent scope. Stripping it here previously emptied the
+    // path list whenever every named path was missing, which
+    // `explicit_path_specs` reads as "no scope given" and silently falls back
+    // to searching the whole repo -- leaking matches from files the caller
+    // never named. See `tests/integration/cli.rs` for the regression case.
+    let mut saw_missing_path = false;
+    let search_args = args.clone();
+    let missing = super::scope::missing_explicit_paths(&config.repo_root, &args.paths);
+    if !missing.is_empty() {
+        saw_missing_path = true;
+        for path in &missing {
+            eprintln!("st: {}: No such file or directory", path.display());
+        }
+    }
+
     // Bounded auto-update: run git change detection before searching so the
     // index is as fresh as possible within a latency budget, and emit the
     // staleness notice on stderr when still behind. See
@@ -71,7 +102,17 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     // stale, never change the search's own exit code).
     let needs_async_catchup = super::catchup::run_bounded_auto_update(&index, &config, args.quiet);
 
-    let exit_code = run_and_render(&index, &config, &args, stdin_half);
+    let exit_code = match stdin_half {
+        Some(half) => {
+            // The index half must not see `-` as a path scope; strip it from
+            // the run args only (output defaults above already accounted
+            // for it).
+            let mut run_args = search_args;
+            run_args.paths.retain(|p| p.as_os_str() != "-");
+            run_and_render(&index, &config, &run_args, &output_args, Some(half))
+        }
+        None => run_and_render(&index, &config, &search_args, &output_args, None),
+    };
 
     // Spawn the async catch-up only after results have been printed, so the
     // extra process never delays or reorders the search's own stdout/stderr.
@@ -79,6 +120,11 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         super::catchup::maybe_spawn_async_catchup(&config);
     }
 
+    // rg: an IO error on an explicitly named input beats the match/no-match
+    // exit codes (2 over both 0 and 1).
+    if saw_missing_path {
+        return 2;
+    }
     exit_code
 }
 
@@ -86,10 +132,9 @@ fn run_and_render(
     index: &Index,
     config: &Config,
     args: &SearchArgs,
+    output_args: &SearchArgs,
     stdin_half: Option<super::stdin_search::StdinHalf>,
 ) -> i32 {
-    let output_args = args.with_effective_output_defaults(config);
-
     #[cfg(feature = "symbols")]
     if args.sym.is_some() || args.refs.is_some() {
         // --sym and --refs are mutually exclusive; --sym-kind needs a name.
@@ -112,7 +157,7 @@ fn run_and_render(
         return handle_output_code(super::render::render_invert_match(
             index,
             config,
-            &output_args,
+            output_args,
         ));
     }
 
@@ -124,6 +169,9 @@ fn run_and_render(
         }
     };
     let (mut results, mut files) = (outcome.matches, outcome.files);
+    // Capture before the half is consumed below: -L lists the stdin input in
+    // its argv position.
+    let stdin_first = stdin_half.as_ref().map(|h| h.stdin_first);
     let mut trailing_notice: Option<u64> = None;
     let mut notice_printed = false;
     if let Some(half) = stdin_half {
@@ -131,11 +179,17 @@ fn run_and_render(
             // rg replaces a binary stdin half's line output with the
             // `binary file matches` notice, in this half's position.
             if half.stdin_first {
-                super::stdin_search::print_binary_notice(
+                let notice_code = super::stdin_search::print_binary_notice_exit_code(
                     offset,
                     output_args.no_filename,
                     output_args.vimgrep,
                 );
+                // A genuine write failure (not the always-0 broken-pipe
+                // case) beats every other exit-code decision below, the same
+                // way `render_results` short-circuits on its own io::Result.
+                if notice_code != 0 {
+                    return notice_code;
+                }
                 notice_printed = true;
             } else {
                 trailing_notice = Some(offset);
@@ -149,15 +203,19 @@ fn run_and_render(
         Some(index),
         results,
         files,
-        &output_args,
+        output_args,
         search_start.elapsed(),
+        stdin_first,
     );
     if let Some(offset) = trailing_notice {
-        super::stdin_search::print_binary_notice(
+        let notice_code = super::stdin_search::print_binary_notice_exit_code(
             offset,
             output_args.no_filename,
             output_args.vimgrep,
         );
+        if notice_code != 0 {
+            return notice_code;
+        }
         notice_printed = true;
     }
     // A printed notice means the stdin half matched; rg exits 0 overall.
@@ -165,163 +223,6 @@ fn run_and_render(
         return 0;
     }
     code
-}
-
-/// Shared result rendering and exit-code dispatch for every content search
-/// that already has its matches in hand: the indexed path passes
-/// `Some(index)`, the stdin filter passes `None`. Branches that genuinely
-/// need the index (corpus `-L` listing) treat `None` as an empty scope, which
-/// the stdin guard makes unreachable.
-pub(super) fn render_results(
-    config: &Config,
-    index: Option<&Index>,
-    results: Vec<crate::SearchMatch>,
-    files: HashMap<PathBuf, MatchedFile>,
-    output_args: &SearchArgs,
-    elapsed: std::time::Duration,
-) -> i32 {
-    if output_args.search_stats {
-        let matched_files: std::collections::BTreeSet<_> =
-            results.iter().map(|m| &m.path).collect();
-        eprintln!(
-            "Elapsed: {:.6}s, Matches: {}, Files with matches: {}",
-            elapsed.as_secs_f64(),
-            results.len(),
-            matched_files.len()
-        );
-    }
-
-    if output_args.files_without_match {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        let sep = if output_args.null { b'\0' } else { b'\n' };
-        let matched: std::collections::BTreeSet<_> =
-            results.iter().map(|m| m.path.clone()).collect();
-        let mut found_any = false;
-        let scoped: Vec<PathBuf> = match index {
-            Some(ix) => collect_scoped_paths(ix, config, output_args),
-            None => Vec::new(),
-        };
-        for path in scoped {
-            if matched.contains(&path) {
-                continue;
-            }
-            found_any = true;
-            // Under -q, suppress output but keep scanning so the exit code
-            // still reflects whether any unmatched file exists.
-            if output_args.quiet {
-                break;
-            }
-            let result = out
-                .write_all(path_bytes(&path).as_ref())
-                .and_then(|_| out.write_all(&[sep]));
-            if let Err(err) = result {
-                return handle_output(err);
-            }
-        }
-        return if found_any { 0 } else { 1 };
-    }
-
-    if results.is_empty() && output_args.json {
-        if let Err(err) = super::render::render_json(index, config, &results, &files, output_args) {
-            return handle_output(err);
-        }
-        return 1;
-    }
-
-    if results.is_empty() {
-        return 1;
-    }
-
-    if output_args.quiet {
-        return 0;
-    }
-
-    if output_args.files_with_matches {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        let sep = if output_args.null { b'\0' } else { b'\n' };
-        let mut seen = std::collections::BTreeSet::new();
-        for m in &results {
-            seen.insert(m.path.clone());
-        }
-        for path in &seen {
-            let result = out
-                .write_all(path_bytes(path).as_ref())
-                .and_then(|_| out.write_all(&[sep]));
-            if let Err(err) = result {
-                return handle_output(err);
-            }
-        }
-        return 0;
-    }
-
-    if output_args.count_matches || (output_args.count && output_args.only_matching) {
-        return handle_output_code(super::render::render_count_matches(
-            config,
-            &results,
-            output_args,
-        ));
-    }
-
-    if output_args.count {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        let mut counts: std::collections::BTreeMap<PathBuf, usize> =
-            std::collections::BTreeMap::new();
-        for m in &results {
-            *counts.entry(m.path.clone()).or_default() += 1;
-        }
-        for (path, n) in &counts {
-            let result = if output_args.no_filename {
-                writeln!(out, "{n}")
-            } else {
-                let count_sep = if output_args.null { b'\0' } else { b':' };
-                out.write_all(path_bytes(path).as_ref())
-                    .and_then(|_| out.write_all(&[count_sep]))
-                    .and_then(|_| writeln!(out, "{n}"))
-            };
-            if let Err(err) = result {
-                return handle_output(err);
-            }
-        }
-        return 0;
-    }
-
-    let has_context = output_args.after_context > 0 || output_args.before_context > 0;
-
-    let render = if output_args.json {
-        super::render::render_json(index, config, &results, &files, output_args)
-    } else if output_args.vimgrep {
-        super::render::render_vimgrep(config, &results, output_args)
-    } else if output_args.only_matching {
-        super::render::render_only_matching(config, &results, &files, output_args)
-    } else if has_context {
-        super::render::render_with_context(config, &results, &files, output_args)
-    } else if output_args.heading {
-        super::render::render_heading(&results, output_args)
-    } else {
-        super::render::render_flat(&results, output_args)
-    };
-
-    if let Err(err) = render {
-        return handle_output(err);
-    }
-
-    0
-}
-
-fn handle_output_code(result: io::Result<i32>) -> i32 {
-    result.unwrap_or_else(handle_output)
-}
-
-fn handle_output(err: io::Error) -> i32 {
-    if err.kind() == io::ErrorKind::BrokenPipe {
-        0
-    } else {
-        eprintln!("st: {err}");
-        2
-    }
 }
 
 pub(super) fn run_search(

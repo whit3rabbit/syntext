@@ -58,6 +58,16 @@ pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
         path_args.push(PathBuf::from(pat));
     }
     path_args.extend(cli.paths.iter().cloned());
+    // rg --files <path> errors (exit 2) on an explicitly named path that does
+    // not exist; silently scoping to nothing hides the typo from scripts.
+    let missing = super::resolve::missing_explicit_paths(&config.repo_root, &path_args);
+    let mut exit_code = 0;
+    if !missing.is_empty() {
+        for path in &missing {
+            eprintln!("st: {}: No such file or directory", path.display());
+        }
+        exit_code = 2;
+    }
     let specs = explicit_path_specs(config.repo_root.as_path(), &path_args);
 
     let mut paths: Vec<_> = snapshot
@@ -89,7 +99,6 @@ pub(crate) fn cmd_files(config: Config, cli: &crate::cli::args::Cli) -> i32 {
         }
     }
     paths.sort_unstable();
-    let mut exit_code = 0;
     for path in &paths {
         let result = out
             .write_all(path_bytes(path).as_ref())

@@ -17,6 +17,23 @@ use super::{
 };
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
+
+/// Per-line invert kernel shared by the corpus invert scan and the stdin
+/// filter: yields every line `re` does not match as `(line_number,
+/// line_start, rendered bytes)`, where the rendered slice re-includes a
+/// CRLF line's trailing `\r` (rg -v prints the raw line).
+pub(in crate::cli) fn for_each_inverted_line(
+    content: &[u8],
+    re: &regex::bytes::Regex,
+    mut f: impl FnMut(u32, usize, &[u8]),
+) {
+    for_each_line(content, |line_num, line_start, line| {
+        if !re.is_match(line) {
+            f(line_num, line_start, super::rendered_line(content, line_start, line));
+        }
+    });
+}
+
 pub(in crate::cli) fn render_invert_match(
     index: &Index,
     config: &Config,
@@ -86,41 +103,38 @@ fn render_invert_match_scan(
         total_bytes_searched += raw_bytes.len();
         let file_bytes = crate::index::normalize_encoding(&raw_bytes);
 
-        for_each_line(file_bytes.as_ref(), |line_num, line_start, line| {
+        for_each_inverted_line(file_bytes.as_ref(), re, |line_num, line_start, display| {
             if args
                 .max_count
                 .is_some_and(|limit| selected_in_file >= limit)
             {
                 return;
             }
-            if !re.is_match(line) {
-                found_any = true;
-                selected_in_file += 1;
-                if args.quiet {
-                    return;
-                }
-                // Match on the \r-stripped slice (unchanged semantics); render
-                // with the `\r` re-included, like rg.
-                let display = super::rendered_line(file_bytes.as_ref(), line_start, line);
-                if args.json {
-                    file_selected.push((line_num as usize, line_start, display.to_vec()));
-                } else if !args.files_with_matches && !args.files_without_match && !args.count {
-                    let _ = write_formatted_line(
-                        &mut out,
-                        super::FormatOpts {
-                            no_path: args.no_filename,
-                            no_num: args.no_line_number,
-                            null: args.null,
-                            color: args.color,
-                    byte_offset: None,
-                        },
-                        rel_path.as_path(),
-                        line_num as usize,
-                        b':',
-                        display,
-                        &[],
-                    );
-                }
+            found_any = true;
+            selected_in_file += 1;
+            if args.quiet {
+                return;
+            }
+            if args.json {
+                file_selected.push((line_num as usize, line_start, display.to_vec()));
+            } else if !args.files_with_matches && !args.files_without_match && !args.count {
+                let _ = write_formatted_line(
+                    &mut out,
+                    super::FormatOpts {
+                        no_path: args.no_filename,
+                        no_num: args.no_line_number,
+                        null: args.null,
+                        color: args.color,
+                        // rg -v -b prints each inverted line's
+                        // line-start byte offset.
+                        byte_offset: args.byte_offset.then_some(line_start as u64),
+                    },
+                    rel_path.as_path(),
+                    line_num as usize,
+                    b':',
+                    display,
+                    &[],
+                );
             }
         });
 

@@ -1684,21 +1684,24 @@ fn cli_parses_verify_subcommand() {
     assert!(matches!(cli.command, Some(ManageCommand::Verify)));
 }
 
-#[test]
-fn cmd_search_missing_index_exits_2() {
-    let repo = tempfile::TempDir::new().unwrap();
-    let missing = tempfile::TempDir::new().unwrap();
-    let config = Config {
-        repo_root: repo.path().to_path_buf(),
-        index_dir: missing.path().join("no-such-index"),
-        ..Config::default()
-    };
-    let args = super::search::SearchArgs {
-        pattern: "foo".to_string(),
-        ..super::search::SearchArgs::default()
-    };
-    assert_eq!(super::search::cmd_search(config, &args), 2);
-}
+// A prior version of this test asserted `cmd_search(..) == 2` on a missing
+// index with no other setup. That held when fallback was opt-in (the
+// pre-fallback-feature default), but `fallback::fallback_enabled` now
+// defaults to *on* (opt-out via `SYNTEXT_FALLBACK_RG=0`), so the exit code
+// here depends on ambient state this in-process test cannot control without
+// races: whether `rg`/`grep` are on PATH, and (for the `rg` branch, which
+// execs using `std::env::args_os()` rather than the `args` passed in)
+// the current test process's own argv. Forcing it deterministically would
+// need `std::env::set_var("SYNTEXT_FALLBACK_RG", ..)`, which this test
+// harness runs in parallel and is documented as unsafe elsewhere in this
+// file (see `max_file_size_is_clamped_to_ceiling` above) since it can affect
+// any concurrently running test that reads the same env var.
+//
+// The missing-index contract is covered deterministically instead by the
+// subprocess-based integration tests, which scope the env var per-process:
+// `fallback_to_ripgrep_when_index_missing` (fallback default-on) and
+// `missing_index_fallback_disabled_errors_with_guidance` (fallback off ->
+// exit 2), both in `tests/integration/cli.rs`.
 
 #[test]
 #[cfg(feature = "symbols")]

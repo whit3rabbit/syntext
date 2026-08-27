@@ -358,7 +358,7 @@ proptest! {
         // mid-stream is an input no engine contract covers (rg/st transcode
         // it differently), and a NUL triggers rg's chunked binary output
         // (matches before the NUL's read chunk print normally, then the
-        // notice) which depends on rg's reader buffer size — see
+        // notice) which depends on rg's reader buffer size; see
         // DIVERGENCES.md #16. Single-chunk binary streams are covered
         // byte-exactly by stdin_golden_binary_stream_notice_parity instead.
         let starts_with_bom = |c: &[u8]| {
@@ -378,7 +378,7 @@ proptest! {
         // \r in rendered lines like rg, so the comparison is byte-exact.
         // Exception: -x. st matches the \r-stripped line (rg --crlf-like,
         // divergence #15), so under -x WHICH lines match can differ on CRLF
-        // lines — drop the flag rather than compare across that seam.
+        // lines; drop the flag rather than compare across that seam.
         let effective_flags: Vec<&str> = if stream.contains(&b'\r') {
             effective_flags.into_iter().filter(|f| *f != "-x").collect()
         } else {

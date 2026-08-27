@@ -150,12 +150,18 @@ const ST_VALUE_FLAGS: &[&str] = &["--repo-root", "--index-dir", "--index", "--sy
 /// st-only boolean flags (rg does not understand them).
 const ST_BOOL_FLAGS: &[&str] = &["--verbose", "--fallback", "--no-update"];
 
-/// Strip st-specific tokens from argv so the remainder is valid ripgrep input.
+/// Strip st-specific tokens from argv so the remainder is valid ripgrep input,
+/// translating the st-only flags that carry search semantics into rg's own
+/// spelling:
+/// - `--rust`/`--rs` (st's extension filter "rs") becomes `-t rust`; rg's type
+///   table has no "rs" and rejects `-t rs` outright.
+/// - `--exclude-dir D` becomes `-g '!D/**' -g '!**/D/**'` (the same glob pair
+///   st's own scope filter derives from the flag; rg has no --exclude-dir).
 ///
-/// Drops `--verbose`/`--fallback`/`--no-update` (no value) and `--repo-root`/
-/// `--index-dir`/`--index`/`--sym-kind` plus their value (separate-token or
-/// `--flag=value` form). argv[0]
-/// (the program name) is dropped; everything else passes through untouched.
+/// Flags with no rg equivalent (`--verbose`/`--fallback`/`--no-update`, and
+/// `--repo-root`/`--index-dir`/`--index`/`--sym-kind` plus their value in
+/// separate-token or `--flag=value` form) are dropped. argv[0] (the program
+/// name) is dropped; everything else passes through untouched.
 ///
 /// Known limitation: a value-form flag name appearing as the *value* of another
 /// option (e.g. `st -e --index-dir`, searching for the literal "--index-dir")
@@ -166,13 +172,32 @@ fn filter_st_args(argv: Vec<OsString>) -> Vec<OsString> {
     let mut iter = argv.into_iter();
     let _ = iter.next(); // skip argv[0] (program name)
     let mut skip_value = false;
+    let mut pending_exclude_dir = false;
     for arg in iter {
         if skip_value {
             skip_value = false;
             continue;
         }
+        if pending_exclude_dir {
+            pending_exclude_dir = false;
+            push_exclude_dir_globs(&mut out, &arg.to_string_lossy());
+            continue;
+        }
         let s = arg.to_string_lossy();
         if ST_BOOL_FLAGS.contains(&s.as_ref()) {
+            continue;
+        }
+        if s == "--rust" || s == "--rs" {
+            out.push(OsString::from("-t"));
+            out.push(OsString::from("rust"));
+            continue;
+        }
+        if s == "--exclude-dir" {
+            pending_exclude_dir = true;
+            continue;
+        }
+        if let Some(dir) = s.strip_prefix("--exclude-dir=") {
+            push_exclude_dir_globs(&mut out, dir);
             continue;
         }
         if ST_VALUE_FLAGS.contains(&s.as_ref()) {
@@ -187,6 +212,15 @@ fn filter_st_args(argv: Vec<OsString>) -> Vec<OsString> {
         out.push(arg);
     }
     out
+}
+
+/// Emit rg argv excluding `dir` the way st's own scope filter does (see
+/// `exclude_dir_glob_pair` in `args/globs.rs`); rg has no native --exclude-dir.
+fn push_exclude_dir_globs(out: &mut Vec<OsString>, dir: &str) {
+    for glob in super::args::globs::exclude_dir_glob_pair(dir) {
+        out.push(OsString::from("-g"));
+        out.push(OsString::from(glob));
+    }
 }
 
 /// Reconstruct a best-effort grep command from parsed search args.
@@ -257,6 +291,12 @@ fn build_grep_args(args: &SearchArgs) -> Vec<OsString> {
             v.push(OsString::from(format!("--include={g}")));
         }
     }
+    // grep matches --include/--exclude against basenames only, so the globs
+    // st derives from --exclude-dir (`!D/**`) can never match there. grep has
+    // a native --exclude-dir; use it for the faithful mapping.
+    for d in &args.exclude_dirs {
+        v.push(OsString::from(format!("--exclude-dir={d}")));
+    }
     // `-e PATTERN` so patterns beginning with `-` are not mistaken for flags.
     v.push(OsString::from("-e"));
     v.push(OsString::from(&args.pattern));
@@ -271,105 +311,5 @@ fn build_grep_args(args: &SearchArgs) -> Vec<OsString> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn osv(items: &[&str]) -> Vec<OsString> {
-        items.iter().map(OsString::from).collect()
-    }
-
-    fn to_strings(items: Vec<OsString>) -> Vec<String> {
-        items
-            .into_iter()
-            .map(|o| o.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    #[test]
-    fn filter_strips_bool_flags() {
-        let got = filter_st_args(osv(&["st", "--verbose", "foo", "--fallback", "src"]));
-        assert_eq!(to_strings(got), vec!["foo", "src"]);
-    }
-
-    #[test]
-    fn filter_strips_value_flags_separate_form() {
-        let got = filter_st_args(osv(&[
-            "st",
-            "--repo-root",
-            "/tmp/r",
-            "foo",
-            "--index-dir",
-            "/tmp/i",
-            "src",
-        ]));
-        assert_eq!(to_strings(got), vec!["foo", "src"]);
-    }
-
-    #[test]
-    fn filter_strips_value_flags_eq_form() {
-        let got = filter_st_args(osv(&["st", "--repo-root=/tmp/r", "--index=/tmp/i", "foo"]));
-        assert_eq!(to_strings(got), vec!["foo"]);
-    }
-
-    #[test]
-    fn filter_preserves_rg_shared_flags() {
-        let got = filter_st_args(osv(&["st", "-i", "--json", "-A", "2", "-e", "foo", "src"]));
-        assert_eq!(
-            to_strings(got),
-            vec!["-i", "--json", "-A", "2", "-e", "foo", "src"]
-        );
-    }
-
-    #[test]
-    fn grep_args_map_common_flags() {
-        let args = SearchArgs {
-            pattern: "needle".to_string(),
-            paths: vec![PathBuf::from("src")],
-            ignore_case: true,
-            word_regexp: true,
-            after_context: 2,
-            ..SearchArgs::default()
-        };
-        let got = to_strings(build_grep_args(&args));
-        assert!(got.contains(&"-r".to_string()));
-        assert!(got.contains(&"-n".to_string()));
-        assert!(got.contains(&"-E".to_string()));
-        assert!(got.contains(&"-i".to_string()));
-        assert!(got.contains(&"-w".to_string()));
-        assert_eq!(
-            got.windows(2).find(|w| w[0] == "-A"),
-            Some(["-A".to_string(), "2".to_string()].as_slice())
-        );
-        // pattern is passed via -e, paths trail.
-        assert_eq!(
-            got.windows(2).find(|w| w[0] == "-e"),
-            Some(["-e".to_string(), "needle".to_string()].as_slice())
-        );
-        assert_eq!(got.last().unwrap(), "src");
-    }
-
-    #[test]
-    fn grep_args_default_paths_to_dot_and_fixed_strings() {
-        let args = SearchArgs {
-            pattern: "lit".to_string(),
-            fixed_strings: true,
-            ..SearchArgs::default()
-        };
-        let got = to_strings(build_grep_args(&args));
-        assert!(got.contains(&"-F".to_string()));
-        assert!(!got.contains(&"-E".to_string()));
-        assert_eq!(got.last().unwrap(), ".");
-    }
-
-    #[test]
-    fn grep_args_map_globs_to_include_exclude() {
-        let args = SearchArgs {
-            pattern: "x".to_string(),
-            globs: vec!["*.rs".to_string(), "!*.lock".to_string()],
-            ..SearchArgs::default()
-        };
-        let got = to_strings(build_grep_args(&args));
-        assert!(got.contains(&"--include=*.rs".to_string()));
-        assert!(got.contains(&"--exclude=*.lock".to_string()));
-    }
-}
+#[path = "fallback_tests.rs"]
+mod tests;
