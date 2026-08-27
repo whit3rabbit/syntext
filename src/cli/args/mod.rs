@@ -9,8 +9,8 @@ use clap::Parser;
 pub use super::commands::ManageCommand;
 
 mod compat;
-pub use compat::CompatibilityArgs;
 pub(crate) use compat::warn_unimplemented;
+pub use compat::CompatibilityArgs;
 pub(in crate::cli) mod globs;
 
 /// Fast code search with index acceleration. ripgrep-style interface.
@@ -355,8 +355,7 @@ pub(crate) fn print_subcommand_collision_hint() {
     // silently miss the hint.
     use clap::CommandFactory;
     let command = super::Cli::command();
-    let subcommands: Vec<&str> =
-        command.get_subcommands().map(|sc| sc.get_name()).collect();
+    let subcommands: Vec<&str> = command.get_subcommands().map(|sc| sc.get_name()).collect();
     let mut saw_flag = false;
     for arg in std::env::args_os().skip(1) {
         let Some(s) = arg.to_str() else {

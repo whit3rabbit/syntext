@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::render;
 use super::super::search::render_results;
+use super::render;
 use super::SearchArgs;
 use crate::search::MatchedFile;
 

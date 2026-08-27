@@ -150,18 +150,18 @@ fn empty_pattern_matches_all_lines() {
 
 #[test]
 fn regex_zero_width_at_end_of_content_is_not_a_phantom_line() {
-// `x|` matches zero-width at end-of-content, which sits after the final
-// newline; no line exists there (rg prints no trailing empty line). This
-// is reachable via an empty -f/--file pattern line ORed into the query.
-let re = regex::bytes::Regex::new("x|").unwrap();
-let matches = verify_regex(&re, Path::new("f"), b"alpha\nbeta\n", false);
-assert_eq!(matches.len(), 2, "{matches:?}");
+    // `x|` matches zero-width at end-of-content, which sits after the final
+    // newline; no line exists there (rg prints no trailing empty line). This
+    // is reachable via an empty -f/--file pattern line ORed into the query.
+    let re = regex::bytes::Regex::new("x|").unwrap();
+    let matches = verify_regex(&re, Path::new("f"), b"alpha\nbeta\n", false);
+    assert_eq!(matches.len(), 2, "{matches:?}");
 }
 
 #[test]
 fn empty_pattern_does_not_emit_phantom_trailing_line() {
-let matches = verify_empty(Path::new("f"), b"alpha\nbeta\n", false);
-assert_eq!(matches.len(), 2, "{matches:?}");
+    let matches = verify_empty(Path::new("f"), b"alpha\nbeta\n", false);
+    assert_eq!(matches.len(), 2, "{matches:?}");
 }
 
 #[test]
@@ -183,10 +183,16 @@ fn crlf_output_regex_semantics_on_r_included_lines() {
         b("parse$").is_match(b"parse\r"),
         "$ anchors before a lone trailing \\r"
     );
-    assert!(b("parse$").is_match(b"parse\r\n"), "$ anchors before \\r\\n");
+    assert!(
+        b("parse$").is_match(b"parse\r\n"),
+        "$ anchors before \\r\\n"
+    );
     assert!(
         !b("parse.$").is_match(b"parse\r"),
         "`.` must not consume the \\r"
     );
-    assert!(b("parse\\r$").is_match(b"parse\r"), "an explicit \\r is still matchable");
+    assert!(
+        b("parse\\r$").is_match(b"parse\r"),
+        "an explicit \\r is still matchable"
+    );
 }

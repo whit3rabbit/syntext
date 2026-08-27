@@ -16,8 +16,8 @@ pub(super) use context::render_with_context;
 #[cfg(test)]
 pub(super) use context::render_with_context_to;
 pub(super) use count::render_count_matches;
-pub(super) use invert::render_invert_match;
 pub(in crate::cli) use invert::for_each_inverted_line;
+pub(super) use invert::render_invert_match;
 pub(super) use json::render_json;
 pub(super) use only_matching::render_only_matching;
 // Color decision + fixed styles, resolved in `cli/mod.rs` and consumed by the

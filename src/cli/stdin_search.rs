@@ -25,8 +25,8 @@ use std::path::PathBuf;
 
 use super::render;
 use super::search::SearchArgs;
-use run::{invert_matches, render_stdin_half};
 use crate::search::verifier::verify_regex;
+use run::{invert_matches, render_stdin_half};
 
 /// Label ripgrep uses for matches that came from stdin.
 pub(super) const STDIN_LABEL: &str = "<stdin>";

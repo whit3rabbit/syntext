@@ -63,7 +63,14 @@ fn filter_translates_exclude_dir_to_globs() {
     let got = filter_st_args(osv(&["st", "--exclude-dir", "node_modules", "foo", "."]));
     assert_eq!(
         to_strings(got),
-        vec!["-g", "!node_modules/**", "-g", "!**/node_modules/**", "foo", "."]
+        vec![
+            "-g",
+            "!node_modules/**",
+            "-g",
+            "!**/node_modules/**",
+            "foo",
+            "."
+        ]
     );
     let got = filter_st_args(osv(&["st", "--exclude-dir=target", "foo"]));
     assert_eq!(

@@ -100,7 +100,9 @@ pub(in crate::cli) fn render_only_matching(
                     no_num: args.no_line_number,
                     null: args.null,
                     color: args.color,
-                    byte_offset: args.byte_offset.then_some(line_start + matched.start() as u64),
+                    byte_offset: args
+                        .byte_offset
+                        .then_some(line_start + matched.start() as u64),
                 },
                 &m.path,
                 m.line_number as usize,
@@ -156,7 +158,10 @@ fn render_only_matching_with_context(
         // Keep the line-start byte offset for -b (see render_only_matching).
         let mut file_lines: Vec<(usize, Vec<u8>)> = Vec::new();
         for_each_line(file_content.as_ref(), |_, line_start, line| {
-            file_lines.push((line_start, rendered_line(file_content.as_ref(), line_start, line).to_vec()))
+            file_lines.push((
+                line_start,
+                rendered_line(file_content.as_ref(), line_start, line).to_vec(),
+            ))
         });
 
         let match_set: BTreeSet<usize> = match_lines

@@ -115,11 +115,7 @@ pub(in crate::cli) fn render_results(
     }
 
     if output_args.count_matches || (output_args.count && output_args.only_matching) {
-        return handle_output_code(render::render_count_matches(
-            config,
-            &results,
-            output_args,
-        ));
+        return handle_output_code(render::render_count_matches(config, &results, output_args));
     }
 
     if output_args.count {

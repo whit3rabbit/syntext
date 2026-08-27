@@ -18,8 +18,8 @@ use super::scope::{explicit_path_specs, search_options, sort_and_dedup_matches};
 pub(super) use super::search_args::SearchArgs;
 
 mod output;
-pub(super) use output::render_results;
 use output::handle_output_code;
+pub(super) use output::render_results;
 
 pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     // Reject malformed -g/--glob specs before touching the index: a bad glob

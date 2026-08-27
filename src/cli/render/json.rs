@@ -91,9 +91,9 @@ pub(in crate::cli) fn render_json(
                     0,
                     std::path::PathBuf::from(crate::cli::stdin_search::STDIN_LABEL),
                 ),
-                Some(false) => {
-                    scoped.push(std::path::PathBuf::from(crate::cli::stdin_search::STDIN_LABEL))
-                }
+                Some(false) => scoped.push(std::path::PathBuf::from(
+                    crate::cli::stdin_search::STDIN_LABEL,
+                )),
                 None => {}
             }
             scoped

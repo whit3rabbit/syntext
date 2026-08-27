@@ -63,7 +63,10 @@ pub(in crate::cli) fn render_with_context_to(
         // can print it (json.rs keeps the same (line_start, line) pair).
         let mut file_lines: Vec<(usize, Vec<u8>)> = Vec::new();
         for_each_line(file_content.as_ref(), |_, line_start, line| {
-            file_lines.push((line_start, rendered_line(file_content.as_ref(), line_start, line).to_vec()))
+            file_lines.push((
+                line_start,
+                rendered_line(file_content.as_ref(), line_start, line).to_vec(),
+            ))
         });
 
         // Set of 0-based line indices that are direct matches.

@@ -17,7 +17,6 @@ use super::{
 };
 use crate::cli::search::{collect_scoped_paths, SearchArgs};
 
-
 /// Per-line invert kernel shared by the corpus invert scan and the stdin
 /// filter: yields every line `re` does not match as `(line_number,
 /// line_start, rendered bytes)`, where the rendered slice re-includes a
@@ -29,7 +28,11 @@ pub(in crate::cli) fn for_each_inverted_line(
 ) {
     for_each_line(content, |line_num, line_start, line| {
         if !re.is_match(line) {
-            f(line_num, line_start, super::rendered_line(content, line_start, line));
+            f(
+                line_num,
+                line_start,
+                super::rendered_line(content, line_start, line),
+            );
         }
     });
 }

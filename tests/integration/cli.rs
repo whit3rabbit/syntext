@@ -2694,10 +2694,13 @@ fn pattern_file_ors_patterns_like_multi_e() {
     let dir = tempfile::TempDir::new().unwrap();
     let pats = dir.path().join("pats.txt");
     fs::write(&pats, "alpha\ngamma\n").unwrap();
-    let out = run_with_stdin(&["-n", "-f", pats.to_str().unwrap(), "-"], b"alpha
+    let out = run_with_stdin(
+        &["-n", "-f", pats.to_str().unwrap(), "-"],
+        b"alpha
 beta
 gamma
-");
+",
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     assert_eq!(stdout_text(&out), "1:alpha\n3:gamma\n");
 }
@@ -2709,10 +2712,13 @@ fn pattern_file_empty_line_matches_everything() {
     let dir = tempfile::TempDir::new().unwrap();
     let pats = dir.path().join("pats.txt");
     fs::write(&pats, "alpha\n\ngamma\n").unwrap();
-    let out = run_with_stdin(&["-n", "-f", pats.to_str().unwrap(), "-"], b"alpha
+    let out = run_with_stdin(
+        &["-n", "-f", pats.to_str().unwrap(), "-"],
+        b"alpha
 beta
 gamma
-");
+",
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     assert_eq!(stdout_text(&out), "1:alpha\n2:beta\n3:gamma\n");
 }
@@ -2722,9 +2728,12 @@ fn pattern_file_fixed_strings_escape_each_alternative() {
     let dir = tempfile::TempDir::new().unwrap();
     let pats = dir.path().join("pats.txt");
     fs::write(&pats, "al.ha\nga\n").unwrap();
-    let out = run_with_stdin(&["-n", "-F", "-f", pats.to_str().unwrap(), "-"], b"alpha
+    let out = run_with_stdin(
+        &["-n", "-F", "-f", pats.to_str().unwrap(), "-"],
+        b"alpha
 al.ha
-");
+",
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     // Only the literal `al.ha` matches; under -F the dot is not a wildcard.
     assert_eq!(stdout_text(&out), "2:al.ha\n");
@@ -2734,7 +2743,11 @@ al.ha
 fn pattern_file_missing_exits_2() {
     let out = run_with_stdin(&["-f", "/nonexistent-definitely-st"], b"x\n");
     assert_eq!(out.status.code(), Some(2));
-    assert!(stderr_text(&out).contains("-f/--file"), "stderr:\n{}", stderr_text(&out));
+    assert!(
+        stderr_text(&out).contains("-f/--file"),
+        "stderr:\n{}",
+        stderr_text(&out)
+    );
 }
 
 #[test]
@@ -2757,7 +2770,12 @@ fn rust_flag_selects_rs_files() {
 
     for flag in ["--rust", "--rs"] {
         let out = run_repo(repo.path(), &index, &[flag, "-l", "RUSTNEEDLE"]);
-        assert_eq!(out.status.code(), Some(0), "flag {flag}: {}", stderr_text(&out));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "flag {flag}: {}",
+            stderr_text(&out)
+        );
         assert_eq!(stdout_text(&out), "a.rs\n", "flag {flag}");
     }
 }
@@ -3136,7 +3154,11 @@ fn missing_explicit_path_still_prints_other_inputs() {
         &["--no-update", "-n", "-H", "NEEDLE", "a.txt", "missing.txt"],
     );
     assert_eq!(out.status.code(), Some(2));
-    assert!(stderr_text(&out).contains("missing.txt: No such file"), "stderr:\n{}", stderr_text(&out));
+    assert!(
+        stderr_text(&out).contains("missing.txt: No such file"),
+        "stderr:\n{}",
+        stderr_text(&out)
+    );
     assert_eq!(stdout_text(&out), "a.txt:1:INDEXNEEDLE\n");
 
     // Mixed `-`: the stdin half must survive the missing-path error too.
@@ -3145,7 +3167,15 @@ fn missing_explicit_path_still_prints_other_inputs() {
         .arg(repo.path())
         .arg("--index-dir")
         .arg(&index)
-        .args(["--no-update", "-n", "-H", "NEEDLE", "-", "a.txt", "missing.txt"])
+        .args([
+            "--no-update",
+            "-n",
+            "-H",
+            "NEEDLE",
+            "-",
+            "a.txt",
+            "missing.txt",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3159,7 +3189,10 @@ fn missing_explicit_path_still_prints_other_inputs() {
         .expect("write stdin");
     let out = child.wait_with_output().expect("wait st");
     assert_eq!(out.status.code(), Some(2));
-    assert_eq!(stdout_text(&out), "<stdin>:1:STDINNEEDLE\na.txt:1:INDEXNEEDLE\n");
+    assert_eq!(
+        stdout_text(&out),
+        "<stdin>:1:STDINNEEDLE\na.txt:1:INDEXNEEDLE\n"
+    );
 }
 
 /// A zero-width regex hit (submatch 0..0) is NOT an inverted match: -o must
@@ -3195,7 +3228,11 @@ fn files_mode_missing_path_errors() {
     write_text(&repo.path().join("a.txt"), "x\n");
     build_index(repo.path(), &index);
 
-    let out = run_repo(repo.path(), &index, &["--no-update", "--files", "missing.txt"]);
+    let out = run_repo(
+        repo.path(),
+        &index,
+        &["--no-update", "--files", "missing.txt"],
+    );
     assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr_text(&out).contains("missing.txt: No such file"),
@@ -3542,7 +3579,11 @@ fn indexed_invert_match_byte_offsets_print_like_rg() {
     let index = tempfile::TempDir::new().unwrap();
     write_bytes(&repo.path().join("f.txt"), b"foo\r\nbar baz\n");
     build_index(repo.path(), index.path());
-    let out = run_repo(repo.path(), index.path(), &["--no-update", "-v", "-b", "zzq", "f.txt"]);
+    let out = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "-v", "-b", "zzq", "f.txt"],
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     assert_eq!(stdout_text(&out), "0:foo\r\n5:bar baz\n");
 }
@@ -3558,7 +3599,11 @@ fn indexed_json_excludes_cr_submatches_on_crlf_lines() {
     let index = tempfile::TempDir::new().unwrap();
     write_bytes(&repo.path().join("f.txt"), b"plain\r\n");
     build_index(repo.path(), index.path());
-    let out = run_repo(repo.path(), index.path(), &["--no-update", "--json", "\\s", "f.txt"]);
+    let out = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "--json", "\\s", "f.txt"],
+    );
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     assert!(
         !stdout_text(&out).contains("\"text\":\"\\r\""),
@@ -3608,7 +3653,11 @@ fn missing_explicit_path_exits_2_like_rg() {
     let index = tempfile::TempDir::new().unwrap();
     write_text(&repo.path().join("f.txt"), "needle\n");
     build_index(repo.path(), index.path());
-    let out = run_repo(repo.path(), index.path(), &["--no-update", "zzq", "no_such_file.txt"]);
+    let out = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "zzq", "no_such_file.txt"],
+    );
     assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr_text(&out).contains("no_such_file.txt"),

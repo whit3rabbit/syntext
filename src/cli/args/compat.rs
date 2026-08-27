@@ -159,116 +159,108 @@ pub struct CompatibilityArgs {
 /// engine override that silently did nothing. Purely diagnostic: every one of
 /// these flags is parsed and then ignored.
 pub(crate) fn warn_unimplemented(cli: &super::Cli) {
-        // --pcre2 is not supported; warn and continue with default engine.
-        if cli.compat.pcre2 {
-            eprintln!("st: --pcre2 is not supported; using default regex engine");
-        }
+    // --pcre2 is not supported; warn and continue with default engine.
+    if cli.compat.pcre2 {
+        eprintln!("st: --pcre2 is not supported; using default regex engine");
+    }
 
-        // Flags that filter the result set but are not yet implemented.
-        // Warn so callers (including agents) know their filter was dropped.
-        if let Some(ref glob) = cli.compat.iglob {
-            eprintln!(
+    // Flags that filter the result set but are not yet implemented.
+    // Warn so callers (including agents) know their filter was dropped.
+    if let Some(ref glob) = cli.compat.iglob {
+        eprintln!(
                 "st: --iglob '{glob}' is not implemented; results may include excluded paths (use -g '!{glob}' for negation)"
             );
-        }
-        if cli.compat.multiline {
-            eprintln!(
+    }
+    if cli.compat.multiline {
+        eprintln!(
                 "st: --multiline (-U) is not supported; patterns containing \\n will not match across lines"
             );
-        }
-        if let Some(ref mfs) = cli.compat.max_filesize {
-            eprintln!(
-                "st: --max-filesize '{mfs}' is not implemented; file-size filtering is skipped"
-            );
-        }
-        if let Some(ref ig) = cli.compat.ignore_file {
-            eprintln!(
-                "st: --ignore-file '{}' is not implemented; ignore rules from that file are skipped",
-                ig.display()
-            );
-        }
-        if !cli.colors.is_empty() {
-            eprintln!(
-                "st: --colors is not implemented; default match/path/line colors are used"
-            );
-        }
+    }
+    if let Some(ref mfs) = cli.compat.max_filesize {
+        eprintln!("st: --max-filesize '{mfs}' is not implemented; file-size filtering is skipped");
+    }
+    if let Some(ref ig) = cli.compat.ignore_file {
+        eprintln!(
+            "st: --ignore-file '{}' is not implemented; ignore rules from that file are skipped",
+            ig.display()
+        );
+    }
+    if !cli.colors.is_empty() {
+        eprintln!("st: --colors is not implemented; default match/path/line colors are used");
+    }
 
-        // Semantically-dangerous silent flags: these are accepted (parsed)
-        // but have NO effect, and silence here would mislead an agent into
-        // thinking it searched more than it did. Warn so the dropped
-        // behavior is visible. (Truly cosmetic no-ops like --sort path,
-        // which is truthful since results are already path-sorted, are
-        // intentionally NOT warned.)
-        if cli.compat.unrestricted > 0 {
-            eprintln!(
+    // Semantically-dangerous silent flags: these are accepted (parsed)
+    // but have NO effect, and silence here would mislead an agent into
+    // thinking it searched more than it did. Warn so the dropped
+    // behavior is visible. (Truly cosmetic no-ops like --sort path,
+    // which is truthful since results are already path-sorted, are
+    // intentionally NOT warned.)
+    if cli.compat.unrestricted > 0 {
+        eprintln!(
                 "st: -u/--unrestricted is not implemented; hidden/.gitignore/binary files are not searched"
             );
-        }
-        if cli.compat.binary || cli.compat.text {
-            eprintln!(
+    }
+    if cli.compat.binary || cli.compat.text {
+        eprintln!(
                 "st: --binary/-a/--text is not implemented; binary-file handling matches ripgrep's text-mode default"
             );
-        }
-        if cli.compat.search_zip {
-            eprintln!(
+    }
+    if cli.compat.search_zip {
+        eprintln!(
                 "st: -z/--search-zip is not implemented; compressed files are not transparently decompressed"
             );
-        }
-        // More result-affecting silent no-ops: these change which bytes rg
-        // would search or how it splits lines, and accepting them silently
-        // would under-report what was actually searched.
-        if cli.compat.follow {
-            eprintln!(
-                "st: -L/--follow is not implemented; symlinked paths outside the walk are not searched"
-            );
-        }
-        if cli.compat.one_file_system {
-            eprintln!(
+    }
+    // More result-affecting silent no-ops: these change which bytes rg
+    // would search or how it splits lines, and accepting them silently
+    // would under-report what was actually searched.
+    if cli.compat.follow {
+        eprintln!(
+            "st: -L/--follow is not implemented; symlinked paths outside the walk are not searched"
+        );
+    }
+    if cli.compat.one_file_system {
+        eprintln!(
                 "st: --one-file-system is not implemented; other mount points under the search paths are not excluded"
             );
-        }
-        if cli.compat.null_data {
-            eprintln!(
-                "st: --null-data is not implemented; lines always split on '\\n' only"
-            );
-        }
-        // --sort/--sortr are no-ops (results are always path-sorted), so
-        // `--sort path`/`--sort none` are truthful. Warn only for other
-        // sort keys, which the user expects to actually reorder results.
-        for (opt, val) in [
-            ("--sort", cli.compat.sort.as_deref()),
-            ("--sortr", cli.compat.sortr.as_deref()),
-        ] {
-            if let Some(v) = val {
-                if v != "path" && v != "none" {
-                    eprintln!(
-                        "st: {opt} '{v}' is not implemented; results are always sorted by path"
-                    );
-                }
+    }
+    if cli.compat.null_data {
+        eprintln!("st: --null-data is not implemented; lines always split on '\\n' only");
+    }
+    // --sort/--sortr are no-ops (results are always path-sorted), so
+    // `--sort path`/`--sort none` are truthful. Warn only for other
+    // sort keys, which the user expects to actually reorder results.
+    for (opt, val) in [
+        ("--sort", cli.compat.sort.as_deref()),
+        ("--sortr", cli.compat.sortr.as_deref()),
+    ] {
+        if let Some(v) = val {
+            if v != "path" && v != "none" {
+                eprintln!("st: {opt} '{v}' is not implemented; results are always sorted by path");
             }
         }
-        // More search-affecting flags that are parsed but have no effect.
-        // Warn so a caller (including an agent) is not misled into trusting
-        // a preprocessor, alternate regex engine, encoding override, or
-        // ad-hoc type definition that silently did nothing.
-        if cli.compat.pre.is_some() || cli.compat.pre_glob.is_some() {
-            eprintln!(
+    }
+    // More search-affecting flags that are parsed but have no effect.
+    // Warn so a caller (including an agent) is not misled into trusting
+    // a preprocessor, alternate regex engine, encoding override, or
+    // ad-hoc type definition that silently did nothing.
+    if cli.compat.pre.is_some() || cli.compat.pre_glob.is_some() {
+        eprintln!(
                 "st: --pre/--pre-glob is not implemented; files are searched as-is, not through a preprocessor"
             );
-        }
-        if let Some(ref eng) = cli.compat.engine {
-            eprintln!(
-                "st: --engine '{eng}' is not implemented; the default regex engine is always used"
-            );
-        }
-        if let Some(ref enc) = cli.compat.encoding {
-            eprintln!(
+    }
+    if let Some(ref eng) = cli.compat.engine {
+        eprintln!(
+            "st: --engine '{eng}' is not implemented; the default regex engine is always used"
+        );
+    }
+    if let Some(ref enc) = cli.compat.encoding {
+        eprintln!(
                 "st: --encoding '{enc}' is not implemented; encoding is auto-detected (UTF-8/UTF-16 BOM) only"
             );
-        }
-        if !cli.compat.type_add.is_empty() || !cli.compat.type_clear.is_empty() {
-            eprintln!(
+    }
+    if !cli.compat.type_add.is_empty() || !cli.compat.type_clear.is_empty() {
+        eprintln!(
                 "st: --type-add/--type-clear is not implemented; -t/-T use the built-in type definitions only"
             );
-        }
+    }
 }
