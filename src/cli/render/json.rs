@@ -159,7 +159,9 @@ pub(in crate::cli) fn render_json(
                 continue;
             };
             if match_set.contains(&idx) {
-                let submatches = json_submatches(&re, line);
+                let line_is_unterminated_eof =
+                    file_content.as_ref().get(*line_start + line.len()) != Some(&b'\n');
+                let submatches = json_submatches(&re, line, line_is_unterminated_eof);
                 file_matched_lines += 1;
                 file_total_matches += submatches.len();
                 let message =

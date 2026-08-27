@@ -17,6 +17,9 @@ All notable changes to this project will be documented in this file.
 - **`--byte-offset` now prints in rg's field order**: last among the prefix fields, immediately before the content (`[path:][line:][col:]byte:content`), instead of leading; context lines keep the `-` separator after it. Exposed by the `--column` un-filtering in the stdin proptest.
 - On binary streams, rg's searcher treats NUL as a line terminator: `-c` counts and `--json` line numbers now split at NUL bytes, matching rg.
 
+### Fixed
+- JSON submatch enumeration (`--json`) no longer reports a spurious zero-width submatch on a line's isolated slice: a trailing `\r` is stripped before matching again (the oracle's reference `rg` always runs with `--crlf`, which folds it into the line terminator; regressed by the CRLF-passthrough rendering change above), and a zero-width match exactly at the end of a truly unterminated final line (no trailing `\n` anywhere in the file) is excluded, matching rg's line-oriented searcher (oracle fixtures `repro_45977b47dc1f41aa`, re-minimized `repro_8ffb628246265813`).
+
 ### Behavior changes
 - **`cmd | st 'pat'` previously ignored stdin and silently searched the whole repo index** (exit 0 with wrong results); it now filters the stream. Scripts relying on the old (incorrect) behavior must pass an explicit path argument.
 - `st 'pat' -` previously matched nothing (the `-` was a literal path filter, exit 1); it now reads stdin.

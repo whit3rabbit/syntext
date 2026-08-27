@@ -3548,7 +3548,12 @@ fn indexed_invert_match_byte_offsets_print_like_rg() {
 }
 
 #[test]
-fn indexed_json_keeps_cr_submatches_on_crlf_lines() {
+fn indexed_json_excludes_cr_submatches_on_crlf_lines() {
+    // rg's oracle reference always runs with `--crlf` (tests/integration/
+    // oracle_helpers.rs), which folds a bare trailing `\r` into the line
+    // terminator: verified directly against rg 15.2.0 --crlf, `\s` on
+    // "plain\r\n" reports zero submatches (the `\r` is never searchable
+    // content), not a `\r` submatch. `st`'s JSON submatches must match that.
     let repo = tempfile::TempDir::new().unwrap();
     let index = tempfile::TempDir::new().unwrap();
     write_bytes(&repo.path().join("f.txt"), b"plain\r\n");
@@ -3556,8 +3561,44 @@ fn indexed_json_keeps_cr_submatches_on_crlf_lines() {
     let out = run_repo(repo.path(), index.path(), &["--no-update", "--json", "\\s", "f.txt"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
     assert!(
-        stdout_text(&out).contains("\"text\":\"\\r\""),
-        "json submatches must include the \\r match like rg"
+        !stdout_text(&out).contains("\"text\":\"\\r\""),
+        "json submatches must not report a \\r match; \\r is terminator, not content"
+    );
+    assert!(
+        stdout_text(&out).contains("\"submatches\":[]"),
+        "no whitespace besides the terminator \\r exists in \"plain\""
+    );
+}
+
+#[test]
+fn indexed_json_no_phantom_submatch_after_unterminated_final_line() {
+    // Regression (oracle fixture repro_45977b47dc1f41aa.json / re-minimized
+    // repro_8ffb628246265813.json): a zero-width match at the very end of the
+    // file's last line, when that line has no trailing `\n` at all, is a
+    // phantom rg never reports (no terminator exists there for its
+    // line-oriented searcher to anchor past). This hit two distinct code
+    // paths: an `-x` CRLF-anchor match on a final line ending in a bare `\r`,
+    // and a bare-`|` pattern's per-byte empty-match enumeration on any
+    // unterminated final line.
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_bytes(&repo.path().join("f.txt"), b"query\nparse\r");
+    build_index(repo.path(), index.path());
+    let out = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "--json", "-x", "parse|", "f.txt"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr_text(&out));
+    let text = stdout_text(&out);
+    assert_eq!(
+        text.matches("\"type\":\"match\"").count(),
+        1,
+        "only the \"parse\\r\" line should match: {text}"
+    );
+    assert!(
+        text.contains("\"submatches\":[{\"end\":5,\"match\":{\"text\":\"parse\"},\"start\":0}]"),
+        "must report exactly one submatch (\"parse\"), no trailing phantom: {text}"
     );
 }
 

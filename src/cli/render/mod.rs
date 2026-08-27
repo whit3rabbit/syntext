@@ -26,7 +26,6 @@ pub(in crate::cli) use color::{resolve_color, ColorStyles, ColorWhen};
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::path_util::path_bytes;
 use crate::Config;
@@ -126,114 +125,11 @@ pub(in crate::cli) fn write_formatted_line(
     out.write_all(b"\n")
 }
 
-pub(in crate::cli) fn json_data(bytes: &[u8]) -> serde_json::Value {
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        serde_json::json!({ "text": text })
-    } else {
-        serde_json::json!({ "bytes": crate::base64::encode(bytes) })
-    }
-}
-
-pub(in crate::cli) fn json_stats(
-    elapsed: Duration,
-    searches: usize,
-    searches_with_match: usize,
-    bytes_searched: usize,
-    bytes_printed: usize,
-    matched_lines: usize,
-    matches: usize,
-) -> serde_json::Value {
-    serde_json::json!({
-        "elapsed": json_elapsed(elapsed),
-        "searches": searches,
-        "searches_with_match": searches_with_match,
-        "bytes_searched": bytes_searched,
-        "bytes_printed": bytes_printed,
-        "matched_lines": matched_lines,
-        "matches": matches
-    })
-}
-
-pub(in crate::cli) fn json_elapsed(elapsed: Duration) -> serde_json::Value {
-    let human = if elapsed.is_zero() {
-        "0s".to_string()
-    } else if elapsed.as_secs() == 0 {
-        format!("{:.6}s", elapsed.as_secs_f64())
-    } else {
-        format!("{:.3}s", elapsed.as_secs_f64())
-    };
-    serde_json::json!({
-        "secs": elapsed.as_secs(),
-        "nanos": elapsed.subsec_nanos(),
-        "human": human
-    })
-}
-
-/// The rendered form of a line: the `\r`-stripped slice plus its trailing
-/// `\r` when the original content carries one. rg prints CRLF lines with the
-/// `\r` intact; matching still runs on the stripped slice, so this is a
-/// display-only widening.
-pub(in crate::cli) fn rendered_line<'a>(
-    content: &'a [u8],
-    line_start: usize,
-    stripped: &[u8],
-) -> &'a [u8] {
-    let base = line_start + stripped.len();
-    match content.get(base) {
-        Some(b'\r') => &content[line_start..base + 1],
-        _ => &content[line_start..base],
-    }
-}
-
-pub(in crate::cli) fn json_submatches(
-    re: &regex::bytes::Regex,
-    line: &[u8],
-) -> Vec<serde_json::Value> {
-    // Enumerate against the line INCLUDING its trailing `\r`: rg's JSON
-    // submatches cover a match on that `\r` too (verified against rg 15.2.0:
-    // `\s` on "needle here\r" yields the space AND the `\r`), and empty
-    // matches land where the regex crate's find_iter puts them (it skips an
-    // empty match adjacent to the previous match's end), which byte-matches
-    // rg's `parse|` / `a*` outputs on CRLF lines.
-    re.find_iter(line)
-        .map(|matched| {
-            serde_json::json!({
-                "match": json_data(&line[matched.start()..matched.end()]),
-                "start": matched.start(),
-                "end": matched.end()
-            })
-        })
-        .collect()
-}
-
-pub(in crate::cli) fn json_line_message(
-    message_type: &str,
-    path: &Path,
-    line_number: usize,
-    absolute_offset: usize,
-    line: &[u8],
-    submatches: Vec<serde_json::Value>,
-) -> String {
-    let mut line_with_newline = line.to_vec();
-    line_with_newline.push(b'\n');
-    serde_json::json!({
-        "type": message_type,
-        "data": {
-            "path": json_data(path_bytes(path).as_ref()),
-            "lines": json_data(&line_with_newline),
-            "line_number": line_number,
-            "absolute_offset": absolute_offset,
-            "submatches": submatches
-        }
-    })
-    .to_string()
-}
-
-pub(in crate::cli) fn write_json_line(out: &mut dyn Write, line: &str) -> io::Result<usize> {
-    out.write_all(line.as_bytes())?;
-    out.write_all(b"\n")?;
-    Ok(line.len() + 1)
-}
+mod json_helpers;
+pub(in crate::cli) use json_helpers::{
+    json_data, json_elapsed, json_line_message, json_stats, json_submatches, rendered_line,
+    write_json_line,
+};
 
 /// Canonicalized repo root, computed once per render call (not per file) to
 /// avoid a `realpath` syscall on every matched file. Falls back to the
