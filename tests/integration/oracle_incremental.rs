@@ -322,16 +322,44 @@ fn assert_st_matches_rg(
     Ok(())
 }
 
+/// Sleep before lock-retry attempt `attempt` (1-based): 10ms, 20ms, 40ms, ...
+///
+/// `LockConflict` is not only raised for a genuine competing lock holder. The
+/// index maps any non-`WouldBlock` `flock(2)` failure onto it too (see
+/// `helpers::classify_try_lock`), and the nightly macOS runner produces those:
+/// it runs these golden tests concurrently with the 2000-case
+/// `test_incremental_differential`, which churns through thousands of `st` /
+/// `git` / `rg` subprocesses, and a lock call can fail on kernel resource
+/// exhaustion rather than contention. Both conditions clear on their own, so
+/// back off and retry rather than failing the run.
+fn lock_retry_backoff(attempt: usize) {
+    std::thread::sleep(std::time::Duration::from_millis(10 << (attempt - 1)));
+}
+
+const LOCK_RETRY_MAX: usize = 6;
+
 /// commit_batch with retry on LockConflict (matches incremental.rs pattern).
 fn commit_batch_with_retry(index: &Index) -> Result<(), IndexError> {
-    use std::thread;
-    use std::time::Duration;
-    const MAX: usize = 5;
-    for attempt in 1..=MAX {
+    for attempt in 1..=LOCK_RETRY_MAX {
         match index.commit_batch() {
             Ok(()) => return Ok(()),
-            Err(IndexError::LockConflict(_)) if attempt < MAX => {
-                thread::sleep(Duration::from_millis(10));
+            Err(IndexError::LockConflict(_)) if attempt < LOCK_RETRY_MAX => {
+                lock_retry_backoff(attempt);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
+}
+
+/// Build the index with retry on LockConflict, for the same reason as
+/// [`commit_batch_with_retry`].
+fn build_with_retry(config: Config) -> Result<Index, IndexError> {
+    for attempt in 1..=LOCK_RETRY_MAX {
+        match Index::build(config.clone()) {
+            Ok(idx) => return Ok(idx),
+            Err(IndexError::LockConflict(_)) if attempt < LOCK_RETRY_MAX => {
+                lock_retry_backoff(attempt);
             }
             Err(e) => return Err(e),
         }
@@ -345,14 +373,11 @@ fn commit_batch_with_retry(index: &Index) -> Result<(), IndexError> {
 /// exclusive lock at the moment we reopen. A short retry backoff resolves the
 /// overlap without masking a genuinely wedged index.
 fn open_with_retry(config: Config) -> Result<Index, IndexError> {
-    use std::thread;
-    use std::time::Duration;
-    const MAX: usize = 5;
-    for attempt in 1..=MAX {
+    for attempt in 1..=LOCK_RETRY_MAX {
         match Index::open(config.clone()) {
             Ok(idx) => return Ok(idx),
-            Err(IndexError::LockConflict(_)) if attempt < MAX => {
-                thread::sleep(Duration::from_millis(10));
+            Err(IndexError::LockConflict(_)) if attempt < LOCK_RETRY_MAX => {
+                lock_retry_backoff(attempt);
             }
             Err(e) => return Err(e),
         }
@@ -442,7 +467,7 @@ proptest! {
             ..Config::default()
         };
 
-        let mut index = Index::build(config.clone()).expect("build index");
+        let mut index = build_with_retry(config.clone()).expect("build index");
 
         // Apply mutations one at a time; commit + assert after each step
         for (step, op) in mutations.iter().enumerate() {
@@ -535,7 +560,7 @@ fn overlay_full_correctness() {
         ..Config::default()
     };
 
-    let index = Index::build(config).expect("build");
+    let index = build_with_retry(config).expect("build");
 
     // Verify baseline: st and rg agree on the initial corpus
     assert_st_matches_rg(
@@ -558,7 +583,7 @@ fn overlay_full_correctness() {
         index.notify_change(&abs).ok();
     }
 
-    let result = index.commit_batch();
+    let result = commit_batch_with_retry(&index);
     match result {
         Err(IndexError::OverlayFull { .. }) => {
             // Expected — now verify Tier A still holds on the pre-error tree state.
@@ -630,7 +655,7 @@ fn golden_incremental_rename() {
         auto_update: false,
         ..Config::default()
     };
-    let index = Index::build(config).expect("build");
+    let index = build_with_retry(config).expect("build");
 
     // Verify initial state
     assert_st_matches_rg(
@@ -648,7 +673,7 @@ fn golden_incremental_rename() {
     fs::rename(&abs_old, &abs_new).unwrap();
     index.notify_delete(&abs_old).unwrap();
     index.notify_change(&abs_new).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index).unwrap();
 
     // Update git index: remove old path, add new path so st's git-walk agrees with rg.
     git(&["rm", "--cached", "--ignore-unmatch", "src/old.rs"]);
@@ -704,14 +729,14 @@ fn golden_incremental_grow_past_limit() {
         auto_update: false,
         ..Config::default()
     };
-    let index = Index::build(config).expect("build");
+    let index = build_with_retry(config).expect("build");
 
     // Grow past limit
     let abs_main = repo.path().join("src/main.rs");
     let oversized = vec![b'x'; (max_file_size + 1) as usize];
     fs::write(&abs_main, &oversized).unwrap();
     index.notify_change(&abs_main).unwrap();
-    index.commit_batch().unwrap();
+    commit_batch_with_retry(&index).unwrap();
 
     // After growing past the limit: rg won't search oversized binary-looking file by default,
     // and st should have removed it from the index. Both should report 0 matches.

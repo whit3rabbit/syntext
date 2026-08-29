@@ -54,9 +54,7 @@ pub(super) fn build_index_from_file_list(
     // Exclusive lock for the duration of the build. Prevents concurrent
     // builds and blocks open() callers until the build completes.
     let lock_file = super::helpers::open_dir_lock_file(&config.index_dir)?;
-    lock_file
-        .try_lock()
-        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+    super::helpers::try_lock_exclusive(&lock_file, &config.index_dir)?;
     // Full builds and incremental commits both rewrite shared index state,
     // so they must serialize on the same writer lock.
     let write_lock = super::helpers::acquire_writer_lock(&config.index_dir)?;
@@ -338,9 +336,7 @@ pub(super) fn build_index_from_file_list(
     lock_file
         .unlock()
         .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;
-    lock_file
-        .try_lock_shared()
-        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+    super::helpers::try_lock_shared(&lock_file, &config.index_dir)?;
     drop(write_lock);
     super::Index::open_with_lock(config, lock_file)
 }

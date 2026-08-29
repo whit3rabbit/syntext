@@ -50,6 +50,65 @@ pub(super) fn open_dir_lock_file(index_dir: &Path) -> std::io::Result<std::fs::F
         .open(index_dir.join("lock"))
 }
 
+/// Bound on in-place `EINTR` retries. A signal storm should surface as an
+/// error rather than spin here.
+#[cfg(not(target_arch = "wasm32"))]
+const LOCK_INTERRUPT_RETRIES: usize = 8;
+
+/// Runs one `try_lock` / `try_lock_shared` attempt and classifies the failure.
+///
+/// `File::try_lock` fails for two very different reasons and the distinction
+/// matters. `WouldBlock` is a genuine competing lock holder. `Error(e)` is an
+/// `flock(2)` failure that has nothing to do with contention: `EINTR` when a
+/// signal lands mid-call, or `ENOLCK` when the kernel lock table is exhausted
+/// under heavy process churn (observed on macOS nightly runs, where a
+/// `commit_batch` against a private, freshly built index dir reported "locked
+/// by another process" though no other process had ever opened it).
+///
+/// `EINTR` is retried in place: nothing was acquired and retrying does not
+/// block. Any other I/O error is logged with its errno and still surfaces as
+/// [`IndexError::LockConflict`], because every caller already treats that as
+/// "back off and retry", which is also the right response to a transient
+/// kernel resource failure.
+#[cfg(not(target_arch = "wasm32"))]
+fn classify_try_lock(
+    index_dir: &Path,
+    op: &str,
+    mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+) -> Result<(), IndexError> {
+    for _ in 0..LOCK_INTERRUPT_RETRIES {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(IndexError::LockConflict(index_dir.to_path_buf()))
+            }
+            Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Interrupted => {
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                log::warn!("{op} on {} failed: {e}", index_dir.display());
+                return Err(IndexError::LockConflict(index_dir.to_path_buf()));
+            }
+        }
+    }
+    log::warn!(
+        "{op} on {} interrupted {LOCK_INTERRUPT_RETRIES} times",
+        index_dir.display()
+    );
+    Err(IndexError::LockConflict(index_dir.to_path_buf()))
+}
+
+/// `File::try_lock` (exclusive) with [`classify_try_lock`] error handling.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn try_lock_exclusive(file: &std::fs::File, index_dir: &Path) -> Result<(), IndexError> {
+    classify_try_lock(index_dir, "exclusive lock", || file.try_lock())
+}
+
+/// `File::try_lock_shared` with [`classify_try_lock`] error handling.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn try_lock_shared(file: &std::fs::File, index_dir: &Path) -> Result<(), IndexError> {
+    classify_try_lock(index_dir, "shared lock", || file.try_lock_shared())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
     let write_lock_path = index_dir.join("write.lock");
@@ -59,9 +118,7 @@ pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, Ind
         .create(true)
         .truncate(false)
         .open(&write_lock_path)?;
-    write_lock
-        .try_lock()
-        .map_err(|_| IndexError::LockConflict(index_dir.to_path_buf()))?;
+    try_lock_exclusive(&write_lock, index_dir)?;
     Ok(write_lock)
 }
 
@@ -151,5 +208,78 @@ pub(super) fn create_dir_all_secure(path: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     {
         std::fs::create_dir_all(path)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::fs::TryLockError;
+    use std::io;
+
+    fn interrupted() -> TryLockError {
+        TryLockError::Error(io::Error::from(io::ErrorKind::Interrupted))
+    }
+
+    /// Stands in for ENOLCK ("no locks available"): flock(2) failed on kernel
+    /// resource exhaustion, not on a competing holder. Retrying in place would
+    /// not help, so it surfaces immediately for the caller to back off on.
+    fn no_locks() -> TryLockError {
+        TryLockError::Error(io::Error::other("no locks available"))
+    }
+
+    #[test]
+    fn would_block_is_a_conflict_and_is_not_retried() {
+        let calls = Cell::new(0);
+        let err = classify_try_lock(Path::new("/tmp/idx"), "test lock", || {
+            calls.set(calls.get() + 1);
+            Err(TryLockError::WouldBlock)
+        })
+        .unwrap_err();
+        assert!(matches!(err, IndexError::LockConflict(_)));
+        assert_eq!(calls.get(), 1, "WouldBlock is a real holder; do not retry");
+    }
+
+    #[test]
+    fn interrupted_is_retried_until_it_succeeds() {
+        let calls = Cell::new(0);
+        let result = classify_try_lock(Path::new("/tmp/idx"), "test lock", || {
+            calls.set(calls.get() + 1);
+            if calls.get() < 3 {
+                Err(interrupted())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn persistent_interrupts_are_bounded() {
+        let calls = Cell::new(0);
+        let err = classify_try_lock(Path::new("/tmp/idx"), "test lock", || {
+            calls.set(calls.get() + 1);
+            Err(interrupted())
+        })
+        .unwrap_err();
+        assert!(matches!(err, IndexError::LockConflict(_)));
+        assert_eq!(calls.get(), LOCK_INTERRUPT_RETRIES);
+    }
+
+    #[test]
+    fn other_io_errors_surface_as_retryable_conflicts() {
+        let calls = Cell::new(0);
+        let err = classify_try_lock(Path::new("/tmp/idx"), "test lock", || {
+            calls.set(calls.get() + 1);
+            Err(no_locks())
+        })
+        .unwrap_err();
+        // Callers (CLI retry loops, the oracle harness) already back off on
+        // LockConflict, which is the right response to a transient kernel
+        // resource failure too.
+        assert!(matches!(err, IndexError::LockConflict(_)));
+        assert_eq!(calls.get(), 1);
     }
 }

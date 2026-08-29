@@ -37,9 +37,7 @@ pub(super) fn flush_overlay_as_delta(
     helpers::create_dir_all_secure(&config.index_dir)?;
 
     let lock_file = helpers::open_dir_lock_file(&config.index_dir)?;
-    lock_file
-        .try_lock()
-        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+    helpers::try_lock_exclusive(&lock_file, &config.index_dir)?;
     let _write_lock = write_lock;
 
     let previous_manifest = Manifest::load(&config.index_dir)?;
@@ -158,9 +156,7 @@ pub(super) fn flush_overlay_as_delta(
     lock_file
         .unlock()
         .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;
-    lock_file
-        .try_lock_shared()
-        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+    helpers::try_lock_shared(&lock_file, &config.index_dir)?;
     drop(_write_lock);
     Index::open_with_lock(config, lock_file)
 }

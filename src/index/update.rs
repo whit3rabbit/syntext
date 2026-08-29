@@ -299,9 +299,7 @@ impl super::Index {
                 return Err(err);
             }
         };
-        self._dir_lock
-            .try_lock_shared()
-            .map_err(|_| IndexError::LockConflict(self.config.index_dir.clone()))?;
+        super::helpers::try_lock_shared(&self._dir_lock, &self.config.index_dir)?;
 
         self.install_rebuilt_index(&rebuilt)
     }

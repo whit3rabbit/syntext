@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Lock acquisition no longer collapses every `flock(2)` failure into "index locked by another process". `File::try_lock`'s `WouldBlock` (a real competing holder) is now told apart from an I/O failure (`EINTR`, or `ENOLCK` when the kernel lock table is exhausted under heavy process churn): `EINTR` is retried in place, and any other error is logged with its errno before surfacing as a retryable `LockConflict`. Previously a transient kernel error was indistinguishable from contention, which made the macOS nightly's `oracle_incremental::golden_incremental_grow_past_limit` failure (a `commit_batch` on a private, freshly built index dir reporting "locked by another process") undiagnosable.
+
 ## [2.1.0] - 2026-08-27
 
 ### Added

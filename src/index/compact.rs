@@ -158,9 +158,7 @@ pub(super) fn compact_index(
     super::helpers::create_dir_all_secure(&config.index_dir)?;
 
     let lock_file = super::helpers::open_dir_lock_file(&config.index_dir)?;
-    lock_file
-        .try_lock()
-        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+    super::helpers::try_lock_exclusive(&lock_file, &config.index_dir)?;
     let _write_lock = write_lock;
     let previous_manifest = Manifest::load(&config.index_dir)?;
     if plan.suffix_start > previous_manifest.segments.len() {
@@ -306,9 +304,7 @@ pub(super) fn compact_index(
     lock_file
         .unlock()
         .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;
-    lock_file
-        .try_lock_shared()
-        .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+    super::helpers::try_lock_shared(&lock_file, &config.index_dir)?;
     drop(_write_lock);
     super::Index::open_with_lock(config, lock_file)
 }

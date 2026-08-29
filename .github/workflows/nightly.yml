@@ -41,15 +41,28 @@ jobs:
           unzip ripgrep-15.2.0-x86_64-pc-windows-msvc.zip
           echo "$(pwd)/ripgrep-15.2.0-x86_64-pc-windows-msvc" >> $GITHUB_PATH
 
-      - name: Run Nightly Oracle Suite
+      # PROPTEST_CASES overrides the in-code `ProptestConfig::with_cases(..)`,
+      # so it applies to every proptest in the binaries listed. The two steps
+      # below exist because the cost per case differs by two orders of
+      # magnitude. There is no PROPTEST_SEED variable (proptest logs "Ignoring
+      # unknown env-var"); reproducibility comes from the checked-in
+      # tests/integration/*.proptest-regressions files, not from a seed here.
+      - name: Run Nightly Oracle Suite (in-process)
         shell: bash
         run: |
-          # Generate fixed daily seed using Python
-          SEED=$(python3 -c "import hashlib, time; print(hashlib.sha256(time.strftime('%Y%m%d').encode()).hexdigest())")
-          echo "Using rotating daily seed: $SEED"
-          
-          # Run tests with 2000 cases each
-          PROPTEST_CASES=2000 PROPTEST_SEED=$SEED cargo test --test oracle_self --test oracle_cli --test oracle_incremental --test oracle_freshness --features oracle -- --nocapture
+          # oracle_self runs entirely in-process (routed query vs forced full
+          # scan), so cases are cheap. Sweep wide.
+          PROPTEST_CASES=2000 cargo test --test oracle_self --features oracle -- --nocapture
+
+      - name: Run Nightly Oracle Suite (subprocess differential)
+        shell: bash
+        run: |
+          # Each case here forks `st`, `rg` and `git`. At 2000 cases
+          # oracle_incremental alone ran ~19 min and saturated the macOS runner
+          # hard enough to make flock(2) fail on kernel resource exhaustion.
+          # 1024 matches the sweep level documented in CLAUDE.md.
+          # oracle_freshness has no proptest and just rides along.
+          PROPTEST_CASES=1024 cargo test --test oracle_cli --test oracle_incremental --test oracle_freshness --features oracle -- --nocapture
 
       - name: Upload minimized repros on failure
         if: failure()

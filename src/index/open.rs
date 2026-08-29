@@ -29,9 +29,7 @@ impl Index {
             }
             Err(e) => return Err(e.into()),
         };
-        dir_lock
-            .try_lock_shared()
-            .map_err(|_| IndexError::LockConflict(config.index_dir.clone()))?;
+        super::helpers::try_lock_shared(&dir_lock, &config.index_dir)?;
 
         // Security: reject (or warn about) index directories readable/writable
         // by group/other. Permissive modes allow concurrent ftruncate() races
