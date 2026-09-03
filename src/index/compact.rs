@@ -270,7 +270,14 @@ pub(super) fn compact_index(
 
     let total_docs = manifest_total_docs(&seg_refs);
     let mut manifest = Manifest::new(seg_refs, total_docs);
-    manifest.base_commit = super::helpers::current_repo_head(&config.repo_root)?;
+    // Carry the previous anchor forward rather than re-reading HEAD.
+    // Compaction rewrites segments; it does not index anything new, so it has
+    // no claim on any commit the base does not already cover. Re-reading HEAD
+    // here silently marked the index as current through a commit whose
+    // contents were never applied, and `rebuild_if_stale` (which only fires on
+    // `base_commit != HEAD`) would then skip that range forever. Unreachable
+    // before durable `st update`, which can now compact right after a flush.
+    manifest.base_commit = previous_manifest.base_commit.clone();
     manifest.scan_threshold_fraction = Some(snapshot.scan_threshold);
     // See the equivalent comment in build.rs: this must match the version of
     // the paths.idx written just below, so open() can gate loading on it.
