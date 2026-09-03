@@ -440,3 +440,36 @@ fn an_anchor_covers_only_the_paths_it_recorded() {
     assert_eq!(fx.count("drift_marker"), 1);
     assert_eq!(fx.count("sibling_marker"), 1);
 }
+
+#[test]
+fn a_change_set_over_the_overlay_cap_is_not_reported_as_a_flush_failure() {
+    // Editing (almost) every file puts the change set past the overlay's
+    // 50%-of-base cap. `update_from_git` answers that with an inline full
+    // rebuild, which is durable on its own, and re-queues the edits. The flush
+    // must not then tell the user to run `st index` immediately after an
+    // `st index` just ran.
+    let fx = setup();
+    for i in 0..40 {
+        fx.write_aged(&format!("src/f{i}.rs"), &format!("fn bulk_{i}() {{}}\n"));
+    }
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-m", "bulk", "--no-gpg-sign"]);
+    // Through the existing handle, so the shared dir lock is not fought over.
+    retry_lock(|| fx.index.rebuild_if_stale()).expect("pick up the bulk commit");
+
+    let fx = fx.reopen();
+    for i in 0..40 {
+        fx.write_aged(&format!("src/f{i}.rs"), &format!("fn bulk_edit_{i}() {{}}\n"));
+    }
+    fx.update_all();
+
+    assert!(
+        !fx.flush(),
+        "an over-cap change set reports 'nothing flushed', not an error"
+    );
+
+    // The inline rebuild inside update_from_git is what made it durable.
+    let fx = fx.reopen();
+    assert_eq!(fx.count("bulk_edit_0"), 1);
+    assert_eq!(fx.count("bulk_0"), 0);
+}

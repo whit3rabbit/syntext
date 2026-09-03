@@ -168,7 +168,23 @@ impl Index {
     /// which is retryable and leaves the overlay intact.
     pub fn flush_overlay(&self) -> Result<bool, IndexError> {
         if self.pending.has_uncommitted() {
-            self.commit_batch()?;
+            match self.commit_batch() {
+                Ok(()) => {}
+                // The change set is over the overlay's 50%-of-base cap, so a
+                // delta segment is the wrong answer for it and a full rebuild
+                // is the right one. An unbounded `update_from_git` has already
+                // done that rebuild inline, which is itself durable, and its
+                // `install_rebuilt_index` re-queued the edits that are failing
+                // here. Reporting this as a flush failure would tell the user
+                // to `st index` immediately after an `st index` just ran.
+                //
+                // `commit_batch`'s RequeueGuard leaves the edits queued, so
+                // nothing is dropped. What is genuinely lost is the anchor:
+                // a full rebuild writes none, so those paths keep being
+                // re-detected until they are committed. See `worktree_anchor`.
+                Err(IndexError::OverlayFull { .. }) => return Ok(false),
+                Err(e) => return Err(e),
+            }
         }
         if self.snapshot().overlay.docs.is_empty() && !self.has_flush_bookkeeping() {
             return Ok(false);
