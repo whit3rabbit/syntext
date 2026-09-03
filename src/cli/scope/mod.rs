@@ -113,6 +113,44 @@ pub(super) fn shows_filename_by_default(config: &Config, paths: &[PathBuf]) -> b
     }
 }
 
+/// Whether `--max-results N` can be pushed down into the library as an
+/// early-exit budget, and at what value.
+///
+/// The library stops resolving and verifying once it has `max_results`
+/// matches, which is the whole performance win. That is only safe when no
+/// later stage can *drop* matches: a CLI post-filter (`-t`, `-g`, `-T`,
+/// `--max-depth`, `-m`) applied after an early exit would leave fewer than N
+/// results even though more existed. A per-spec `path_filter` is the same
+/// hazard from the other direction, since each of several explicit path specs
+/// would get its own budget and the merged set would be capped at N per spec.
+///
+/// `-l` also opts out: the cap counts distinct files there, and the library
+/// counts matches, so N matches can be far fewer than N files. `-c`,
+/// `--count-matches`, `-v`, and `-L` never reach here (rejected up front),
+/// and the assertion in `run_search` still guards that.
+///
+/// `N + 1` rather than `N`, so `apply_max_results` can tell "exactly N" from
+/// "N and more were available" and only then print the truncation notice.
+fn library_max_results(args: &SearchArgs, has_path_filter: bool) -> Option<usize> {
+    let limit = args.max_results?;
+    let post_filtered = has_path_filter
+        || !args.file_types.is_empty()
+        || !args.type_nots.is_empty()
+        || !args.globs.is_empty()
+        || args.max_depth.is_some()
+        || args.max_count.is_some();
+    if post_filtered
+        || args.files_with_matches
+        || args.files_without_match
+        || args.count
+        || args.count_matches
+        || args.invert_match
+    {
+        return None;
+    }
+    limit.checked_add(1)
+}
+
 pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> SearchOptions {
     SearchOptions {
         case_insensitive: args.ignore_case,
@@ -122,7 +160,7 @@ pub(super) fn search_options(args: &SearchArgs, path_filter: Option<String>) -> 
         exclude_type: None,
         file_types: args.file_types.clone(),
         exclude_types: args.type_nots.clone(),
-        max_results: None,
+        max_results: library_max_results(args, path_filter.is_some()),
         path_filter,
         verify_pattern: None,
         // -l/-L only need which files matched, never the line bytes. -c is

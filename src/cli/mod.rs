@@ -99,6 +99,13 @@ pub fn run() -> i32 {
                 return cmd_type_list();
             }
             if cli.files {
+                // --files lists paths straight off the index, never through
+                // the match pipeline --max-results caps, so silently ignoring
+                // it would be worse than refusing it.
+                if cli.max_results.is_some() {
+                    eprintln!("st: --max-results is not supported with --files");
+                    return 2;
+                }
                 return cmd_files(config, &cli);
             }
 
@@ -258,6 +265,7 @@ pub fn run() -> i32 {
                 count: cli.count,
                 count_matches: cli.count_matches,
                 max_count: cli.max_count,
+                max_results: cli.max_results,
                 quiet: cli.quiet,
                 only_matching: cli.only_matching,
                 json: cli.json,

@@ -160,6 +160,7 @@ st -g "src/" "TODO"                 # restrict by glob
 st --exclude-dir node_modules "fn " # skip directories by name (grep compat)
 st -c "parse_query" src/lib.rs      # count matches in one file
 st -l "parse_query"                 # print matching file paths
+st --max-results 20 "TODO"          # cap total output (files under -l)
 st --json "TODO"                    # NDJSON output for tooling
 
 # Search a stream instead of the repo (no index needed)

@@ -1883,3 +1883,177 @@ fn null_byte_path_separators() {
 
     drop(index);
 }
+
+#[test]
+fn max_results_parses_as_a_long_only_flag() {
+    let cli = Cli::try_parse_from(["st", "--max-results", "3", "pattern"]).expect("parse failed");
+    assert_eq!(cli.max_results, Some(3));
+    assert_eq!(cli.max_count, None, "--max-results is not -m");
+}
+
+#[test]
+fn max_results_is_rejected_in_modes_it_cannot_cap() {
+    // -c/--count-matches print per-file tallies, -v walks the whole corpus,
+    // and -L lists scoped paths that never appear in the match vector. In all
+    // four the printed unit is not a `SearchMatch`, so a cap on that vector
+    // would be silently ignored. Fail loudly instead (exit 2), before the
+    // index is opened.
+    let (_repo, _idx, config) = build_index_for_files(&[("a.rs", "alpha\nalpha\n")]);
+    for base in [
+        SearchArgs {
+            count: true,
+            ..SearchArgs::default()
+        },
+        SearchArgs {
+            count_matches: true,
+            ..SearchArgs::default()
+        },
+        SearchArgs {
+            invert_match: true,
+            ..SearchArgs::default()
+        },
+        SearchArgs {
+            files_without_match: true,
+            ..SearchArgs::default()
+        },
+    ] {
+        let args = SearchArgs {
+            pattern: "alpha".to_string(),
+            max_results: Some(1),
+            ..base
+        };
+        assert_eq!(cmd_search(config.clone(), &args), 2);
+    }
+
+    // -l is allowed: the cap counts distinct files there.
+    let ok = SearchArgs {
+        pattern: "alpha".to_string(),
+        files_with_matches: true,
+        max_results: Some(1),
+        ..SearchArgs::default()
+    };
+    assert_eq!(cmd_search(config, &ok), 0);
+}
+
+#[test]
+fn max_results_pushes_an_early_exit_budget_down_only_when_nothing_can_drop_matches() {
+    // The library stops verifying at `max_results`, so pushing the cap down is
+    // only sound when no later stage can remove matches. `+ 1` is what lets
+    // `apply_max_results` tell "exactly N" from "N and more were available".
+    let plain = SearchArgs {
+        max_results: Some(5),
+        ..SearchArgs::default()
+    };
+    assert_eq!(
+        super::scope::search_options(&plain, None).max_results,
+        Some(6)
+    );
+
+    // A per-spec path filter would cap each explicit path separately.
+    assert_eq!(
+        super::scope::search_options(&plain, Some("src".to_string())).max_results,
+        None
+    );
+
+    for dropper in [
+        SearchArgs {
+            globs: vec!["*.rs".to_string()],
+            ..plain.clone()
+        },
+        SearchArgs {
+            file_types: vec!["rs".to_string()],
+            ..plain.clone()
+        },
+        SearchArgs {
+            type_nots: vec!["rs".to_string()],
+            ..plain.clone()
+        },
+        SearchArgs {
+            max_depth: Some(1),
+            ..plain.clone()
+        },
+        SearchArgs {
+            max_count: Some(1),
+            ..plain.clone()
+        },
+        // -l counts files, the library counts matches.
+        SearchArgs {
+            files_with_matches: true,
+            ..plain.clone()
+        },
+    ] {
+        assert_eq!(
+            super::scope::search_options(&dropper, None).max_results,
+            None,
+            "a post-filter after an early exit would under-report"
+        );
+    }
+
+    // No flag, no budget: the default stays exhaustive.
+    assert_eq!(
+        super::scope::search_options(&SearchArgs::default(), None).max_results,
+        None
+    );
+}
+
+#[test]
+fn max_results_truncates_matches_and_reports_it() {
+    use super::post_filter::apply_max_results;
+
+    let make = |paths: &[&str]| -> Vec<crate::SearchMatch> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| crate::SearchMatch {
+                path: PathBuf::from(p),
+                line_number: i as u32 + 1,
+                line_content: b"x".to_vec(),
+                byte_offset: 0,
+                submatch_start: 0,
+                submatch_end: 1,
+            })
+            .collect()
+    };
+
+    // Default mode: the unit is a matching line.
+    let args = SearchArgs {
+        max_results: Some(2),
+        ..SearchArgs::default()
+    };
+    let mut results = make(&["a.rs", "a.rs", "b.rs"]);
+    assert!(apply_max_results(&mut results, &args));
+    assert_eq!(results.len(), 2);
+
+    // Exactly at the cap is not truncation, so no notice is printed.
+    let mut exact = make(&["a.rs", "b.rs"]);
+    assert!(!apply_max_results(&mut exact, &args));
+    assert_eq!(exact.len(), 2);
+
+    // -l mode: the unit is a distinct file. Three matches across two files
+    // fit under a cap of 2 and must not be cut.
+    let list = SearchArgs {
+        files_with_matches: true,
+        max_results: Some(2),
+        ..SearchArgs::default()
+    };
+    let mut two_files = make(&["a.rs", "a.rs", "b.rs"]);
+    assert!(!apply_max_results(&mut two_files, &list));
+    assert_eq!(two_files.len(), 3, "-l caps files, not matching lines");
+
+    let mut three_files = make(&["a.rs", "b.rs", "c.rs"]);
+    assert!(apply_max_results(&mut three_files, &list));
+    let kept: Vec<_> = three_files.iter().map(|m| m.path.clone()).collect();
+    assert_eq!(
+        kept,
+        vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
+        "-l keeps the first N paths in the order -l prints them"
+    );
+
+    // No flag, no truncation.
+    let mut untouched = make(&["a.rs", "b.rs", "c.rs"]);
+    assert!(!apply_max_results(
+        &mut untouched,
+        &SearchArgs::default()
+    ));
+    assert_eq!(untouched.len(), 3);
+}

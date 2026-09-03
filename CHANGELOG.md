@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`--max-results N`**: cap total output across all files. `-m/--max-count` is per file and does not bound what a search prints, which made a common token on a large repo an unbounded dump. Under `-l` the unit is distinct files rather than matching lines, because that is what `-l` prints. When output is cut short, `st: output truncated at N ... (--max-results)` goes to stderr (suppressed by `-q`) and the `--json` summary gains `"truncated": true`. That key is emitted only when the flag was passed, so an ordinary `--json` run keeps byte-for-byte rg parity and the differential oracle is unaffected. When no later stage can drop matches (no explicit paths, no `-g`/`-t`/`-T`, no `--max-depth`, no `-m`, not `-l`), the cap is pushed into the library as an `N + 1` early-exit budget, so the search stops verifying once it has enough. `-c`, `--count-matches`, `-v`, `-L`, and `--files` exit 2 rather than accept a flag they would silently ignore. This is a cap, not ranking: the first N results are the first N in path order.
+
 ### Changed
 - **Injected agent guidance rewritten** (`st init`, `st agent install`). The old text told the agent to run `st update` after every edit, which cost a tool call per edit for something search already does on its own: bounded update-on-search refreshes from git on every call. The new text says not to, and to run `st update` only when `st` prints "files behind". It also tells the agent to bound its own output (`-l`, `-c`, `-m N`, `-C N`, `-g`, `-t`) and to treat a returned line with context as already-read evidence rather than following up with a file read. The awareness file (`SYNTEXT.md`) and the marker-guarded rules block now share one literal, so the two can no longer drift apart. Existing installs are not rewritten in place: `st agent uninstall <agent>` then `st agent install <agent>` picks up the new text.
 

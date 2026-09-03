@@ -22,11 +22,50 @@ use super::SearchArgs;
 pub(in crate::cli) fn render_results(
     config: &Config,
     index: Option<&Index>,
+    mut results: Vec<crate::SearchMatch>,
+    files: HashMap<PathBuf, MatchedFile>,
+    output_args: &SearchArgs,
+    elapsed: std::time::Duration,
+    stdin_scoped: Option<bool>,
+) -> i32 {
+    // The total output cap runs before everything else, including --stats, so
+    // the stats line describes what was actually printed. The notice comes
+    // after the results so it cannot interleave with them on a terminal where
+    // stdout and stderr share a tty.
+    let truncated = super::super::post_filter::apply_max_results(&mut results, output_args);
+    let code = render_capped(
+        config,
+        index,
+        results,
+        files,
+        output_args,
+        elapsed,
+        stdin_scoped,
+        truncated,
+    );
+    if truncated && !output_args.quiet {
+        if let Some(limit) = output_args.max_results {
+            let unit = if output_args.files_with_matches {
+                "file(s)"
+            } else {
+                "match(es)"
+            };
+            eprintln!("st: output truncated at {limit} {unit} (--max-results)");
+        }
+    }
+    code
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_capped(
+    config: &Config,
+    index: Option<&Index>,
     results: Vec<crate::SearchMatch>,
     files: HashMap<PathBuf, MatchedFile>,
     output_args: &SearchArgs,
     elapsed: std::time::Duration,
     stdin_scoped: Option<bool>,
+    truncated: bool,
 ) -> i32 {
     if output_args.search_stats {
         let matched_files: std::collections::BTreeSet<_> =
@@ -79,9 +118,15 @@ pub(in crate::cli) fn render_results(
     }
 
     if results.is_empty() && output_args.json {
-        if let Err(err) =
-            render::render_json(index, config, &results, &files, output_args, stdin_scoped)
-        {
+        if let Err(err) = render::render_json(
+            index,
+            config,
+            &results,
+            &files,
+            output_args,
+            stdin_scoped,
+            truncated,
+        ) {
             return handle_output(err);
         }
         return 1;
@@ -145,7 +190,15 @@ pub(in crate::cli) fn render_results(
     let has_context = output_args.after_context > 0 || output_args.before_context > 0;
 
     let render_call = if output_args.json {
-        render::render_json(index, config, &results, &files, output_args, stdin_scoped)
+        render::render_json(
+            index,
+            config,
+            &results,
+            &files,
+            output_args,
+            stdin_scoped,
+            truncated,
+        )
     } else if output_args.vimgrep {
         render::render_vimgrep(config, &results, output_args)
     } else if output_args.only_matching {

@@ -133,6 +133,15 @@ pub struct Cli {
     #[arg(short = 'm', long = "max-count", value_name = "NUM")]
     pub max_count: Option<usize>,
 
+    /// Stop after NUM results in total, across all files.
+    ///
+    /// Not a ripgrep flag. `-m/--max-count` is per file, which does not bound
+    /// total output; this does. Under `-l` the unit is files, not lines. When
+    /// output is cut short, a notice goes to stderr (suppressed by `-q`) and
+    /// the `--json` summary gains `"truncated": true`.
+    #[arg(long = "max-results", value_name = "NUM")]
+    pub max_results: Option<usize>,
+
     /// Suppress output; exit 0 if any match found.
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,

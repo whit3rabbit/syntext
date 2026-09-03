@@ -61,3 +61,62 @@ pub(super) fn apply_post_filters(
     }
     results
 }
+
+/// Apply the total output cap (`--max-results`) to a final result set, and
+/// report whether anything was dropped.
+///
+/// Runs last, after `apply_post_filters` and after any stdin half has been
+/// spliced in, so it bounds what is actually printed rather than what the
+/// index half happened to produce. Detection is exact: `search_options` asks
+/// the library for `limit + 1` results when it can, so a set that still has
+/// more than `limit` entries here really did have more to give.
+///
+/// `-l` prints one line per distinct path, so under `-l` the cap counts
+/// distinct paths. Results arrive sorted by path, so "the first N paths" is
+/// well defined. Modes whose output is not derived from this vector at all
+/// (`-c`, `--count-matches`, `-v`, `-L`, `--files`) are rejected up front
+/// rather than silently ignored.
+pub(super) fn apply_max_results(results: &mut Vec<crate::SearchMatch>, args: &SearchArgs) -> bool {
+    let Some(limit) = args.max_results else {
+        return false;
+    };
+    if args.files_with_matches {
+        // Mirror what -l prints: the distinct paths, in sorted order. Keeping
+        // the first `limit` of *that* set (rather than the first `limit`
+        // entries of `results`) is what makes the cut deterministic even when
+        // a stdin half has been spliced in out of path order.
+        let distinct: std::collections::BTreeSet<&std::path::Path> =
+            results.iter().map(|m| m.path.as_path()).collect();
+        let truncated = distinct.len() > limit;
+        let keep: std::collections::BTreeSet<std::path::PathBuf> = distinct
+            .into_iter()
+            .take(limit)
+            .map(|p| p.to_path_buf())
+            .collect();
+        results.retain(|m| keep.contains(&m.path));
+        return truncated;
+    }
+    let truncated = results.len() > limit;
+    results.truncate(limit);
+    truncated
+}
+
+/// Reject `--max-results` in the output modes whose printed lines are not
+/// this vector's entries. Returns `Some(exit_code)` after reporting on stderr.
+pub(super) fn reject_max_results_conflicts(args: &SearchArgs) -> Option<i32> {
+    args.max_results?;
+    // (is-set, flag). `-l` is deliberately absent: it caps distinct files.
+    let checks: [(bool, &str); 4] = [
+        (args.count, "-c/--count"),
+        (args.count_matches, "--count-matches"),
+        (args.invert_match, "-v/--invert-match"),
+        (args.files_without_match, "-L/--files-without-match"),
+    ];
+    for (is_set, flag) in checks {
+        if is_set {
+            eprintln!("st: --max-results is not supported with {flag}");
+            return Some(2);
+        }
+    }
+    None
+}

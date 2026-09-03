@@ -19,6 +19,10 @@ pub(super) struct SearchArgs {
     pub count: bool,
     pub count_matches: bool,
     pub max_count: Option<usize>,
+    /// Total output cap (`--max-results`). Applied once, after every other
+    /// filter, to the final merged result set. Under `-l` the unit is distinct
+    /// files rather than matching lines, because that is what `-l` prints.
+    pub max_results: Option<usize>,
     pub quiet: bool,
     pub only_matching: bool,
     pub json: bool,
@@ -83,6 +87,7 @@ impl Default for SearchArgs {
             count: false,
             count_matches: false,
             max_count: None,
+            max_results: None,
             quiet: false,
             only_matching: false,
             json: false,

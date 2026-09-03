@@ -110,8 +110,11 @@ fresh process and the only persistent state is on disk.
 - **Bounded, structured result shape.** A default of 7 hits, a hard MCP cap
   of 50, three preview widths, and an enclosing-symbol field per hit. An
   agent gets a small answer by default and asks for more deliberately.
-  syntext's exhaustive rg-compatible output is the right default for a shell
-  pipeline and the wrong one for a naive agent call on a common token.
+  syntext now has the cap (`--max-results`, below) but not the default, the
+  preview widths, or the enclosing symbol. Exhaustive-by-default is the right
+  choice for a shell pipeline and the wrong one for a naive agent call on a
+  common token, which is why the cap is paired with guidance telling the agent
+  to use it.
 - **RRF-fused hybrid queries.** `{query, queries, fts, vector, fuse}` is a
   more flexible query shape than syntext's literal-versus-regex binary, and
   the per-group result types carry enough metadata that the agent can decide
@@ -243,6 +246,24 @@ fresh process and the only persistent state is on disk.
   which is the failure mode that actually burns an agent's context when a
   common token matches 4,000 lines. zvec-grep's guidance gets both right, and
   copying the shape of an instruction is free.
+
+### Adopt: `--max-results N`, a total output cap
+
+- **Decision (shipped):** `st --max-results N` stops after N results across all
+  files. `-m/--max-count` is per file, which does not bound total output, and
+  nothing else did either. When output is cut short, a notice goes to stderr
+  and the `--json` summary gains `"truncated": true`. Under `-l` the unit is
+  files rather than matching lines, because that is what `-l` prints.
+- **Rationale:** zvec-grep defaults to 7 hits and caps its MCP surface at 50.
+  syntext's exhaustive output is correct for a shell pipeline and hostile to a
+  naive agent call on a common token. A flag the agent can reach for, plus the
+  guidance telling it to, is the version of that idea that does not break rg
+  parity for everyone else.
+- **What this is not:** not ranking. The first N results are the first N in
+  path order, not the N best. There is no scoring model to be the best by.
+- **Refused rather than ignored:** `-c`, `--count-matches`, `-v`, `-L`, and
+  `--files` exit 2. Their printed unit is not a match, so a cap on the match
+  set would silently do nothing.
 
 ### Adopt: optional semantic query group, additive, not fused
 

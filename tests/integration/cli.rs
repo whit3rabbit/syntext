@@ -3696,3 +3696,116 @@ fn missing_explicit_path_searches_nothing_not_whole_repo() {
         stdout_text(&out)
     );
 }
+
+#[test]
+fn max_results_caps_total_output_and_prints_a_notice() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    for name in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+        write_text(
+            &repo.path().join(name),
+            "shared_cap_token one\nshared_cap_token two\n",
+        );
+    }
+    build_index(repo.path(), index.path());
+
+    // 6 matches across 3 files, capped at 2 lines.
+    let output = run_repo(repo.path(), index.path(), &["--max-results", "2", "-n", "shared_cap_token"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_text(&output).lines().count(),
+        2,
+        "stdout:\n{}",
+        stdout_text(&output)
+    );
+    assert!(
+        stderr_text(&output).contains("output truncated at 2 match(es) (--max-results)"),
+        "stderr:\n{}",
+        stderr_text(&output)
+    );
+
+    // Under -l the unit is files, so a cap of 3 covers all three.
+    let listed = run_repo(repo.path(), index.path(), &["--max-results", "3", "-l", "shared_cap_token"]);
+    assert_eq!(listed.status.code(), Some(0));
+    assert_eq!(stdout_text(&listed).lines().count(), 3);
+    assert!(
+        !stderr_text(&listed).contains("truncated"),
+        "3 files under a cap of 3 is not truncation\nstderr:\n{}",
+        stderr_text(&listed)
+    );
+
+    let listed_cut = run_repo(repo.path(), index.path(), &["--max-results", "2", "-l", "shared_cap_token"]);
+    assert_eq!(stdout_text(&listed_cut).lines().count(), 2);
+    assert!(stderr_text(&listed_cut).contains("2 file(s)"));
+
+    // -q suppresses the notice along with the output.
+    let quiet = run_repo(repo.path(), index.path(), &["--max-results", "1", "-q", "shared_cap_token"]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(stderr_text(&quiet).is_empty(), "stderr:\n{}", stderr_text(&quiet));
+}
+
+#[test]
+fn max_results_json_summary_carries_truncated_only_when_the_flag_is_passed() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(
+        &repo.path().join("src/a.rs"),
+        "json_cap_token one\njson_cap_token two\njson_cap_token three\n",
+    );
+    build_index(repo.path(), index.path());
+
+    let capped = run_repo(repo.path(), index.path(), &["--json", "--max-results", "2", "json_cap_token"]);
+    let last = stdout_text(&capped)
+        .lines()
+        .last()
+        .expect("summary line")
+        .to_string();
+    let summary: serde_json::Value = serde_json::from_str(&last).unwrap();
+    assert_eq!(summary["type"], "summary");
+    assert_eq!(summary["data"]["truncated"], serde_json::json!(true));
+
+    let exact = run_repo(repo.path(), index.path(), &["--json", "--max-results", "3", "json_cap_token"]);
+    let last = stdout_text(&exact).lines().last().unwrap().to_string();
+    let summary: serde_json::Value = serde_json::from_str(&last).unwrap();
+    assert_eq!(summary["data"]["truncated"], serde_json::json!(false));
+
+    // Without the flag the summary keeps rg parity: no extra key at all.
+    let plain = run_repo(repo.path(), index.path(), &["--json", "json_cap_token"]);
+    let last = stdout_text(&plain).lines().last().unwrap().to_string();
+    let summary: serde_json::Value = serde_json::from_str(&last).unwrap();
+    assert!(
+        summary["data"].get("truncated").is_none(),
+        "summary:\n{last}"
+    );
+}
+
+#[test]
+fn max_results_is_refused_by_the_modes_it_cannot_cap() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    write_text(&repo.path().join("src/a.rs"), "refuse_cap_token\n");
+    build_index(repo.path(), index.path());
+
+    for mode in [
+        vec!["-c"],
+        vec!["--count-matches"],
+        vec!["-v"],
+        vec!["--files-without-match"],
+    ] {
+        let mut args = vec!["--max-results", "1"];
+        args.extend(mode.iter().copied());
+        args.push("refuse_cap_token");
+        let output = run_repo(repo.path(), index.path(), &args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{mode:?} should refuse --max-results\nstderr:\n{}",
+            stderr_text(&output)
+        );
+        assert!(stderr_text(&output).contains("--max-results is not supported with"));
+    }
+
+    let files = run_repo(repo.path(), index.path(), &["--files", "--max-results", "1"]);
+    assert_eq!(files.status.code(), Some(2));
+    assert!(stderr_text(&files).contains("--max-results is not supported with --files"));
+}

@@ -67,6 +67,7 @@ pub(in crate::cli) fn render_json(
     files: &std::collections::HashMap<std::path::PathBuf, crate::search::MatchedFile>,
     args: &SearchArgs,
     stdin_scoped: Option<bool>,
+    truncated: bool,
 ) -> io::Result<()> {
     let total_start = Instant::now();
     let re = compile_output_regex(args)?;
@@ -221,25 +222,30 @@ pub(in crate::cli) fn render_json(
         }
     }
 
-    // summary
+    // summary. `truncated` is added only when --max-results was passed, so
+    // an ordinary run's summary keeps byte-for-byte rg parity (the oracle
+    // never passes the flag).
+    let mut data = serde_json::json!({
+        "elapsed_total": json_elapsed(total_start.elapsed()),
+        "stats": json_stats(
+            total_start.elapsed(),
+            total_searches,
+            searches_with_match,
+            total_bytes_searched,
+            total_bytes_printed,
+            total_matched_lines,
+            total_matches
+        )
+    });
+    if args.max_results.is_some() {
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("truncated".to_string(), serde_json::Value::Bool(truncated));
+        }
+    }
     writeln!(
         out,
         "{}",
-        serde_json::json!({
-            "type": "summary",
-                "data": {
-                    "elapsed_total": json_elapsed(total_start.elapsed()),
-                    "stats": json_stats(
-                        total_start.elapsed(),
-                        total_searches,
-                        searches_with_match,
-                        total_bytes_searched,
-                        total_bytes_printed,
-                        total_matched_lines,
-                        total_matches
-                    )
-            }
-        })
+        serde_json::json!({ "type": "summary", "data": data })
     )?;
     Ok(())
 }

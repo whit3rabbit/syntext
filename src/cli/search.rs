@@ -29,6 +29,13 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
         return 2;
     }
 
+    // --max-results caps the printed result set. Reject the modes whose output
+    // is not that set, before the index is opened, rather than accepting the
+    // flag and silently ignoring it.
+    if let Some(code) = super::post_filter::reject_max_results_conflicts(args) {
+        return code;
+    }
+
     // rg-style stdin filter: a pipe/redirect (or an explicit `-` path) is
     // searched in-memory before the index is ever opened, so it also works in
     // directories with no `.syntext` at all. A `-` mixed with real paths
