@@ -281,6 +281,8 @@ Cursor published a detailed description of their regex search architecture in [F
 
 For a comparison with a resident-process design (in-memory bigram prefilter,
 frecency ranking, MCP server), see [COMPARISON_FFF.md](COMPARISON_FFF.md).
+For a comparison with a hybrid IR design (BM25 + dense vector + RRF + MCP),
+see [COMPARISON_ZVEC.md](COMPARISON_ZVEC.md).
 
 ## Prior art
 
@@ -288,6 +290,7 @@ frecency ranking, MCP server), see [COMPARISON_FFF.md](COMPARISON_FFF.md).
 - [Zoekt](https://github.com/sourcegraph/zoekt): trigram index with single-file segments
 - [GitHub Blackbird](https://github.blog/engineering/architecture-optimization/how-we-built-github-code-search/): sparse n-grams with frequency-weighted boundaries
 - [Cursor fast regex search (2025)](https://cursor.com/blog/fast-regex-search): sparse n-grams, CRC32-weighted boundaries, two-file storage
-- [fff v0.9.4](https://github.com/dmtrKovalenko/fff/tree/v0.9.4): resident in-memory bigram prefilter with frecency ranking, MCP server integration (see [COMPARISON_FFF.md](COMPARISON_FFF.md))
+- [fff v0.9.4](https://github.com/dmtrKovalenko/fff/tree/v0.9.4): resident in-memory bigram prefilter with frecency ranking, MCP server integration. See [`COMPARISON_FFF.md`](COMPARISON_FFF.md).
+- [zvec-grep v0.2.1](https://github.com/zvec-ai/zvec-grep/tree/v0.2.1): BM25 + dense vector + RRF + managed ripgrep + MCP server. See [`COMPARISON_ZVEC.md`](COMPARISON_ZVEC.md).
 
 syntext follows the same fundamental architecture (n-gram prefilter, candidate selection, verification) with specific tradeoffs for the agent-loop use case: in-process verification (no fork/exec), batch commit for read-your-writes, and Roaring bitmaps for the heavy tail of common grams.

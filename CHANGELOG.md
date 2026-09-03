@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Docs
+- Added `docs/COMPARISON_ZVEC.md`, a comparison against [zvec-grep v0.2.1](https://github.com/zvec-ai/zvec-grep/tree/v0.2.1) (BM25 + dense vector + RRF + managed ripgrep + MCP server), linked from `docs/ARCHITECTURE.md` alongside the existing Cursor and fff comparisons.
+
 ## [2.2.0] - 2026-09-02
 
 ### Added
