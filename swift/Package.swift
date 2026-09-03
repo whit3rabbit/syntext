@@ -19,8 +19,8 @@ let ffiTarget: Target = hasLocalFFI
         name: "SyntextFFI",
         // Placeholder until the first release carrying the `ffi` feature
         // (v2.2.0); the pin job replaces it.
-        url: "https://github.com/whit3rabbit/syntext/releases/download/v2.1.0/syntext-swift-2.1.0.xcframework.zip",
-        checksum: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        url: "https://github.com/whit3rabbit/syntext/releases/download/v2.2.0/syntext-swift-2.2.0.xcframework.zip",
+        checksum: "fa8899870f194168326543ebf6c239b418558fd8ff838cf38ad238bd7ea8f8f5")
 
 let package = Package(
     name: "Syntext",
