@@ -24,12 +24,7 @@ impl super::Index {
             .strip_prefix(&self.config.repo_root)
             .or_else(|_| path.strip_prefix(&self.canonical_root))
             .map_err(|_| IndexError::PathOutsideRepo(path.to_path_buf()))?;
-        if rel.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        }) {
+        if crate::path_util::has_disallowed_component(rel) {
             return Err(IndexError::PathOutsideRepo(path.to_path_buf()));
         }
 

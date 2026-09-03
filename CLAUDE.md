@@ -59,6 +59,7 @@ The crate supports the following Cargo feature flags:
 * `cli`: Builds the command-line binary `st`. Depends on `native` and the optional `clap` dependency.
 * `native`: Native library support. Includes `memmap2`, `rayon`, `fs2`, and `ignore` (enables filesystem access, multi-threading, and Git integrations).
 * `wasm`: WASM target support. Enables `wasm-bindgen` API, fully in-memory index, and disables all native filesystem and threading dependencies.
+* `ffi`: C ABI for foreign-language bindings (Swift via xcframework). Enables `native` plus `src/ffi/` entry points and the mutable in-memory `MemIndex` (`src/index/mem_index.rs`). See [docs/SWIFT.md](docs/SWIFT.md).
 * `symbols`: Tree-sitter symbol extraction and SQLite local cache storage support.
 
 ## Implementation Order
@@ -119,6 +120,9 @@ cargo test --test boundary_fuzz  # unit: boundary fuzzing
 cargo test --test index_build # integration: index construction
 cargo test --test incremental # integration: incremental updates
 cargo test --test symbols     # integration: symbol index
+cargo test --features ffi     # ffi feature: MemIndex + C-ABI integration tests
+./swift/Scripts/build-xcframework.sh  # Rust staticlib -> universal xcframework + release zip
+(cd swift && swift test)      # Swift package tests (run the xcframework script first)
 cargo test --test oracle_self --features oracle  # integration: self-differential oracle
 cargo test --test oracle_incremental --features oracle # integration: incremental overlay differential oracle
 cargo test --test oracle_cli --features oracle   # integration: CLI subprocess differential oracle
@@ -303,6 +307,11 @@ src/
   lib.rs                      # public API (Index, Config, SearchOptions)
   main.rs                     # binary entry point (st); empty stub on wasm32
   wasm.rs                     # wasm-bindgen WasmIndex public API (wasm feature only)
+  ffi/                        # C ABI for Swift bindings (ffi feature only)
+    mod.rs                    # ABI contract, FfiError, panic firewall, shared entry points
+    dto.rs                    # JSON DTOs crossing the boundary
+    index.rs                  # syntext_index_* entry points (native directory index)
+    mem.rs                    # syntext_mem_index_* entry points (in-memory docs)
   base64.rs                   # base64 encoding helpers
   git_util.rs                 # git binary resolution + path safety (shared by CLI and index)
   path_util.rs                # path normalization utilities
@@ -337,7 +346,8 @@ src/
     pending.rs                # PendingEdits buffer for incremental updates
     stats.rs                  # index statistics computation
     walk.rs                   # directory walking / file discovery
-    wasm_index.rs             # InMemoryIndex for wasm32 (no disk I/O, wasm feature only)
+    wasm_index.rs             # InMemoryIndex for wasm32 (no disk I/O, wasm or ffi feature)
+    mem_index.rs              # mutable in-memory MemIndex for FFI chat docs (ffi feature)
   posting/
     mod.rs                    # posting list types + adaptive intersection/union
     roaring_util.rs           # Roaring bitmap integration for dense terms
@@ -375,6 +385,13 @@ src/
       json.rs                 # NDJSON output (rg-compatible begin/match/context/end/summary)
       only_matching.rs        # only-matching substring rendering
     search.rs                 # search arg parsing, query execution, result dispatch
+
+swift/                        # Swift package (SPM) wrapping the C ABI (ffi feature)
+  Package.swift               # binary target: local build/ xcframework first, pinned release zip otherwise
+  Sources/CSyntext/include/   # hand-written syntext.h + module.modulemap (mirrors src/ffi/)
+  Sources/Syntext/            # Swift wrapper: SyntextIndex (projects), SyntextChatIndex (chats)
+  Scripts/build-xcframework.sh  # cargo staticlib per target -> lipo universal -> xcframework + zip
+  Tests/SyntextTests/         # XCTest round-trips (run after the xcframework script)
 ```
 
 ## Deferred Work

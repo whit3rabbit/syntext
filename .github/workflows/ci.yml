@@ -63,3 +63,50 @@ jobs:
 
       - name: cargo test --features symbols
         run: cargo test --features symbols
+
+  test-ffi:
+    name: Test (ffi feature, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is the only platform the xcframework actually ships for
+        # (test-swift below); ubuntu is kept for fast general coverage. The
+        # ffi Rust test target must run on both so a macOS-only regression in
+        # the C ABI isn't caught only after the xcframework build.
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ffi-${{ matrix.os }}
+
+      - name: cargo test --features ffi
+        run: cargo test --features ffi
+
+      - name: cargo clippy --features ffi
+        run: cargo clippy --all-targets --features ffi -- -D warnings
+
+  test-swift:
+    name: Swift package (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: swift-xcframework
+
+      - name: Build xcframework
+        run: ./swift/Scripts/build-xcframework.sh
+
+      - name: swift test
+        working-directory: swift
+        run: swift test

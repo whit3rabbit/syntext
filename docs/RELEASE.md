@@ -15,8 +15,9 @@ Perform these steps on your local machine before committing or tagging:
   - Rename the `## [Unreleased]` section to `## [X.Y.Z] - YYYY-MM-DD` (matching your new version and current date).
   - Add a new, blank `## [Unreleased]` template section above the newly created version section.
 - [ ] **Run Quality Gate**:
-  - Run `cargo test --all-features` to ensure all unit and integration tests pass cleanly.
-  - Run `cargo clippy --all-targets --all-features -- -D warnings` to ensure zero warnings.
+  - Run `cargo test --features cli,symbols,ffi,oracle` to ensure all unit and integration tests pass cleanly. (`wasm` is checked separately below; it is mutually exclusive with `ffi`/`native`, so a literal `--all-features` never compiles.)
+  - Run `cargo clippy --all-targets --features cli,symbols,ffi,oracle -- -D warnings` to ensure zero warnings.
+  - Run `cargo check --target wasm32-unknown-unknown --features wasm --no-default-features` to verify the wasm build still type-checks.
   - Run `cargo fmt --check` to ensure formatting is correct.
   - Ensure no source code file (excluding test suites) exceeds 400 lines (check `AGENTS.md` rules for module splitting guidelines).
   - Run the differential oracle test suite if applicable: `cargo test --features oracle`.
@@ -57,10 +58,12 @@ Once preparation is complete and verified:
 
 - [ ] **Monitor GitHub Actions**: Go to GitHub Actions and monitor the **Release** workflow. It will:
   - Build binaries for Linux (amd64, arm64), macOS (arm64, x86_64), Windows (amd64), and WASM (bundler).
+  - Build the `SyntextFFI.xcframework` zip (Swift package binary target) from the `ffi` feature.
   - Package and generate SHA256 checksums.
   - Create/publish a GitHub Release, using `scripts/extract_release_notes.py` to auto-populate the release description from `CHANGELOG.md`.
   - Publish the crate to [crates.io](https://crates.io/crates/syntext).
   - Automatically update the Homebrew cask in `whit3rabbit/homebrew-tap`.
+  - Automatically pin `swift/Package.swift` to the new xcframework zip (url + checksum) and push a `swift-vX.Y.Z` tag. If this push is blocked (branch protection on `main` rejecting the workflow token), pin manually: `shasum -a 256 <zip>` and edit the `url:`/`checksum:` literals in `swift/Package.swift`.
 - [ ] **Bump Installer Defaults**: Once the GitHub Release has successfully published:
   - Update `README.md`:
     - Status badge/version strings referencing the stable release.
@@ -84,3 +87,4 @@ Once preparation is complete and verified:
 
 - **Changelog Extraction**: During the `release` job, `.github/workflows/release.yml` executes `python3 scripts/extract_release_notes.py` passing the version tag (e.g. `1.4.0`). This parses `CHANGELOG.md` and generates a temporary markdown file passed to `softprops/action-gh-release@v3` via `body_path`.
 - **Cask Generation**: Homebrew cask updater runs `scripts/render_homebrew_cask.sh` to generate the Ruby formula with calculated SHA256 checksums from the newly built macOS archives, committing directly to the tap repository.
+- **Swift xcframework**: The `build-swift` job runs `swift/Scripts/build-xcframework.sh` on `macos-14` (both Apple targets cross-compiled on one runner; static archives need no cross linker) and stages `syntext-swift-<ver>.xcframework.zip`. The `update-swift-package` job then downloads the published zip, computes its SPM checksum, patches `swift/Package.swift`, and commits + tags. See docs/SWIFT.md for the consumer-facing pin semantics.

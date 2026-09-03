@@ -27,9 +27,19 @@
 //! }
 //! ```
 
+// `ffi` pulls in `native` (memmap2/rayon/ignore/globset), none of which
+// target wasm32-unknown-unknown; `wasm` is the in-memory, filesystem-free
+// alternative. Building both together produces confusing downstream
+// dependency errors instead of a clear one, so reject the combination early.
+#[cfg(all(feature = "wasm", feature = "ffi"))]
+compile_error!("the \"wasm\" and \"ffi\" features are mutually exclusive (ffi requires native filesystem support, wasm targets a filesystem-free wasm32 build)");
+
 // ── Public API ───────────────────────────────────────────────
 /// Error types for index operations.
 pub mod error;
+/// C ABI for the Swift/xcframework bindings (ffi feature only).
+#[cfg(feature = "ffi")]
+pub mod ffi;
 /// Core index management, writing, and snapshot components.
 pub mod index;
 /// Tree-sitter symbol extraction and SQLite cache storage (optional).

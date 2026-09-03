@@ -37,6 +37,11 @@ fuzz/corpus/
 # Distribution artifacts
 dist/
 
+# Swift package (xcframework build output; the checked-in Package.swift
+# falls back to the pinned release zip when this directory is absent)
+swift/build/
+swift/.build/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,6 +1,20 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+/// True if any component of `path` would escape the caller's intended root:
+/// `..` (parent-dir traversal), a root directory, or a Windows drive/UNC
+/// prefix. Shared by callers that reject a caller-supplied path/doc-id
+/// outright (`wasm_index::validate_doc_id`) and callers that strip a real
+/// filesystem prefix first (`Index::repo_relative_path`).
+pub(crate) fn has_disallowed_component(path: &Path) -> bool {
+    path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    })
+}
 
 /// Compare two paths by their forward-slash byte components.
 ///

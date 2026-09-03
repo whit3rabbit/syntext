@@ -4,8 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Swift bindings** (`ffi` Cargo feature + `swift/` package): a hand-written C ABI over `Index` and a new mutable in-memory document index, shipped as the `SyntextFFI.xcframework` SPM binary target (macOS, universal arm64+x86_64). Two APIs: `SyntextIndex` (build/open/search/searchFresh/notify/commit/updateFromGit/verify over a project directory) and `SyntextChatIndex` (add/remove/commit/search over caller-supplied in-memory documents, for chat-style content). Results cross as JSON; every match carries the exact line bytes base64-encoded alongside the lossy display string because submatch offsets index the original bytes. Panics are caught at the boundary (`catch_unwind`); errors cross as stable append-only codes (`SYNTEXT_ERR_*`, LockConflict retryable). New `src/ffi/` (`mod/dto/index/mem`), `src/index/mem_index.rs` (`MemIndex`: RwLock doc map + ArcSwap snapshot, traversal-shaped ids rejected by the same guard the wasm index uses), and shared snapshot construction extracted into `build_overlay_snapshot` (now compiled under `ffi` as well as `wasm`, with an empty-path rejection added to `validate_doc_id`). Tests: `tests/integration/ffi.rs` (`cargo test --features ffi`) and `swift/Tests` (`swift test` after `swift/Scripts/build-xcframework.sh`). CI: `test-ffi` and `test-swift` jobs; releases build and publish the xcframework zip plus an automated `update-swift-package` pin job. See docs/SWIFT.md.
+
 ### Fixed
 - Lock acquisition no longer collapses every `flock(2)` failure into "index locked by another process". `File::try_lock`'s `WouldBlock` (a real competing holder) is now told apart from an I/O failure (`EINTR`, or `ENOLCK` when the kernel lock table is exhausted under heavy process churn): `EINTR` is retried in place, and any other error is logged with its errno before surfacing as a retryable `LockConflict`. Previously a transient kernel error was indistinguishable from contention, which made the macOS nightly's `oracle_incremental::golden_incremental_grow_past_limit` failure (a `commit_batch` on a private, freshly built index dir reporting "locked by another process") undiagnosable.
+- `InMemoryIndex`/`MemIndex` no longer re-widen BOM-stripped content back to its raw bytes on the zero-copy fast path in `build_overlay_snapshot`, which was silently re-including the 3-byte BOM in indexed content and match offsets.
+- `validate_doc_id` (wasm/ffi in-memory indexes) now rejects degenerate-separator ids (`"chats/1/"`, `"chats//1"`, `"chats/./1"`, a bare `"."`): `Path` equality normalizes these away, so they previously aliased distinct documents onto one path-index entry.
+- `syntext_index_free`/`syntext_mem_index_free`/`syntext_error_free` (ffi feature) now run their drop inside the documented panic-firewall (`catch_unwind`), matching every other FFI entry point.
+- Swift `CZString` now rejects strings containing an embedded NUL byte instead of silently truncating them at the FFI boundary (`CStr::from_ptr` on the Rust side stops at the first NUL).
+- `wasm` and `ffi` Cargo features are now mutually exclusive at compile time (`compile_error!`) instead of failing with a confusing cascade of native-dependency errors on a wasm32 target.
+- Corrected `docs/SWIFT.md`, `syntext.h`, and FFI doc comments that overstated `notifyChange`/`notifyDelete` as accepting a repo-relative path (only an absolute path under the repo root actually resolves), and the documented `max_results`/`searchFresh` git-failure semantics to match actual behavior.
+
+### Changed
+- `update-swift-package` (release workflow) now checks out `main` explicitly instead of the triggering tag's detached HEAD, and retries the pin-commit push with a rebase, fixing a non-fast-forward failure whenever `main` had advanced past the release tag.
+- `test-ffi` (CI) now runs on both `ubuntu-latest` and `macos-14` instead of Linux only, so the ffi Rust tests are exercised on the platform the xcframework actually ships for.
 
 ## [2.1.0] - 2026-08-27
 

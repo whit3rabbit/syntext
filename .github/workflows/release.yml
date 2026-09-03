@@ -166,9 +166,38 @@ jobs:
           name: wasm-bundler
           path: dist/
 
+  build-swift:
+    name: Swift xcframework
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: swift-xcframework
+
+      - name: Build xcframework
+        env:
+          SYNTEXT_SWIFT_ZIP_OUT: dist
+        run: ./swift/Scripts/build-xcframework.sh
+
+      # The release job generates SHA256SUMS over all artifacts; the per-zip
+      # .sha256 sidecar is redundant there.
+      - name: Drop checksum sidecar
+        run: rm -f dist/*.sha256
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: swift-xcframework
+          path: dist/
+
   release:
     name: Publish GitHub Release
-    needs: [build-linux, build-macos, build-windows, build-wasm]
+    needs: [build-linux, build-macos, build-windows, build-wasm, build-swift]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -306,3 +335,76 @@ jobs:
           git diff --cached --quiet && echo "No changes" && exit 0
           git commit -m "Update syntext cask to ${{ steps.ver.outputs.VER }}"
           git push origin main
+
+  update-swift-package:
+    name: Pin Swift package to release
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # This job is triggered by the tag push, so checkout without `ref:`
+      # would leave HEAD detached at the tag commit. The pin commit belongs on
+      # `main`, and the tag itself carries no information this job needs (the
+      # version comes from `github.ref_name`), so check out `main`'s tip
+      # directly instead of committing onto a commit that may already be
+      # behind it.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Compute checksum from published release asset
+        id: sha
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VER="${VERSION#v}"
+          BASE="https://github.com/whit3rabbit/syntext/releases/download/v${VER}"
+          curl -fsSL "${BASE}/syntext-swift-${VER}.xcframework.zip" -o "syntext-swift-${VER}.xcframework.zip"
+          echo "SHA=$(shasum -a 256 "syntext-swift-${VER}.xcframework.zip" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "VER=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Pin Package.swift url + checksum
+        env:
+          VER: ${{ steps.sha.outputs.VER }}
+          SHA: ${{ steps.sha.outputs.SHA }}
+        run: |
+          python3 - <<'EOF'
+          import os, pathlib, re
+          ver = os.environ["VER"]
+          sha = os.environ["SHA"]
+          p = pathlib.Path("swift/Package.swift")
+          s = p.read_text()
+          url = f'url: "https://github.com/whit3rabbit/syntext/releases/download/v{ver}/syntext-swift-{ver}.xcframework.zip"'
+          s, n_url = re.subn(
+              r'url: "https://github\.com/whit3rabbit/syntext/releases/download/[^"]*syntext-swift-[^"]*\.xcframework\.zip"',
+              url, s)
+          s, n_sha = re.subn(r'checksum: "[0-9a-f]{64}"', f'checksum: "{sha}"', s)
+          assert n_url == 1 and n_sha == 1, f"expected exactly one url+checksum pin, got {n_url}/{n_sha}"
+          p.write_text(s)
+          EOF
+
+      - name: Commit, push, and tag
+        env:
+          VER: ${{ steps.sha.outputs.VER }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add swift/Package.swift
+          if git diff --cached --quiet; then
+            echo "No changes"; exit 0
+          fi
+          git commit -m "swift: pin v${VER} xcframework"
+          for i in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "::error::failed to push swift/Package.swift pin to main after 5 attempts"
+              exit 1
+            fi
+            git fetch origin main
+            git rebase origin/main
+          done
+          git tag "swift-v${VER}"
+          git push origin "swift-v${VER}"

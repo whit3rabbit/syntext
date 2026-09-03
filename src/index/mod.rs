@@ -51,9 +51,14 @@ pub mod snapshot;
 mod stats;
 /// Directory walking, file discovery, and gitignore evaluation.
 pub mod walk;
-#[cfg(feature = "wasm")]
-/// Fully in-memory WASM index implementation.
+#[cfg(any(feature = "wasm", feature = "ffi"))]
+/// Fully in-memory index implementation (no disk I/O, no locking). Shared by
+/// the wasm-bindgen API and the C/Swift FFI.
 pub mod wasm_index;
+
+#[cfg(feature = "ffi")]
+/// Mutable in-memory document index (chat-content use case, FFI feature).
+pub mod mem_index;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use build_external::ExternalFileRecord;
