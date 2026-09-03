@@ -972,7 +972,9 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
     );
 
     // The staleness notice also spawned a detached, unbounded `st update
-    // --quiet` catch-up. Poll with the default (unrestricted) config until
+    // --quiet` catch-up, which now flushes what it applies to a delta segment
+    // (`index::flush`), so its work outlives the child process. Poll with the
+    // default (unrestricted) config until
     // the content lands or a generous timeout elapses.
     let poll_search = |pattern: &str| {
         st().arg("--repo-root")

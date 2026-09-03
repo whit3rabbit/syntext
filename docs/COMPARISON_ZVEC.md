@@ -76,7 +76,7 @@ The core split is the retrieval model and where the index lives:
 | Warm query | Server route sub-ms against loaded index, direct route process start plus open plus query | `syntext-persistent` sub-ms, `syntext-fork` ~3 ms process start plus open plus query |
 | Retrieval model | BM25 (jieba tokenizer) plus dense vector plus RRF plus managed rg | Sparse n-gram prefilter, then memchr/regex verify. No ranking, no fusion |
 | Embedding model | Required (local or remote) | None |
-| Freshness | FS watcher (`node:fs.watch`, 750 ms debounce) plus hourly reconcile, `freshness: possibly_stale` when drift is detected | Bounded update on every search (150 ms / 200 files), git-commit delta segments, staleness notice on stderr, four git post-hooks |
+| Freshness | FS watcher (`node:fs.watch`, 750 ms debounce) plus hourly reconcile, `freshness: possibly_stale` when drift is detected | Bounded update on every search (150 ms / 200 files), durable flush of both committed and uncommitted change, staleness notice on stderr, four git post-hooks, `st init --fsmonitor` |
 | Query language | Hybrid / FTS / vector / fused plus rg escape hatch | Literal plus regex, exact rg-compatible output |
 | Output | Ranked passages with metadata, previews, enclosing symbol, freshness flag | rg-compatible lines (default, count, json, vimgrep), exhaustive and deterministic |
 | Integration | MCP server (Streamable HTTP), managed install into six agents | CLI (`st`), Rust library, WASM, Swift FFI, optional Tree-sitter symbol index, managed install into 11 agent harnesses plus git hooks |
@@ -288,6 +288,30 @@ fresh process and the only persistent state is on disk.
   the download stays explicit opt-in (default yes, since the core CLI stays
   zero-download), and whether to add an MCP server for the semantic path.
 
+### Adopt: durable `st update` for uncommitted drift
+
+- **Decision (shipped):** `st update` now persists everything it applies,
+  including uncommitted working-tree drift, so a later process sees it.
+- **Why it was broken:** `commit_batch` writes nothing to disk. A moved HEAD
+  was already followed by a durable delta segment, but uncommitted drift was
+  applied to the updating process's own overlay and then thrown away when that
+  process exited. So a search that fell behind its budget printed a
+  files-behind notice, spawned a detached `st update`, and gained nothing: the
+  next search re-detected the same files, searched stale, and spawned another
+  child after the throttle. The README's "auto-healed on the next search" only
+  ever held inside the 150 ms / 200 file budget.
+- **The second half:** flushing alone is not enough, because `git diff HEAD`
+  reports an uncommitted file forever. A `worktree-<uuid>.idx` sidecar records
+  size and mtime per flushed path, and detection drops the ones that have not
+  moved. It fails open: losing it costs re-applies, never correctness. A path
+  is anchored only when its mtime is safely older than the read that produced
+  the flushed content, which is git's racily-clean rule.
+- **Relevance to the comparison:** zvec-grep's watcher is a long-running
+  process holding its index in memory, so it never had this problem to solve.
+  A stateless CLI has to put the state on disk, and now does. What is left of
+  the freshness gap is latency, not durability: their watcher reacts in 750 ms,
+  syntext reacts on the next search.
+
 ### Adopt: `st watch` as a watcher plus a debounced durable flush
 
 - **Decision (proposed, v2 candidate, gated):** Add `st watch` as an optional
@@ -300,8 +324,10 @@ fresh process and the only persistent state is on disk.
   the index, it is re-detecting and re-applying drift. Once the flush is
   durable, a fresh process reads the flushed state off disk in milliseconds
   and a socket buys very little for a large amount of IPC surface.
-- **Gate:** Depends on durable flush landing first. Without it, `st watch`
-  would be a second copy of the same cross-process staleness problem.
+- **Gate:** Depended on durable flush, which has now landed (above). What
+  remains is the watcher itself, and it is no longer urgent: a repo whose drift
+  fits the per-search budget never needs one, and past that `st update` already
+  persists.
 - **What this is not:** Not a managed-rg daemon, not an MCP server, not a
   remote endpoint.
 

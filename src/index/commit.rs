@@ -104,6 +104,12 @@ impl Index {
         let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
         let base_doc_id_limit = helpers::base_doc_id_limit(old_snap)?;
 
+        // Stamped BEFORE the read loop, not after. The working-tree anchor
+        // trusts a path only when its mtime is safely older than the moment we
+        // read it (`worktree_anchor`'s racy-mtime rule), and taking the stamp
+        // afterwards would let a write that landed mid-loop look settled.
+        let read_epoch = std::time::SystemTime::now();
+
         // Read content from disk only for NEWLY changed paths.
         // Unchanged dirty files are reused from the old overlay via Arc::clone.
         let mut new_files: Vec<(std::path::PathBuf, Arc<[u8]>)> = Vec::new();
@@ -176,6 +182,13 @@ impl Index {
         } else {
             Vec::new()
         };
+
+        // Hand the next durable flush what it needs to anchor these paths.
+        // `removed_paths` is deletions + vanished + excluded: every path the
+        // commit resolved without producing a document. Without them, a deleted
+        // tracked file costs a `notify_delete` on every search until it is
+        // committed.
+        self.note_commit_for_flush(read_epoch, removed_paths.iter().cloned());
 
         let overlay = OverlayView::build_incremental(
             base_doc_id_limit,

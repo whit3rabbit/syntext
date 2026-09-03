@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use xxhash_rust::xxh64::xxh64;
 
-use super::{deletes_idx, helpers, paths_idx, Index};
+use super::flush::{AnchorInputs, FlushAnchor};
+use super::worktree_anchor::WorktreeAnchor;
+use super::{deletes_idx, helpers, paths_idx, worktree_codec, Index};
 use crate::index::manifest::{Manifest, SegmentRef};
 use crate::index::segment::SegmentWriter;
 use crate::index::snapshot::IndexSnapshot;
@@ -23,15 +25,17 @@ use crate::tokenizer::build_all;
 use crate::{Config, IndexError};
 
 /// Write the committed overlay as a durable delta segment + persistent
-/// delete-set, then reopen the index.
+/// delete-set + working-tree anchor, then reopen the index.
 ///
-/// `head` is the git HEAD the delta advances the index to (recorded as the new
-/// `base_commit`). `write_lock` is the writer lock acquired by the caller
-/// before snapshotting; it is held for the duration of the write.
-pub(super) fn flush_overlay_as_delta(
+/// `anchor` decides what happens to `base_commit`. `inputs` carries what the
+/// commits since the last flush observed, used to build the next working-tree
+/// anchor. `write_lock` is the writer lock acquired by the caller before
+/// snapshotting; it is held for the duration of the write.
+pub(super) fn flush_overlay_durable(
     config: Config,
     snapshot: Arc<IndexSnapshot>,
-    head: Option<String>,
+    anchor: FlushAnchor,
+    inputs: AnchorInputs,
     write_lock: std::fs::File,
 ) -> Result<Index, IndexError> {
     helpers::create_dir_all_secure(&config.index_dir)?;
@@ -62,6 +66,8 @@ pub(super) fn flush_overlay_as_delta(
     // bounded by `DELTA_MAX_FILES`, so one segment is enough; over-cap change
     // sets take the full-rebuild path instead of arriving here.
     let overlay_doc_count = snapshot.overlay.docs.len() as u32;
+    let flushed_paths: std::collections::HashSet<std::path::PathBuf> =
+        snapshot.overlay.docs.iter().map(|d| d.path.clone()).collect();
     if overlay_doc_count > 0 {
         let mut docs: Vec<&crate::index::overlay::OverlayDoc> =
             snapshot.overlay.docs.iter().collect();
@@ -118,6 +124,13 @@ pub(super) fn flush_overlay_as_delta(
     // safe because on reopen `base_doc_to_file_id` is re-derived from the loaded
     // index by path lookup, so the writer's in-memory stable ids need not
     // survive to disk.
+    // Record what the working tree looked like for everything this flush made
+    // durable, so `retain_unflushed` can skip these paths until they change
+    // again. Best-effort in both directions: no read epoch (no commit since the
+    // last flush recorded one), too many entries, or a write failure all just
+    // mean the paths get re-applied next time. See `worktree_anchor`.
+    let worktree_anchor_file = write_anchor(&config, &inputs, &flushed_paths);
+
     let live_paths: Vec<std::path::PathBuf> = snapshot
         .path_index
         .paths
@@ -136,7 +149,13 @@ pub(super) fn flush_overlay_as_delta(
         .total_files_indexed
         .saturating_add(overlay_doc_count);
     let mut manifest = Manifest::new(seg_refs, total_files);
-    manifest.base_commit = head;
+    manifest.base_commit = match anchor {
+        FlushAnchor::AdvanceHead(head) => head,
+        // Uncommitted drift belongs to no commit. Advancing base_commit here
+        // would make `rebuild_if_stale` (which only fires on
+        // `base_commit != HEAD`) skip the real commit when it lands.
+        FlushAnchor::KeepHead => previous_manifest.base_commit.clone(),
+    };
     manifest.scan_threshold_fraction = previous_manifest.scan_threshold_fraction;
     manifest.paths_idx_version = if paths_idx_ok {
         Some(paths_idx::FORMAT_VERSION)
@@ -144,9 +163,14 @@ pub(super) fn flush_overlay_as_delta(
         None
     };
     manifest.overlay_deletes_file = deletes_file;
+    manifest.worktree_anchor_file = worktree_anchor_file;
+    // One generation per durable flush. The field predates this and was
+    // documented as reserved; it now counts flushes, which is what a test can
+    // assert a flush actually happened by.
+    manifest.overlay_gen = previous_manifest.overlay_gen.saturating_add(1);
     manifest.save(&config.index_dir)?;
-    // Removes orphan segments and stale deletes-*.idx (all but the one named in
-    // overlay_deletes_file above).
+    // Removes orphan segments, stale deletes-*.idx and stale worktree-*.idx
+    // (all but the ones named in the manifest above).
     manifest.gc_orphan_segments(&config.index_dir)?;
 
     // Same lock-downgrade dance as build_index/compact_index: flock has no
@@ -159,4 +183,40 @@ pub(super) fn flush_overlay_as_delta(
     helpers::try_lock_shared(&lock_file, &config.index_dir)?;
     drop(_write_lock);
     Index::open_with_lock(config, lock_file)
+}
+
+/// Build and persist the next working-tree anchor, returning the filename to
+/// record in the manifest.
+///
+/// `None` on every failure path, which drops the anchor entirely and costs
+/// re-applies rather than correctness. `read_epoch` is `None` when no commit
+/// since the last flush recorded one, and without it nothing can be judged
+/// settled (see the racy-mtime rule in `worktree_anchor`).
+fn write_anchor(
+    config: &Config,
+    inputs: &AnchorInputs,
+    flushed_paths: &std::collections::HashSet<std::path::PathBuf>,
+) -> Option<String> {
+    let read_epoch = inputs.read_epoch?;
+    let next = WorktreeAnchor::build_next(
+        &inputs.previous,
+        flushed_paths,
+        &inputs.non_doc_paths,
+        &inputs.root,
+        read_epoch,
+    )?;
+    if next.is_empty() {
+        return None;
+    }
+    let name = worktree_codec::new_filename();
+    match worktree_codec::write_worktree_anchor(&config.index_dir, &name, &next) {
+        Ok(()) => {
+            log::debug!("anchored {} working-tree path(s) in {name}", next.len());
+            Some(name)
+        }
+        Err(e) => {
+            log::debug!("could not write worktree anchor: {e}");
+            None
+        }
+    }
 }

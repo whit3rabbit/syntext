@@ -3,6 +3,13 @@
 //! detached `st update --quiet` catch-up in the background so a later search
 //! sees a fresher index without the current search paying the unbounded
 //! update cost.
+//!
+//! The catch-up child is durable now. `st update` flushes what it applies to a
+//! delta segment (`index::flush`), so the "later search" above is a genuinely
+//! later *process*. Before that, the child updated only its own in-memory
+//! overlay and exited, and the next search re-detected the same files, searched
+//! stale, and spawned another child after the throttle. No argv change was
+//! needed here: the child already ran `st update --quiet`.
 
 use crate::index::Index;
 use crate::{Config, IndexError};

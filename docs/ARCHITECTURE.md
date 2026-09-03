@@ -155,7 +155,7 @@ Agent workflows require "read your writes": if an agent edits a file and searche
 - `commit_batch()` rebuilds a single merged in-memory overlay from all dirty files and atomically swaps it via `ArcSwap`.
 - All subsequent queries see the new state. No partial visibility, no read-path locking.
 
-The overlay is a single merged view, not N stacked generations. Rebuilding from ~100 dirty files takes 5-20ms. The overlay is in-memory only; `commit_batch()` does not write to disk directly. Cross-process freshness and persistence are achieved via the incremental delta-apply path.
+The overlay is a single merged view, not N stacked generations. Rebuilding from ~100 dirty files takes 5-20ms. `commit_batch()` still writes nothing to disk: it builds the merged view and swaps it into this process's `ArcSwap`. Persistence is a separate, explicit step. `Index::flush_overlay` (`flush.rs`) writes the committed overlay out as a delta segment, and `st update` calls it, so both a moved HEAD and uncommitted working-tree drift end up durable and visible to a later process.
 
 Full reindex triggers at 30% overlay threshold. This is the only mechanism that cleans stale doc IDs from base segments.
 
@@ -167,6 +167,16 @@ To make updates durable across processes without rebuilding the entire index, sy
 - **Delete-Set Sidecar (`deletes_idx.rs`)**: Base segment deletions are written to a generation-named `deletes-<uuid>.idx` file. The delete-set sidecar acts as a source of truth rather than a cache. If the delete-set cannot be read on startup, `Index::open` fails closed (returning `CorruptIndex`) to prevent double-matching the modified files.
 - **Compaction Boundary**: The existing compaction mechanism (`max_segments`) bounds segment growth, merges delta segments, drops deleted documents physically, and clears the delete-set sidecar.
 - **Fallback**: If the HEAD move is a non-ancestor (e.g., rebase, amend, force-push), the diff is too large, or any error occurs, the update falls back to a clean full rebuild.
+
+### Durable flush of uncommitted drift
+
+The delta path above is anchored to a commit. Uncommitted working-tree drift needs the same durability without a commit to anchor to, and `index::flush` provides it:
+
+- **`Index::flush_overlay`** commits anything pending and writes the overlay through the same `delta_apply` path, differing only in `FlushAnchor::KeepHead`: `base_commit` is carried forward untouched, because nothing was committed. Advancing it would make `rebuild_if_stale` (which only fires on `base_commit != HEAD`) skip the real commit when it lands.
+- **Working-tree anchor (`worktree_anchor.rs`, `worktree_codec.rs`)**: flushing alone is not enough, because `git diff HEAD` keeps reporting an uncommitted file forever. A generation-named `worktree-<uuid>.idx` sidecar records the size and mtime of every flushed path, and `retain_unflushed` drops paths that have not moved since. Deletions and excluded (binary, oversized) paths are recorded too, so a deleted tracked file does not cost a `notify_delete` on every search.
+- **Racy-mtime rule**: a path is anchored only when its mtime is at least 2 seconds older than the moment the flushed content was read. This is git's "racily clean" problem: two writes inside one filesystem timestamp tick are indistinguishable by stat. A path that fails the test is left out and re-applied once, which is the safe direction.
+- **Fail open, unlike the delete-set**: losing the anchor costs re-applies, never correctness, because `compute_delete_set` makes re-applying an already-flushed path idempotent. A read error is logged and answered with an empty anchor.
+- **Bounded**: over 50,000 entries no anchor is written at all, and segment growth is bounded by the existing compaction threshold, which carries the anchor filename forward (the same paths are still indexed with the same content).
 
 
 ## Design decisions and tradeoffs

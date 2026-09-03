@@ -278,6 +278,12 @@ pub(super) fn compact_index(
     // `base_commit != HEAD`) would then skip that range forever. Unreachable
     // before durable `st update`, which can now compact right after a flush.
     manifest.base_commit = previous_manifest.base_commit.clone();
+    // Compaction rewrites segments without changing which paths are indexed or
+    // what content they hold, so everything the last flush anchored is still
+    // anchored. Dropping the file here would make every uncommitted path look
+    // unflushed again. (`overlay_deletes_file` is deliberately NOT carried:
+    // compaction physically drops the deleted docs, so the set is now empty.)
+    manifest.worktree_anchor_file = previous_manifest.worktree_anchor_file.clone();
     manifest.scan_threshold_fraction = Some(snapshot.scan_threshold);
     // See the equivalent comment in build.rs: this must match the version of
     // the paths.idx written just below, so open() can gate loading on it.

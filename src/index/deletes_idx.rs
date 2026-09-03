@@ -99,8 +99,9 @@ impl std::fmt::Display for SidecarError {
 }
 
 /// Reject a manifest-supplied sidecar filename that could escape the index dir.
-/// Mirrors the segment-filename validation in `open.rs`.
-fn is_plain_filename(name: &str) -> bool {
+/// Mirrors the segment-filename validation in `open.rs`. Shared with
+/// `worktree_codec`, which validates its own sidecar name the same way.
+pub(super) fn is_plain_filename(name: &str) -> bool {
     !name.is_empty()
         && !name.contains('/')
         && !name.contains('\\')

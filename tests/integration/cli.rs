@@ -3809,3 +3809,77 @@ fn max_results_is_refused_by_the_modes_it_cannot_cap() {
     assert_eq!(files.status.code(), Some(2));
     assert!(stderr_text(&files).contains("--max-results is not supported with --files"));
 }
+
+/// `st update` must persist uncommitted drift, not just apply it to its own
+/// overlay. The proof is a *separate process* that is forbidden from updating:
+/// if `st --no-update` finds the content, it came off disk.
+#[test]
+fn st_update_persists_uncommitted_drift_for_a_later_process() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index = tempfile::TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    write_text(&repo.path().join("src/a.rs"), "fn committed_only() {}\n");
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+    build_index(repo.path(), index.path());
+
+    // Uncommitted edit. Age the mtime so the worktree anchor's racy-mtime rule
+    // trusts it; without that the path is deliberately re-applied next pass and
+    // the files_behind assertion below would be measuring the wrong thing.
+    write_text(&repo.path().join("src/a.rs"), "fn uncommitted_drift() {}\n");
+    std::fs::File::options()
+        .write(true)
+        .open(repo.path().join("src/a.rs"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(10))
+        .unwrap();
+
+    let updated = run_repo(repo.path(), index.path(), &["update", "--quiet"]);
+    assert_eq!(updated.status.code(), Some(0), "{}", stderr_text(&updated));
+
+    // The definitive assertion: a brand-new process, with updating switched
+    // off, still sees the edit.
+    let found = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "-q", "uncommitted_drift"],
+    );
+    assert_eq!(
+        found.status.code(),
+        Some(0),
+        "a later process must see the flushed edit\nstderr:\n{}",
+        stderr_text(&found)
+    );
+
+    let gone = run_repo(
+        repo.path(),
+        index.path(),
+        &["--no-update", "-q", "committed_only"],
+    );
+    assert_eq!(gone.status.code(), Some(1), "superseded content must be gone");
+
+    // And the flushed path is no longer counted as outstanding work.
+    let status = run_repo(repo.path(), index.path(), &["status", "--json"]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout_text(&status)).unwrap();
+    assert_eq!(
+        parsed["files_behind"],
+        serde_json::json!(0),
+        "status:\n{}",
+        stdout_text(&status)
+    );
+
+    // `--flush` is still accepted, and still exits 0.
+    let flush = run_repo(repo.path(), index.path(), &["update", "--flush", "--quiet"]);
+    assert_eq!(flush.status.code(), Some(0), "{}", stderr_text(&flush));
+}

@@ -25,7 +25,20 @@ fn detect_files_behind(index: &Index, config: &Config) -> Option<usize> {
         &git,
         Some(config.auto_update_budget_ms),
     ) {
-        Ok(change_set) => Some(change_set.budget_exceeded.unwrap_or(change_set.paths.len())),
+        Ok(mut change_set) => {
+            // Discount paths a durable flush already made permanent, so
+            // `st update` followed by `st status` reports 0 instead of the
+            // same uncommitted files forever. A budget-exceeded run reports
+            // its partial estimate unfiltered: detection stopped early, so
+            // the set is not the real change set to filter against.
+            match change_set.budget_exceeded {
+                Some(behind) => Some(behind),
+                None => {
+                    index.retain_unflushed(&mut change_set.paths);
+                    Some(change_set.paths.len())
+                }
+            }
+        }
         Err(_) => None,
     }
 }
@@ -267,10 +280,28 @@ fn try_update_once(config: Config, quiet: bool) -> Result<i32, IndexError> {
 
     match index.update_from_git(limits) {
         Ok(crate::index::freshness::UpdateOutcome::Updated { files, skipped, .. }) => {
+            // `st update` always persists. Before this, an uncommitted-drift
+            // update applied to this process's overlay and exited, so the next
+            // `st search` (a fresh process, empty overlay) re-detected the same
+            // files and searched stale. A flush failure is reported but does
+            // not fail the command: the in-memory update still happened, and
+            // the next update retries the flush.
+            let flushed = match index.flush_overlay() {
+                Ok(flushed) => flushed,
+                Err(e) => {
+                    eprintln!("st update: applied {files} file(s) but could not persist them: {e}");
+                    false
+                }
+            };
             if !quiet {
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
-                if let Err(err) = writeln!(out, "st: updated {} file(s)", files) {
+                let msg = if flushed {
+                    format!("st: updated and flushed {files} file(s)")
+                } else {
+                    format!("st: updated {files} file(s)")
+                };
+                if let Err(err) = writeln!(out, "{msg}") {
                     return Ok(handle_output(err));
                 }
             }
@@ -320,6 +351,8 @@ fn try_update_once(config: Config, quiet: bool) -> Result<i32, IndexError> {
     }
 }
 
+/// `--flush` is accepted for compatibility and does nothing: `st update`
+/// always persists what it applies.
 pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     let mut attempt = 0;
     let base_delay = std::time::Duration::from_millis(50);
@@ -352,26 +385,4 @@ fn handle_output(err: io::Error) -> i32 {
         eprintln!("st: {err}");
         2
     }
-}
-
-/// Print supported file types in ripgrep-compatible format.
-pub(super) fn cmd_type_list() -> i32 {
-    use ignore::types::TypesBuilder;
-    let mut builder = TypesBuilder::new();
-    builder.add_defaults();
-    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
-    for def in builder.definitions() {
-        let globs: Vec<String> = def.globs().iter().map(|g| g.to_string()).collect();
-        entries.push((def.name().to_string(), globs));
-    }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    for (name, globs) in &entries {
-        let joined = globs.join(", ");
-        if writeln!(out, "{name}: {joined}").is_err() {
-            return 0; // broken pipe
-        }
-    }
-    0
 }

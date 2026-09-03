@@ -309,7 +309,7 @@ wasm-pack build --target bundler -- --features wasm --no-default-features
 
 ## Known limitations
 
-1. **Crash recovery**: Uncommitted in-memory overlay state (used by resident integrations) is lost on unclean shutdown. For CLI searches, index state is persisted to disk via delta segments and delete sidecars, and any staleness is auto-healed on the next search via automatic bounded update-on-search. If a sidecar is corrupted, the index fails closed and requires a re-index or update.
+1. **Crash recovery**: Uncommitted in-memory overlay state (used by resident integrations) is lost on unclean shutdown. For CLI searches, index state is persisted to disk via delta segments and delete sidecars. `st update` persists everything it applies, including uncommitted working-tree drift, so a later process sees it. Within a search's own 150 ms / 200 file budget staleness is auto-healed in-band; past that the search prints a files-behind notice and spawns a detached `st update` whose work is durable. If the delete-set sidecar is corrupted, the index fails closed and requires a re-index or update.
 2. **Non-aligned substring coverage**: ~16% false-negative rate for queries that don't align with token boundaries. Token-aligned queries (identifiers, keywords) have 0% false negatives.
 3. **Network filesystems**: Index directory must be on local filesystem. NFS/SMB behavior is undefined.
 4. **Case-insensitive overhead**: ~15-20% more candidates due to lowercase normalization. Correct results are guaranteed by the verifier.

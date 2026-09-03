@@ -19,6 +19,7 @@ mod scope;
 mod search;
 mod search_args;
 mod stdin_search;
+mod type_list;
 #[cfg(feature = "symbols")]
 mod sym;
 
@@ -32,7 +33,7 @@ use config::resolve_config;
 #[cfg(test)]
 use config::{clamp_max_file_size, overlaps_sensitive_prefix, MAX_FILE_SIZE_CEILING};
 use init::{cmd_agent, cmd_init};
-use manage::{cmd_index, cmd_status, cmd_type_list, cmd_update, cmd_verify};
+use manage::{cmd_index, cmd_status, cmd_update, cmd_verify};
 use scope::cmd_files;
 use search::{cmd_search, SearchArgs};
 
@@ -96,7 +97,7 @@ pub fn run() -> i32 {
         None => {
             // --type-list and --files do not require a pattern.
             if cli.type_list {
-                return cmd_type_list();
+                return type_list::cmd_type_list();
             }
             if cli.files {
                 // --files lists paths straight off the index, never through

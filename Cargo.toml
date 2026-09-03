@@ -147,6 +147,10 @@ name = "incremental"
 path = "tests/integration/incremental.rs"
 
 [[test]]
+name = "flush"
+path = "tests/integration/flush.rs"
+
+[[test]]
 name = "oracle_self"
 path = "tests/integration/oracle_self.rs"
 required-features = ["oracle"]

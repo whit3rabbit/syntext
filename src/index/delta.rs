@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use super::{delta_apply, helpers, Index};
+use super::{helpers, Index};
 use crate::git_util::{is_hex_commit, is_safe_git_path};
 use crate::index::freshness::FreshnessError;
 use crate::index::manifest::Manifest;
@@ -287,7 +287,7 @@ impl Index {
     /// Buffers the changes onto the overlay and commits them (reusing
     /// `commit_batch`'s hardened read + delete-set + symbol maintenance), then
     /// flushes the overlay to a durable delta segment via
-    /// [`delta_apply::flush_overlay_as_delta`]. Returns [`DeltaOutcome::Fallback`]
+    /// [`super::flush::Index::run_durable_flush`]. Returns [`DeltaOutcome::Fallback`]
     /// when the overlay would overflow its cap (delta too large for an
     /// incremental apply). The caller (`rebuild_if_stale`) then does a full
     /// rebuild, which is always correct.
@@ -307,32 +307,11 @@ impl Index {
 
         let head = helpers::current_repo_head(&self.config.repo_root)?;
 
-        // Same lock choreography as compact(): take the writer lock, capture the
-        // just-committed snapshot, release the shared dir lock, let the flush
-        // acquire exclusive + reopen, then install. On error re-acquire shared.
-        let write_lock = helpers::acquire_writer_lock(&self.config.index_dir)?;
-        let snapshot = self.snapshot();
-
-        self._dir_lock.unlock()?;
-        let rebuilt = match delta_apply::flush_overlay_as_delta(
-            self.config.clone(),
-            snapshot,
-            head,
-            write_lock,
-        ) {
-            Ok(rebuilt) => rebuilt,
-            Err(err) => {
-                if let Err(e) = self._dir_lock.try_lock_shared() {
-                    log::debug!(
-                        "failed to re-acquire shared directory lock after delta error: {e}"
-                    );
-                }
-                return Err(err);
-            }
-        };
-        super::helpers::try_lock_shared(&self._dir_lock, &self.config.index_dir)?;
-
-        self.install_rebuilt_index(&rebuilt)?;
+        // Lock choreography, snapshot capture, flush and install all live in
+        // `flush::run_durable_flush`, shared with the uncommitted-drift caller.
+        // The only difference is here, in the argument: this path really did
+        // advance to a new commit.
+        self.run_durable_flush(super::flush::FlushAnchor::AdvanceHead(head))?;
         Ok(DeltaOutcome::Applied)
     }
 }

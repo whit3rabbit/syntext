@@ -335,6 +335,8 @@ impl Index {
             pending: PendingEdits::new(),
             _dir_lock: dir_lock,
             canonical_root,
+            worktree_anchor: std::sync::Mutex::new(None),
+            flush_book: std::sync::Mutex::new(Default::default()),
             #[cfg(feature = "symbols")]
             symbol_index,
         })

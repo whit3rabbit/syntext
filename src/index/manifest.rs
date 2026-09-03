@@ -113,6 +113,16 @@ pub struct Manifest {
     /// even reading the file.
     #[serde(default)]
     pub paths_idx_version: Option<u32>,
+    /// Filename of the working-tree anchor sidecar (`worktree-<uuid>.idx`)
+    /// written by the last durable flush, if any. See
+    /// `index::worktree_anchor`.
+    ///
+    /// `skip_serializing_if` is load-bearing, not tidiness: the manifest
+    /// checksum hashes the canonical JSON, so serializing an explicit `null`
+    /// for this field would change the bytes every existing manifest hashes to
+    /// and fail every checksum written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_anchor_file: Option<String>,
 }
 
 impl Manifest {
@@ -138,6 +148,7 @@ impl Manifest {
             scan_threshold_fraction: None, // populated by Index::build() after calibration
             checksum: None,
             paths_idx_version: None, // populated by build.rs/compact.rs when paths.idx is written
+            worktree_anchor_file: None, // populated by index::flush
         }
     }
 
@@ -275,6 +286,8 @@ impl Manifest {
         // only the one referenced by this manifest is live. Any other is a
         // stale generation left by a prior delta and must be swept.
         let live_deletes: Option<&str> = self.overlay_deletes_file.as_deref();
+        // Same generation-naming scheme for the working-tree anchor.
+        let live_anchor: Option<&str> = self.worktree_anchor_file.as_deref();
         for entry in std::fs::read_dir(index_dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -291,6 +304,14 @@ impl Manifest {
                 && name_str.ends_with(".idx")
                 && live_deletes != Some(name_str.as_ref());
             if is_stale_deletes {
+                if let Err(e) = std::fs::remove_file(entry.path()) {
+                    log::warn!("gc: could not remove {name_str}: {e}");
+                }
+            }
+            let is_stale_anchor = name_str.starts_with("worktree-")
+                && name_str.ends_with(".idx")
+                && live_anchor != Some(name_str.as_ref());
+            if is_stale_anchor {
                 if let Err(e) = std::fs::remove_file(entry.path()) {
                     log::warn!("gc: could not remove {name_str}: {e}");
                 }

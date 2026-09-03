@@ -284,3 +284,70 @@ fn load_missing_manifest_reports_index_not_found() {
     assert!(msg.contains("no index found"), "message: {msg}");
     assert!(msg.contains("st index"), "message: {msg}");
 }
+
+#[test]
+fn a_manifest_written_before_worktree_anchor_file_existed_still_verifies() {
+    // The field is `skip_serializing_if = "Option::is_none"` for exactly this
+    // reason: the checksum hashes the canonical JSON, so serializing an
+    // explicit `null` would change the bytes every pre-existing manifest hashed
+    // to and fail every one of them on load. Round-tripping a manifest with the
+    // field unset through save/load is what proves it.
+    let dir = tempfile::TempDir::new().unwrap();
+    let manifest = Manifest::new(Vec::new(), 0);
+    assert!(manifest.worktree_anchor_file.is_none());
+    manifest.save(dir.path()).unwrap();
+
+    let json = std::fs::read_to_string(dir.path().join(Manifest::FILENAME)).unwrap();
+    assert!(
+        !json.contains("worktree_anchor_file"),
+        "an unset anchor must not appear in the JSON at all: {json}"
+    );
+
+    let loaded = Manifest::load(dir.path()).expect("checksum must still verify");
+    assert!(loaded.worktree_anchor_file.is_none());
+}
+
+#[test]
+fn a_set_worktree_anchor_file_round_trips_and_survives_the_checksum() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut manifest = Manifest::new(Vec::new(), 0);
+    manifest.worktree_anchor_file = Some("worktree-abc.idx".to_string());
+    manifest.save(dir.path()).unwrap();
+
+    let loaded = Manifest::load(dir.path()).unwrap();
+    assert_eq!(
+        loaded.worktree_anchor_file.as_deref(),
+        Some("worktree-abc.idx")
+    );
+}
+
+#[test]
+fn gc_keeps_the_referenced_worktree_anchor_and_sweeps_the_rest() {
+    // Generation-named like the deletes sidecar: only the one the manifest
+    // points at is live, everything else is a leftover from a prior flush.
+    let dir = tempfile::TempDir::new().unwrap();
+    let live = "worktree-live.idx";
+    for name in [live, "worktree-stale.idx", "worktree-older.idx"] {
+        std::fs::write(dir.path().join(name), b"x").unwrap();
+    }
+
+    let mut manifest = Manifest::new(Vec::new(), 0);
+    manifest.worktree_anchor_file = Some(live.to_string());
+    manifest.gc_orphan_segments(dir.path()).unwrap();
+
+    assert!(dir.path().join(live).exists());
+    assert!(!dir.path().join("worktree-stale.idx").exists());
+    assert!(!dir.path().join("worktree-older.idx").exists());
+}
+
+#[test]
+fn gc_sweeps_every_worktree_anchor_when_the_manifest_names_none() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("worktree-orphan.idx"), b"x").unwrap();
+
+    Manifest::new(Vec::new(), 0)
+        .gc_orphan_segments(dir.path())
+        .unwrap();
+
+    assert!(!dir.path().join("worktree-orphan.idx").exists());
+}

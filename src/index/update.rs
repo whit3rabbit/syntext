@@ -42,6 +42,17 @@ impl super::Index {
                 },
             )?;
 
+        let mut change_set = change_set;
+        // Drop paths a previous durable flush already made permanent and that
+        // have not moved since. git keeps reporting an uncommitted file forever,
+        // so without this every search would re-read and re-apply content the
+        // index already holds. Runs before the empty check AND before the
+        // `max_files` gate, so `TooManyFiles` counts only work that remains.
+        let already_flushed = self.retain_unflushed(&mut change_set.paths);
+        if already_flushed > 0 {
+            log::debug!("skipped {already_flushed} path(s) already flushed and unchanged");
+        }
+
         let detect_elapsed_ms = change_set.detect_elapsed_ms;
 
         if let Some(behind) = change_set.budget_exceeded {
@@ -253,6 +264,10 @@ impl super::Index {
     ) -> Result<IndexStats, IndexError> {
         let take = self.pending.take_for_commit();
         self.snapshot.store(rebuilt.snapshot());
+        // The on-disk index just changed underneath us: the manifest names a
+        // different (or no) working-tree anchor, and the bookkeeping describes
+        // commits that are now durable. Both must be re-read, not reused.
+        self.reset_flush_state();
 
         // Re-notify any edits that occurred concurrently during the build/compact/delta apply window.
         for edit in take.drained {

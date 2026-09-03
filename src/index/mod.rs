@@ -33,6 +33,12 @@ mod delta;
 #[cfg(not(target_arch = "wasm32"))]
 mod delta_apply;
 #[cfg(not(target_arch = "wasm32"))]
+mod flush;
+#[cfg(not(target_arch = "wasm32"))]
+mod worktree_anchor;
+#[cfg(not(target_arch = "wasm32"))]
+mod worktree_codec;
+#[cfg(not(target_arch = "wasm32"))]
 /// Manifest serialization, locking, and generation management.
 pub mod manifest;
 #[cfg(not(target_arch = "wasm32"))]
@@ -111,6 +117,15 @@ pub struct Index {
     _dir_lock: std::fs::File,
     /// Canonicalized repo_root, computed once at open time.
     pub canonical_root: std::path::PathBuf,
+    /// Working-tree anchor written by the last durable flush, loaded lazily.
+    /// `None` means "not read yet", so a `--no-update` search never touches the
+    /// sidecar. Reset by `reset_flush_state` whenever the on-disk index is
+    /// replaced. See `index::flush` and `index::worktree_anchor`.
+    #[cfg(not(target_arch = "wasm32"))]
+    worktree_anchor: std::sync::Mutex<Option<std::sync::Arc<worktree_anchor::WorktreeAnchor>>>,
+    /// What commits have observed since the last flush, consumed when one runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    flush_book: std::sync::Mutex<flush::FlushBookkeeping>,
     /// Optional symbol index (requires `symbols` feature).
     #[cfg(feature = "symbols")]
     pub symbol_index: Option<std::sync::Arc<crate::symbol::SymbolIndex>>,
