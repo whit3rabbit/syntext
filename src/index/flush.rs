@@ -242,6 +242,11 @@ impl Index {
     }
 
     /// Drain the bookkeeping a flush needs to build the next anchor.
+    ///
+    /// Drained, not borrowed: a flush that then fails loses the bookkeeping and
+    /// so writes no anchor next time either, which costs re-applies and nothing
+    /// else. Holding it across a failed flush would be worse, since the
+    /// `read_epoch` it carries would no longer describe any content on disk.
     fn take_anchor_inputs(&self) -> AnchorInputs {
         let mut book = match self.flush_book.lock() {
             Ok(book) => book,

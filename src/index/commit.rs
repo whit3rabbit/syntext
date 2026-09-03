@@ -183,13 +183,6 @@ impl Index {
             Vec::new()
         };
 
-        // Hand the next durable flush what it needs to anchor these paths.
-        // `removed_paths` is deletions + vanished + excluded: every path the
-        // commit resolved without producing a document. Without them, a deleted
-        // tracked file costs a `notify_delete` on every search until it is
-        // committed.
-        self.note_commit_for_flush(read_epoch, removed_paths.iter().cloned());
-
         let overlay = OverlayView::build_incremental(
             base_doc_id_limit,
             &old_snap.overlay,
@@ -246,6 +239,18 @@ impl Index {
         new_snap.all_doc_ids();
 
         self.snapshot.store(new_snap);
+
+        // Hand the next durable flush what it needs to anchor these paths.
+        // `removed_paths` is deletions + vanished + excluded: every path the
+        // commit resolved without producing a document. Without them, a deleted
+        // tracked file costs a `notify_delete` on every search until it is
+        // committed.
+        //
+        // AFTER the snapshot store, not before: an anchor entry claims a path
+        // was resolved, and a commit that fails between the read and the store
+        // is rolled back by the RequeueGuard. Noting it early would let a later
+        // flush anchor a path this commit never actually resolved.
+        self.note_commit_for_flush(read_epoch, removed_paths.iter().cloned());
 
         // Incrementally maintain the symbol index (path-keyed). The gram index is
         // already committed above; a symbol DB error here is logged, not fatal,
