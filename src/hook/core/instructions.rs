@@ -8,12 +8,39 @@ use super::files;
 pub(crate) const AWARENESS_FILE: &str = "SYNTEXT.md";
 pub(crate) const AWARENESS_REF: &str = "@SYNTEXT.md";
 
-pub(crate) const AWARENESS: &str = r#"# Syntext
+/// The injected guidance body, as a literal.
+///
+/// A macro rather than a `const` so `concat!` can splice it into `AWARENESS`
+/// at compile time. The awareness file and the marker-guarded rules block must
+/// carry identical text, and the only way to guarantee that is to write it
+/// once.
+///
+/// Two things this text deliberately does not say. It does not tell the agent
+/// to run `st update` after edits, because search already refreshes from git
+/// on every call (`crate::cli::catchup`), so the old instruction cost a tool
+/// call per edit for nothing. And it now tells the agent to bound its own
+/// output, because an unbounded match on a common token is the failure mode
+/// that actually burns an agent's context window.
+macro_rules! guidance_body {
+    () => {
+        concat!(
+            "Use `st` instead of `rg` or `grep` when `.syntext/` exists. ",
+            "`st` accepts ripgrep's flags and prints ripgrep's output.\n",
+            "Before the first search in a repo: `test -d .syntext || st index`.\n",
+            "Do not run `st update` after edits. Search refreshes from git on every call. ",
+            "Run `st update` only when `st` prints \"files behind\".\n",
+            "Bound output with `-l`, `-c`, `-m N`, `-C N`, `-g GLOB`, or `-t TYPE`. ",
+            "Treat a returned line with context as already-read evidence. ",
+            "Read the file only when more is needed.\n",
+            "Use native `rg` only for paths outside the indexed repo root.\n",
+        )
+    };
+}
 
-Use `st` instead of `rg` or `grep` when `.syntext/` exists.
-Before the first search in a repo, run `test -d .syntext || st index`.
-After file edits, run `st update` before relying on search results.
-"#;
+/// Guidance body shared by every install surface. See [`guidance_body`].
+pub(crate) const GUIDANCE: &str = guidance_body!();
+
+pub(crate) const AWARENESS: &str = concat!("# Syntext\n\n", guidance_body!());
 
 pub(crate) fn marker_start(id: &str) -> String {
     format!("<!-- syntext-agent:{id}:start -->")
@@ -25,7 +52,7 @@ fn marker_end(id: &str) -> String {
 
 pub(crate) fn syntext_block(id: &str, heading: &str) -> String {
     format!(
-        "{}\n## {heading}\n\nUse `st` instead of `rg` or `grep` when `.syntext/` exists.\nBefore the first search in a repo, run `test -d .syntext || st index`.\nAfter file edits, run `st update` before relying on search results.\n{}\n",
+        "{}\n## {heading}\n\n{GUIDANCE}{}\n",
         marker_start(id),
         marker_end(id)
     )

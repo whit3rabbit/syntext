@@ -11,6 +11,25 @@ fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// The awareness file and the marker-guarded rules block must carry the same
+/// guidance, and neither may tell the agent to run `st update` after edits:
+/// search already refreshes from git on every call, so that instruction cost a
+/// tool call per edit for nothing.
+#[test]
+fn guidance_is_shared_and_drops_the_update_after_edits_instruction() {
+    let block = instructions::syntext_block("claude", "Code Search");
+
+    assert!(block.contains(instructions::GUIDANCE));
+    assert!(instructions::AWARENESS.contains(instructions::GUIDANCE));
+
+    for text in [block.as_str(), instructions::AWARENESS] {
+        assert!(!text.contains("After file edits"), "stale guidance: {text}");
+        assert!(text.contains("Do not run `st update` after edits"));
+        assert!(text.contains("already-read evidence"));
+        assert!(text.contains("Bound output with"));
+    }
+}
+
 fn backup_count(path: &Path) -> usize {
     let Some(parent) = path.parent() else {
         return 0;

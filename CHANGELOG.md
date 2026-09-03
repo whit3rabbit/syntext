@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Injected agent guidance rewritten** (`st init`, `st agent install`). The old text told the agent to run `st update` after every edit, which cost a tool call per edit for something search already does on its own: bounded update-on-search refreshes from git on every call. The new text says not to, and to run `st update` only when `st` prints "files behind". It also tells the agent to bound its own output (`-l`, `-c`, `-m N`, `-C N`, `-g`, `-t`) and to treat a returned line with context as already-read evidence rather than following up with a file read. The awareness file (`SYNTEXT.md`) and the marker-guarded rules block now share one literal, so the two can no longer drift apart. Existing installs are not rewritten in place: `st agent uninstall <agent>` then `st agent install <agent>` picks up the new text.
+
 ### Docs
 - Added `docs/COMPARISON_ZVEC.md`, a comparison against [zvec-grep v0.2.1](https://github.com/zvec-ai/zvec-grep/tree/v0.2.1) (BM25 + dense vector + RRF + managed ripgrep + MCP server), linked from `docs/ARCHITECTURE.md` alongside the existing Cursor and fff comparisons.
 
