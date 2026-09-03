@@ -1,6 +1,6 @@
 [package]
 name = "syntext"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Hybrid code search index for agent workflows"

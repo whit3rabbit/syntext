@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-02
+
 ### Added
 - **Swift bindings** (`ffi` Cargo feature + `swift/` package): a hand-written C ABI over `Index` and a new mutable in-memory document index, shipped as the `SyntextFFI.xcframework` SPM binary target (macOS, universal arm64+x86_64). Two APIs: `SyntextIndex` (build/open/search/searchFresh/notify/commit/updateFromGit/verify over a project directory) and `SyntextChatIndex` (add/remove/commit/search over caller-supplied in-memory documents, for chat-style content). Results cross as JSON; every match carries the exact line bytes base64-encoded alongside the lossy display string because submatch offsets index the original bytes. Panics are caught at the boundary (`catch_unwind`); errors cross as stable append-only codes (`SYNTEXT_ERR_*`, LockConflict retryable). New `src/ffi/` (`mod/dto/index/mem`), `src/index/mem_index.rs` (`MemIndex`: RwLock doc map + ArcSwap snapshot, traversal-shaped ids rejected by the same guard the wasm index uses), and shared snapshot construction extracted into `build_overlay_snapshot` (now compiled under `ffi` as well as `wasm`, with an empty-path rejection added to `validate_doc_id`). Tests: `tests/integration/ffi.rs` (`cargo test --features ffi`) and `swift/Tests` (`swift test` after `swift/Scripts/build-xcframework.sh`). CI: `test-ffi` and `test-swift` jobs; releases build and publish the xcframework zip plus an automated `update-swift-package` pin job. See docs/SWIFT.md.
 
