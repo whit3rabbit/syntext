@@ -119,6 +119,7 @@ cargo test --test overlay     # unit: overlay/snapshot only
 cargo test --test boundary_fuzz  # unit: boundary fuzzing
 cargo test --test index_build # integration: index construction
 cargo test --test incremental # integration: incremental updates
+cargo test --test flush       # integration: durable overlay flush + worktree anchor
 cargo test --test symbols     # integration: symbol index
 cargo test --features ffi     # ffi feature: MemIndex + C-ABI integration tests
 ./swift/Scripts/build-xcframework.sh  # Rust staticlib -> universal xcframework + release zip
@@ -345,6 +346,9 @@ src/
     overlay_tests.rs          # unit tests for overlay incremental builds
     manifest.rs               # manifest.json + atomic write-then-rename
     manifest_tests.rs         # unit tests for manifest serialization and GC
+    flush.rs                  # Index::flush_overlay + FlushAnchor (durable overlay flush)
+    worktree_anchor.rs        # working-tree anchor semantics (racy-mtime rule, fail-open)
+    worktree_codec.rs         # worktree-<uuid>.idx on-disk format
     pending.rs                # PendingEdits buffer for incremental updates
     stats.rs                  # index statistics computation
     walk.rs                   # directory walking / file discovery
@@ -379,6 +383,8 @@ src/
     git_resolve.rs            # git binary resolution + path safety helpers
     fallback.rs               # opt-in rg/grep fallback on missing index (--fallback / SYNTEXT_FALLBACK_RG)
     manage.rs                 # index/status/update subcommand handlers
+    type_list.rs              # --type-list output (split out of manage.rs)
+    post_filter.rs            # -t/-g/--max-depth/-m filtering + the --max-results cap
     render/
       mod.rs                  # shared utilities, re-exports, JSON helpers, flat/heading/vimgrep
       context.rs              # context-window rendering (before/after lines)
@@ -502,20 +508,16 @@ second copy of the same cross-process staleness problem.
 - No status was force-moved by either write-back pass -- board state reflects
   genuine run progress, not manual editing.
 
-**Known gap, still open after this board (not blocked, just not in scope --
-carry forward as a constraint for any board that touches freshness or
-`st watch`):** the background `st update` catch-up child only updates its own
-process's in-memory `ArcSwap<IndexSnapshot>`. `Manifest::overlay_gen`'s doc
-comment (`src/index/manifest.rs`) still says on-disk generation files are
-"not yet written (deferred to a later milestone)" -- confirmed still true
-after this board (paths.idx persists `PathIndex` only, not overlay
-generations). So a *separate, later* `st search` process does not see edits
-committed by an async catch-up spawned by an earlier search's process. This
-was flagged in EH-0003's original notes as a candidate to fold into EH-0009's
-persistence work, but EH-0009 shipped scoped to `PathIndex` only -- the gap
-was not closed and is not tracked by any other card on this board. Whoever
-plans the next freshness-related board (or `st watch`, per EH-0018) should
-open a card for it explicitly rather than assume paths.idx covered it.
+**Known gap from this board: CLOSED (see `src/index/flush.rs`).** The board
+left the background `st update` catch-up child updating only its own
+process's in-memory `ArcSwap<IndexSnapshot>`, so a *separate, later*
+`st search` process did not see its work. `Index::flush_overlay` now writes
+the committed overlay out as a delta segment, and `st update` calls it, so
+the catch-up child is durable. `Manifest::overlay_gen` is no longer reserved
+either: it counts durable flushes. The remaining constraint for anything that
+touches freshness or `st watch` is narrower: a change set past the overlay's
+50%-of-base cap is made durable by an inline full rebuild, which writes no
+working-tree anchor, so those paths keep being re-detected until committed.
 
 **Note on card bodies:** the markdown files for EH-0001..EH-0013 in
 `tasks/done/` currently have empty `## One-bite-at-a-time plan` / `## Notes`
@@ -550,11 +552,13 @@ still spot-check, in a real terminal against a real git repo:
    subprocess test asserts in CI.
 
 Separately (not from a `residual:` tag, but the same "needs a live runtime to
-observe" character): manually verify the cross-process staleness gap above by
-running `st update` (or triggering an auto-update via search) in one process,
-then running `st search --no-update <new-content>` in a *second*, fresh
-process against the same index dir, and confirming the second process still
-does not see the update -- this is the live behavior the "known gap" section
-describes, and it is easy to accidentally fix half of (e.g. via a paths.idx-
-adjacent change) without noticing the overlay-generation persistence itself
-is still missing.
+observe" character): the cross-process check that used to assert the gap now
+asserts it is closed. In a real git repo with `.syntext/` gitignored, edit a
+tracked file, wait past the 2s racy-mtime margin, run `st update`, then run
+`st --no-update <new-content>` in a *second*, fresh process against the same
+index dir. The second process must FIND the edit, `st status` must report
+`Behind: 0`, and a second `st update` must report no changes. This is covered
+by `st_update_persists_uncommitted_drift_for_a_later_process`
+(`tests/integration/cli.rs`) and the `tests/integration/flush.rs` target, but
+it is worth a live run because the `.syntext/` gitignore is what keeps the
+index directory's own churn out of the change set.

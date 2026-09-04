@@ -80,8 +80,12 @@ pub struct Manifest {
     pub base_commit: Option<String>,
     /// All active base segments; GC removes any `.seg` files not listed here.
     pub segments: Vec<SegmentRef>,
-    /// Generation counter for overlay crash recovery (reserved, currently 0).
-    /// Kept for backward compatibility with older manifest files.
+    /// Number of durable flushes this index has taken (`index::flush`).
+    ///
+    /// Was reserved and always 0. It now increments on every
+    /// `flush_overlay_durable`, which gives a test (and a curious operator) a
+    /// way to tell "a flush ran" from "a flush was a no-op" without diffing
+    /// segment lists. Older manifests read as 0, which is correct for them.
     pub overlay_gen: u64,
     /// Filename of the on-disk overlay gram index, if present.
     pub overlay_file: Option<String>,

@@ -377,7 +377,9 @@ fresh process and the only persistent state is on disk.
 
 ## Deferred items
 
-Assessed during this comparison, not implemented:
+Assessed during this comparison, not implemented. The first four are also
+listed in [`DEFERRED.md`](DEFERRED.md), which is the file to read before
+picking any of them up.
 
 - **Paired agent-level benchmark.** Run the same task set twice with the same
   agent, model, and prompt, varying only whether `st` is available, and count
