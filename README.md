@@ -19,7 +19,7 @@ The speedup varies with query selectivity, and search time does not include the 
 [![docs.rs](https://docs.rs/syntext/badge.svg)](https://docs.rs/syntext)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Install](#installation) • [Usage](#usage) • [Benchmarks](#benchmarks) • [Agent harnesses](#agent-harness-install) • [Architecture](#architecture) • [Docs](#docs)
+[Install](#installation) • [Agent quick start](#quick-start-for-agents) • [Usage](#usage) • [Benchmarks](#benchmarks) • [Harnesses](#agent-harnesses) • [Architecture](#architecture) • [Docs](#docs)
 
 </div>
 
@@ -97,6 +97,32 @@ Swift bindings (macOS 12+) ship as `syntext-swift-<version>.xcframework.zip` and
 ```bash
 cargo install syntext
 ```
+
+## Quick start for agents
+
+Three commands make an agent harness reach for `st` instead of `rg`. Run them with the `st` you intend to keep (the Homebrew or `/usr/local/bin` one), because the hook records that binary's absolute path.
+
+```bash
+# 1. Build the index in the repo the agent works in
+st index
+
+# 2. Install the integration for your harness
+st init -g                # Claude Code: global Bash rewrite hook, Grep blocker, and rules
+st init -g --codex        # Codex CLI: ~/.codex/SYNTEXT.md plus an @SYNTEXT.md include in ~/.codex/AGENTS.md
+st init                   # Claude Code, project only: a rules block in this repo's CLAUDE.md
+st init --codex           # Codex, project only: ./SYNTEXT.md plus an include in ./AGENTS.md
+
+# 3. Confirm
+st agent show claude --global     # prints "claude global: installed"
+```
+
+What the agent gets:
+
+- **A rewrite hook** (Claude Code, Cursor, Gemini, Copilot, OpenCode, OpenClaw). When the agent runs `rg` or `grep` in a repo that has `.syntext/`, the hook rewrites the command to `st` with the same flags. Claude Code shows the rewrite as an "ask" so you see it before it runs. Commands the rewrite cannot reproduce faithfully (`-c`, `-v`, multiline, pipes, shell expansions) run exactly as typed.
+- **A Grep blocker** (Claude Code only). The built-in Grep tool is denied with a reason pointing at `st`, again only when an index exists, so the agent falls through to the indexed search.
+- **Rules text** (every harness). One shared block: use `st` when `.syntext/` exists, run `test -d .syntext || st index` before the first search, do not run `st update` after edits, and bound output with `--max-results`, `-l`, `-c`, `-m`, `-C`, `-g`, or `-t`.
+
+Installs are idempotent, write a timestamped backup before editing an existing file, and `st agent uninstall <harness> --global` removes only syntext-owned entries. Harnesses without a hook surface (Codex, Cline, Windsurf, Kilo Code, Antigravity) get the rules text only. The full matrix is under [Agent harnesses](#agent-harnesses).
 
 ## Usage
 
@@ -213,25 +239,16 @@ st --fallback "needle" /tmp/some-clone               # force on despite the env 
 
 Build an index for full speed and for syntext's coverage guarantees. The fallback is a convenience for un-indexed paths, not a replacement for `st index`.
 
-## Agent harness install
+## Agent harnesses
 
-`st init` installs integrations for agent harnesses. Programmatic hooks rewrite safe agent shell searches from `rg` or `grep` to `st`, and only when a `.syntext/` index exists. Human shells, scripts, pipes, CI, and unsupported search forms are left alone.
+`st init` is the RTK-style front door. Hooks rewrite safe agent shell searches from `rg` or `grep` to `st`, and only when a `.syntext/` index exists. Human shells, scripts, pipes, CI, and unsupported search forms are left alone.
 
 The shell-rewrite hooks never run `st index` or `st update` themselves. The separate git-hooks integration does run `st update --quiet` in the background after a commit, checkout, merge, or rewrite.
 
 ```bash
-# Claude Code project instructions only
-st init
-
-# Claude Code global Bash hook plus Grep blocker
-st init -g
-
-# Other harnesses
 st init -g --agent cursor
 st init -g --gemini
 st init --copilot        # project hook; `st init -g --copilot` is also accepted
-st init --codex          # project rules
-st init -g --codex       # global Codex rules
 st init --githooks       # background `st update` from git hooks (project scope)
 st init --fsmonitor      # opt in to git's core.fsmonitor for faster change detection
 ```
