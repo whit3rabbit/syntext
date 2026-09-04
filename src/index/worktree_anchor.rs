@@ -43,8 +43,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-
-
 /// Above this many entries no anchor is written at all. A repo with 50k
 /// uncommitted paths is doing something a per-path anchor will not rescue, and
 /// the sidecar would cost more to read on every update than the re-applies it

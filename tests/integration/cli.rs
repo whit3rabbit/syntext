@@ -3842,7 +3842,11 @@ fn max_results_caps_total_output_and_prints_a_notice() {
     build_index(repo.path(), index.path());
 
     // 6 matches across 3 files, capped at 2 lines.
-    let output = run_repo(repo.path(), index.path(), &["--max-results", "2", "-n", "shared_cap_token"]);
+    let output = run_repo(
+        repo.path(),
+        index.path(),
+        &["--max-results", "2", "-n", "shared_cap_token"],
+    );
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         stdout_text(&output).lines().count(),
@@ -3857,7 +3861,11 @@ fn max_results_caps_total_output_and_prints_a_notice() {
     );
 
     // Under -l the unit is files, so a cap of 3 covers all three.
-    let listed = run_repo(repo.path(), index.path(), &["--max-results", "3", "-l", "shared_cap_token"]);
+    let listed = run_repo(
+        repo.path(),
+        index.path(),
+        &["--max-results", "3", "-l", "shared_cap_token"],
+    );
     assert_eq!(listed.status.code(), Some(0));
     assert_eq!(stdout_text(&listed).lines().count(), 3);
     assert!(
@@ -3866,14 +3874,26 @@ fn max_results_caps_total_output_and_prints_a_notice() {
         stderr_text(&listed)
     );
 
-    let listed_cut = run_repo(repo.path(), index.path(), &["--max-results", "2", "-l", "shared_cap_token"]);
+    let listed_cut = run_repo(
+        repo.path(),
+        index.path(),
+        &["--max-results", "2", "-l", "shared_cap_token"],
+    );
     assert_eq!(stdout_text(&listed_cut).lines().count(), 2);
     assert!(stderr_text(&listed_cut).contains("2 file(s)"));
 
     // -q suppresses the notice along with the output.
-    let quiet = run_repo(repo.path(), index.path(), &["--max-results", "1", "-q", "shared_cap_token"]);
+    let quiet = run_repo(
+        repo.path(),
+        index.path(),
+        &["--max-results", "1", "-q", "shared_cap_token"],
+    );
     assert_eq!(quiet.status.code(), Some(0));
-    assert!(stderr_text(&quiet).is_empty(), "stderr:\n{}", stderr_text(&quiet));
+    assert!(
+        stderr_text(&quiet).is_empty(),
+        "stderr:\n{}",
+        stderr_text(&quiet)
+    );
 }
 
 #[test]
@@ -3886,7 +3906,11 @@ fn max_results_json_summary_carries_truncated_only_when_the_flag_is_passed() {
     );
     build_index(repo.path(), index.path());
 
-    let capped = run_repo(repo.path(), index.path(), &["--json", "--max-results", "2", "json_cap_token"]);
+    let capped = run_repo(
+        repo.path(),
+        index.path(),
+        &["--json", "--max-results", "2", "json_cap_token"],
+    );
     let last = stdout_text(&capped)
         .lines()
         .last()
@@ -3896,7 +3920,11 @@ fn max_results_json_summary_carries_truncated_only_when_the_flag_is_passed() {
     assert_eq!(summary["type"], "summary");
     assert_eq!(summary["data"]["truncated"], serde_json::json!(true));
 
-    let exact = run_repo(repo.path(), index.path(), &["--json", "--max-results", "3", "json_cap_token"]);
+    let exact = run_repo(
+        repo.path(),
+        index.path(),
+        &["--json", "--max-results", "3", "json_cap_token"],
+    );
     let last = stdout_text(&exact).lines().last().unwrap().to_string();
     let summary: serde_json::Value = serde_json::from_str(&last).unwrap();
     assert_eq!(summary["data"]["truncated"], serde_json::json!(false));
@@ -3937,7 +3965,11 @@ fn max_results_is_refused_by_the_modes_it_cannot_cap() {
         assert!(stderr_text(&output).contains("--max-results is not supported with"));
     }
 
-    let files = run_repo(repo.path(), index.path(), &["--files", "--max-results", "1"]);
+    let files = run_repo(
+        repo.path(),
+        index.path(),
+        &["--files", "--max-results", "1"],
+    );
     assert_eq!(files.status.code(), Some(2));
     assert!(stderr_text(&files).contains("--max-results is not supported with --files"));
 }
@@ -3999,7 +4031,11 @@ fn st_update_persists_uncommitted_drift_for_a_later_process() {
         index.path(),
         &["--no-update", "-q", "committed_only"],
     );
-    assert_eq!(gone.status.code(), Some(1), "superseded content must be gone");
+    assert_eq!(
+        gone.status.code(),
+        Some(1),
+        "superseded content must be gone"
+    );
 
     // And the flushed path is no longer counted as outstanding work.
     let status = run_repo(repo.path(), index.path(), &["status", "--json"]);

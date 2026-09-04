@@ -2051,9 +2051,6 @@ fn max_results_truncates_matches_and_reports_it() {
 
     // No flag, no truncation.
     let mut untouched = make(&["a.rs", "b.rs", "c.rs"]);
-    assert!(!apply_max_results(
-        &mut untouched,
-        &SearchArgs::default()
-    ));
+    assert!(!apply_max_results(&mut untouched, &SearchArgs::default()));
     assert_eq!(untouched.len(), 3);
 }

@@ -20,9 +20,9 @@ mod scope;
 mod search;
 mod search_args;
 mod stdin_search;
-mod type_list;
 #[cfg(feature = "symbols")]
 mod sym;
+mod type_list;
 
 use std::path::PathBuf;
 

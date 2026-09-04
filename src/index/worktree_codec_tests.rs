@@ -99,7 +99,10 @@ fn a_corrupt_file_is_rejected_rather_than_half_decoded() {
 fn a_filename_that_could_escape_the_index_dir_is_refused_both_ways() {
     let dir = tempfile::TempDir::new().unwrap();
     for name in ["../escape.idx", "sub/dir.idx", "", "/abs.idx"] {
-        assert!(read_worktree_anchor(dir.path(), name).is_err(), "read {name}");
+        assert!(
+            read_worktree_anchor(dir.path(), name).is_err(),
+            "read {name}"
+        );
         assert!(
             write_worktree_anchor(dir.path(), name, &sample()).is_err(),
             "write {name}"

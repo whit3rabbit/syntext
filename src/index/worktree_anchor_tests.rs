@@ -79,7 +79,12 @@ fn a_racily_recent_write_is_left_out_rather_than_wrongly_trusted() {
     // as the read cannot be distinguished from one written just after it. Being
     // left out means it gets re-applied once, which is the safe direction.
     let repo = tempfile::TempDir::new().unwrap();
-    write_aged(repo.path(), "racy.rs", "just written", Duration::from_secs(0));
+    write_aged(
+        repo.path(),
+        "racy.rs",
+        "just written",
+        Duration::from_secs(0),
+    );
 
     let anchor = WorktreeAnchor::build_next(
         &WorktreeAnchor::default(),
@@ -183,8 +188,18 @@ fn a_path_that_is_both_a_doc_and_a_non_doc_is_recorded_as_the_doc() {
 #[test]
 fn untouched_previous_entries_carry_forward_and_untrusted_ones_are_dropped() {
     let repo = tempfile::TempDir::new().unwrap();
-    write_aged(repo.path(), "old.rs", "flushed earlier", Duration::from_secs(10));
-    write_aged(repo.path(), "new.rs", "flushed now", Duration::from_secs(10));
+    write_aged(
+        repo.path(),
+        "old.rs",
+        "flushed earlier",
+        Duration::from_secs(10),
+    );
+    write_aged(
+        repo.path(),
+        "new.rs",
+        "flushed now",
+        Duration::from_secs(10),
+    );
 
     let first = WorktreeAnchor::build_next(
         &WorktreeAnchor::default(),
@@ -210,7 +225,12 @@ fn untouched_previous_entries_carry_forward_and_untrusted_ones_are_dropped() {
 
     // Now touch `old.rs` racily and re-flush it. The stale entry must be
     // dropped, not left behind: keeping it could match by coincidence.
-    write_aged(repo.path(), "old.rs", "flushed earlier", Duration::from_secs(0));
+    write_aged(
+        repo.path(),
+        "old.rs",
+        "flushed earlier",
+        Duration::from_secs(0),
+    );
     let third = WorktreeAnchor::build_next(
         &second,
         &set(&["old.rs"]),
@@ -232,10 +252,7 @@ fn exceeding_max_entries_writes_no_anchor_at_all() {
     let repo = tempfile::TempDir::new().unwrap();
     let mut entries = std::collections::HashMap::new();
     for i in 0..=MAX_ENTRIES {
-        entries.insert(
-            PathBuf::from(format!("f{i}.rs")),
-            Observed::Absent,
-        );
+        entries.insert(PathBuf::from(format!("f{i}.rs")), Observed::Absent);
     }
     let huge = WorktreeAnchor::from_entries(entries);
 

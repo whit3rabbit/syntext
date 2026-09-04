@@ -96,7 +96,10 @@ impl std::fmt::Display for SidecarError {
                 write!(f, "worktree anchor checksum does not match its contents")
             }
             SidecarError::BadFilename => {
-                write!(f, "worktree anchor filename in manifest is not a plain filename")
+                write!(
+                    f,
+                    "worktree anchor filename in manifest is not a plain filename"
+                )
             }
         }
     }
@@ -250,7 +253,6 @@ pub(crate) fn write_worktree_anchor(
     std::fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
-
 
 #[cfg(test)]
 #[path = "worktree_codec_tests.rs"]

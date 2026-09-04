@@ -230,7 +230,9 @@ impl Index {
             Ok(rebuilt) => rebuilt,
             Err(err) => {
                 if let Err(e) = self._dir_lock.try_lock_shared() {
-                    log::debug!("failed to re-acquire shared directory lock after flush error: {e}");
+                    log::debug!(
+                        "failed to re-acquire shared directory lock after flush error: {e}"
+                    );
                 }
                 return Err(err);
             }

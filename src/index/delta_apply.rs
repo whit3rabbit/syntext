@@ -66,8 +66,12 @@ pub(super) fn flush_overlay_durable(
     // bounded by `DELTA_MAX_FILES`, so one segment is enough; over-cap change
     // sets take the full-rebuild path instead of arriving here.
     let overlay_doc_count = snapshot.overlay.docs.len() as u32;
-    let flushed_paths: std::collections::HashSet<std::path::PathBuf> =
-        snapshot.overlay.docs.iter().map(|d| d.path.clone()).collect();
+    let flushed_paths: std::collections::HashSet<std::path::PathBuf> = snapshot
+        .overlay
+        .docs
+        .iter()
+        .map(|d| d.path.clone())
+        .collect();
     if overlay_doc_count > 0 {
         let mut docs: Vec<&crate::index::overlay::OverlayDoc> =
             snapshot.overlay.docs.iter().collect();

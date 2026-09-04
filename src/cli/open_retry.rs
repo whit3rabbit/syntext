@@ -74,16 +74,17 @@ mod tests {
 
     /// Records the backoff actually slept so the schedule is asserted, not
     /// just the call count.
-    fn run(
-        outcomes: Vec<Result<u32, IndexError>>,
-    ) -> (Result<u32, IndexError>, usize, Vec<u64>) {
+    fn run(outcomes: Vec<Result<u32, IndexError>>) -> (Result<u32, IndexError>, usize, Vec<u64>) {
         let remaining = RefCell::new(outcomes.into_iter());
         let slept = RefCell::new(Vec::new());
         let calls = RefCell::new(0usize);
         let result = retry_lock_conflict(
             || {
                 *calls.borrow_mut() += 1;
-                remaining.borrow_mut().next().unwrap_or_else(|| Err(conflict()))
+                remaining
+                    .borrow_mut()
+                    .next()
+                    .unwrap_or_else(|| Err(conflict()))
             },
             |d| slept.borrow_mut().push(d.as_millis() as u64),
             LOCK_RETRY_BACKOFF_MS,

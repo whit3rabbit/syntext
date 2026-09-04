@@ -35,10 +35,6 @@ mod delta_apply;
 #[cfg(not(target_arch = "wasm32"))]
 mod flush;
 #[cfg(not(target_arch = "wasm32"))]
-mod worktree_anchor;
-#[cfg(not(target_arch = "wasm32"))]
-mod worktree_codec;
-#[cfg(not(target_arch = "wasm32"))]
 /// Manifest serialization, locking, and generation management.
 pub mod manifest;
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +57,10 @@ pub mod walk;
 /// Fully in-memory index implementation (no disk I/O, no locking). Shared by
 /// the wasm-bindgen API and the C/Swift FFI.
 pub mod wasm_index;
+#[cfg(not(target_arch = "wasm32"))]
+mod worktree_anchor;
+#[cfg(not(target_arch = "wasm32"))]
+mod worktree_codec;
 
 #[cfg(feature = "ffi")]
 /// Mutable in-memory document index (chat-content use case, FFI feature).

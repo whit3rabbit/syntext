@@ -272,11 +272,7 @@ fn a_racily_recent_edit_is_re_applied_rather_than_lost() {
     // Not aged: written in the same tick as the read, so the anchor refuses to
     // trust it. The safe direction is to re-apply, never to skip.
     let fx = setup();
-    fs::write(
-        fx.repo.path().join("src/main.rs"),
-        "fn racy_marker() {}\n",
-    )
-    .unwrap();
+    fs::write(fx.repo.path().join("src/main.rs"), "fn racy_marker() {}\n").unwrap();
     fx.update_all();
     fx.flush();
 
@@ -410,10 +406,7 @@ fn a_flush_under_a_competing_handle_is_a_retryable_lock_conflict() {
     );
 
     drop(competing);
-    assert!(
-        fx.flush(),
-        "the overlay is intact, so the retry succeeds"
-    );
+    assert!(fx.flush(), "the overlay is intact, so the retry succeeds");
 
     let fx = fx.reopen();
     assert_eq!(fx.count("drift_marker"), 1);
@@ -459,7 +452,10 @@ fn a_change_set_over_the_overlay_cap_is_not_reported_as_a_flush_failure() {
 
     let fx = fx.reopen();
     for i in 0..40 {
-        fx.write_aged(&format!("src/f{i}.rs"), &format!("fn bulk_edit_{i}() {{}}\n"));
+        fx.write_aged(
+            &format!("src/f{i}.rs"),
+            &format!("fn bulk_edit_{i}() {{}}\n"),
+        );
     }
     fx.update_all();
 
