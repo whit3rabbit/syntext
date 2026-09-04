@@ -42,7 +42,7 @@ Installs `st` to `/usr/local/bin`. On macOS it uses the Homebrew cask when `brew
 Override the install directory or pin a version with environment variables:
 
 ```bash
-INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=2.2.0 \
+INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=2.3.0 \
   curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
 ```
 
