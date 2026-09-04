@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-04
+
 ### Fixed
 - Compaction no longer advances `Manifest::base_commit` to whatever HEAD happened to be when it ran. Compaction rewrites segments and indexes nothing new, so it has no claim on any commit the base does not already cover. If HEAD had moved but `rebuild_if_stale` had not yet applied the delta, the range was marked as covered and then skipped permanently, since `rebuild_if_stale` only fires on `base_commit != HEAD`. Previously reachable only through the public `compact()` API. The durable `st update` under **Changed** puts a real caller on the path.
 - **Piped input is no longer misrouted to the repo index under load.** Implicit-stdin detection classified fd 0 by stating `/dev/stdin`, which routes through macOS's `fdesc` filesystem and transiently returns `EBADF` when the machine is busy. The check now `fstat`s a dup of fd 0 (`BorrowedFd::try_clone_to_owned` into `File::metadata`), doing no path resolution at all. Because the error arm fails safe, every miss silently searched the whole repo instead of the piped stream: measured at 15 misses in 7980 invocations (0.19%) on a loaded 14-core macOS box, and 0 in 7980 after the change. Verified end to end with 4000 real `st` invocations under load, all correct.
