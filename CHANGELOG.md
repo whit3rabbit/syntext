@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Piped input is no longer misrouted to the repo index under load.** Implicit-stdin detection classified fd 0 by stating `/dev/stdin`, which routes through macOS's `fdesc` filesystem and transiently returns `EBADF` when the machine is busy. The check now `fstat`s a dup of fd 0 (`BorrowedFd::try_clone_to_owned` into `File::metadata`), doing no path resolution at all. Because the error arm fails safe, every miss silently searched the whole repo instead of the piped stream: measured at 15 misses in 7980 invocations (0.19%) on a loaded 14-core macOS box, and 0 in 7980 after the change. Verified end to end with 4000 real `st` invocations under load, all correct.
+- **`--quiet` no longer leaks the `core.fsmonitor` tip to stderr.** The one-time tip fires whenever git change detection eats more than half the auto-update budget, which is load-dependent, so `--quiet`'s empty-stderr contract was nondeterministic. It is now gated on `!quiet` like the staleness notice beside it. Skipping the call rather than just the print also leaves the one-shot stamp file unburned, so a later non-quiet run still gets its single tip.
+- **`st search` no longer exits 2 because of `st`'s own background catch-up.** A search whose bounded auto-update overruns its budget spawns a detached `st update --quiet`, and the next search could land inside that child's exclusive lock window and fail with "index locked by another process". The search path now retries `LockConflict` on a bounded schedule (20, 40, 80, 160, 200ms, so 500ms total) before failing with the same error and exit code. Corruption is not masked: `CorruptIndex`, `IndexNotFound`, and every other error still return on the first attempt, and an uncontended open never sleeps. Measured against a 150ms transient lock, 34 of 100 searches exited 2 before the change and 0 of 100 after. New module `src/cli/open_retry.rs`.
+
+### Changed
+- Test-only: the two `run_git_bounded` deadline-kill tests in `src/index/freshness_tests.rs` now size their deadline off a measured shim spawn (10x, clamped to 200ms..30s) instead of a fixed 200ms/500ms, and their shims close stdout before stalling. The fixed deadline assumed a host where spawning `/bin/sh` costs single-digit milliseconds, and failed outright on a machine where it cost 3.8s. Closing stdout also removes a tail wait that had nothing to do with the assertions: `sleep` inherits the shell's stdout and holds the pipe open, so the drain thread's `read_to_end` blocked for the whole sleep. Each test dropped from 60.15s to about 1s, which is also faster than the 5s the original spent.
+
 ## [2.2.0] - 2026-09-02
 
 ### Added

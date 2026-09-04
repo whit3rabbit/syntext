@@ -13,6 +13,7 @@ mod fallback;
 mod init;
 mod logger;
 mod manage;
+mod open_retry;
 mod post_filter;
 mod render;
 mod scope;

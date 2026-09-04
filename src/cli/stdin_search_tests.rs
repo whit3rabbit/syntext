@@ -118,3 +118,29 @@ fn invert_matches_covers_binary_content() {
     assert_eq!(matches[0].line_number, 1);
     assert_eq!(matches[0].line_content, b"a\0z");
 }
+
+/// The classifier must read the descriptor itself, not resolve `/dev/stdin`:
+/// the path form goes through macOS's fdesc lookup, which transiently fails
+/// with EBADF under process churn and misroutes a piped stream to the repo
+/// index. Exercising the three real fd shapes here also pins the FIFO /
+/// regular-file / char-device policy.
+#[cfg(unix)]
+#[test]
+fn fd_classifier_reads_the_descriptor_not_dev_stdin() {
+    use std::os::fd::AsFd;
+
+    let (reader, _writer) = std::io::pipe().expect("pipe");
+    assert!(fd_is_searchable(reader.as_fd()), "pipe is searchable");
+
+    let file = tempfile::NamedTempFile::new().expect("temp file");
+    assert!(
+        fd_is_searchable(file.as_file().as_fd()),
+        "regular file redirect is searchable"
+    );
+
+    let null = std::fs::File::open("/dev/null").expect("/dev/null");
+    assert!(
+        !fd_is_searchable(null.as_fd()),
+        "char device is not searchable"
+    );
+}

@@ -508,6 +508,66 @@ fn write_fake_git(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
     path
 }
 
+/// Sizes the deadline for the two kill-classification tests below off what
+/// spawning the shim actually costs on *this* machine, instead of a fixed
+/// constant.
+///
+/// These two tests need the shim to be spawned and to write its record before
+/// the parent kills it at the deadline, and nothing in the test controls how
+/// fast the OS gets there. A fixed deadline therefore encodes an assumption
+/// about the host. The original 200ms/500ms held on an idle macOS box, where
+/// spawn-to-first-byte measures 5-9ms, and lost on the same box while
+/// `syspolicyd` sat wedged at ~460% CPU (a loop of Rust relinks provokes it,
+/// since each freshly linked unsigned binary gets assessed): there the same
+/// spawn took 3.8s, so `run_git_bounded` reached its poll loop with the
+/// deadline already expired and killed the shim before it had written a byte.
+/// Raising the constant only moves the threshold; calibrating removes the
+/// assumption.
+///
+/// The 10x multiplier is margin over the calibration sample itself, the 200ms
+/// floor keeps the common case fast, and the 30s ceiling stops a pathological
+/// host from hanging the suite. Making this exact instead of calibrated would
+/// mean restructuring `run_git_bounded` to take an injectable reader rather
+/// than spawning a process; that is a production change, deliberately not
+/// made for a test.
+///
+/// A healthy host takes the 200ms floor, which is what each test then costs:
+/// both shims close stdout before stalling (see `STALL_AFTER_CLOSING_STDOUT`),
+/// so the deadline is the whole bill.
+#[cfg(unix)]
+fn calibrated_kill_deadline_ms(fake: &std::path::Path, dir: &std::path::Path) -> u64 {
+    let start = std::time::Instant::now();
+    let out = std::process::Command::new(fake)
+        .arg("-C")
+        .arg(dir)
+        .arg("calibrate")
+        .output()
+        .expect("run calibration shim");
+    let observed = start.elapsed().as_millis() as u64;
+    assert!(
+        !out.stdout.is_empty(),
+        "the calibration branch must print, or it is not measuring a real write"
+    );
+    observed.saturating_mul(10).clamp(200, 30_000)
+}
+
+/// Shell fragment both kill-test shims use to stall until the parent kills
+/// them: flush and close stdout, then sleep past any deadline.
+///
+/// The `exec 1>&-` is what keeps these tests cheap. `run_git_bounded` joins a
+/// `read_to_end` drain thread, which only returns once *every* write end of
+/// the pipe is closed -- and `sleep` is an external command, so it inherits
+/// the shell's stdout and holds that write end for its whole duration.
+/// Killing the shell does not kill the grandchild, so a shim that just slept
+/// made each test cost the full sleep (the original `sleep 5` spent 5s per
+/// test doing nothing; a `sleep 60` spent 60s). Closing stdout first flushes
+/// the record into the pipe and hands the drain thread its EOF immediately,
+/// so the sleep can be arbitrarily long at no cost and the test bills only
+/// the deadline. It also makes truncation structural rather than timed:
+/// nothing can reach the pipe after this point even in principle.
+#[cfg(unix)]
+const STALL_AFTER_CLOSING_STDOUT: &str = "exec 1>&-; sleep 3600";
+
 /// `run_git_bounded` must tag a deadline kill as `Partial`, not collapse it
 /// into the same `Ok(Some(buf))` shape as a clean success (the masked-staleness
 /// bug). The shim emits one complete `-z` record, then stalls well past the
@@ -516,11 +576,18 @@ fn write_fake_git(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
 #[cfg(unix)]
 fn run_git_bounded_classifies_deadline_kill_as_partial() {
     let dir = tempfile::TempDir::new().unwrap();
+    // `calibrate` exits straight after printing so the calibration spawn is
+    // cheap; the real branch stalls far past the deadline, so "was it killed?"
+    // is never in question.
     let fake = write_fake_git(
         dir.path(),
-        "#!/bin/sh\nprintf 'seen.rs\\0'\nsleep 5\nprintf 'never.rs\\0'\n",
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *calibrate*) printf 'seen.rs\\0' ;;\n  \
+             *) printf 'seen.rs\\0'; {STALL_AFTER_CLOSING_STDOUT} ;;\nesac\n"
+        ),
     );
-    let deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
+    let budget = calibrated_kill_deadline_ms(&fake, dir.path());
+    let deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(budget));
     match run_git_bounded(&fake, dir.path(), &["ignored"], deadline).unwrap() {
         GitOutput::Partial(buf) => assert_eq!(buf, b"seen.rs\0"),
         other => panic!("expected Partial, got {other:?}"),
@@ -539,9 +606,17 @@ fn detect_changed_files_reports_budget_exceeded_when_last_command_is_killed() {
     let dir = tempfile::TempDir::new().unwrap();
     let fake = write_fake_git(
         dir.path(),
-        "#!/bin/sh\ncase \"$*\" in\n  *ls-files*) printf 'untracked.rs\\0'; sleep 5 ;;\n  *) exit 0 ;;\nesac\n",
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *calibrate*) printf 'untracked.rs\\0' ;;\n  \
+             *ls-files*) printf 'untracked.rs\\0'; {STALL_AFTER_CLOSING_STDOUT} ;;\n  \
+             *) exit 0 ;;\nesac\n"
+        ),
     );
-    let result = detect_changed_files(dir.path(), &fake, Some(500)).unwrap();
+    // One budget covers all three detection commands, so the two instant ones
+    // spend a spawn each before `ls-files` even starts; calibrating off a
+    // single measured spawn (x10) leaves room for all three.
+    let budget = calibrated_kill_deadline_ms(&fake, dir.path());
+    let result = detect_changed_files(dir.path(), &fake, Some(budget)).unwrap();
     assert_eq!(
         result.budget_exceeded,
         Some(1),

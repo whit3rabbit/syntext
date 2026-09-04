@@ -78,22 +78,40 @@ pub(super) fn decide_stdin(stdin_searchable: bool, args: &SearchArgs) -> StdinDe
     }
 }
 
-/// True when stdin is a pipe (FIFO) or a regular-file redirect, the only
-/// shapes that carry an implicit search subject. Everything else (tty, socket,
-/// /dev/null char device, closed fd, stat failure) stays on the repo path.
+/// True when `fd` is a pipe (FIFO) or a regular file, the only shapes that
+/// carry an implicit search subject. Everything else (tty, socket, /dev/null
+/// char device, closed fd, stat failure) stays on the repo path.
+///
+/// Classifies the descriptor itself (`fstat` on a dup), never a path. Stating
+/// `/dev/stdin` instead goes through macOS's `fdesc` filesystem, whose lookup
+/// re-resolves fd 0 out of the current process's descriptor table and
+/// transiently returns EBADF under heavy process churn: measured at ~0.2% of
+/// invocations on a loaded 14-core machine with a real pipe on fd 0, versus 0
+/// failures in 8000 `fstat` probes under identical load. That misclassified a
+/// piped stream as "not stdin" and silently searched the repo index instead.
+#[cfg(unix)]
+fn fd_is_searchable(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    // `try_clone_to_owned` is F_DUPFD_CLOEXEC; the File owns only the dup, so
+    // dropping it never closes the caller's descriptor.
+    let Ok(owned) = fd.try_clone_to_owned() else {
+        return false;
+    };
+    match std::fs::File::from(owned).metadata() {
+        Ok(md) => md.file_type().is_fifo() || md.file_type().is_file(),
+        // Fail safe, not open: an unclassifiable stdin keeps the repo-index
+        // path, never silently filters an empty stream.
+        Err(_) => false,
+    }
+}
+
 #[cfg(unix)]
 fn stdin_is_searchable() -> bool {
-    use std::os::unix::fs::FileTypeExt;
+    use std::os::fd::AsFd;
     if std::io::stdin().is_terminal() {
         return false;
     }
-    match std::fs::metadata("/dev/stdin") {
-        Ok(md) => md.file_type().is_fifo() || md.file_type().is_file(),
-        // Fail safe, not open: an unresolvable stdin (rarely, macOS fdesc
-        // stat races under heavy process churn return EBADF) keeps the
-        // repo-index path, never silently filters an empty stream.
-        Err(_) => false,
-    }
+    fd_is_searchable(std::io::stdin().as_fd())
 }
 
 #[cfg(not(unix))]

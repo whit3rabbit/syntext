@@ -35,14 +35,24 @@ pub(super) fn run_bounded_auto_update(index: &Index, config: &Config, quiet: boo
             // index dir) and only when detection ate more than half the
             // budget with core.fsmonitor still unset. Never affects the
             // outcome below or the caller's exit code.
-            let git = crate::git_util::resolve_git_binary();
-            freshness::maybe_print_fsmonitor_tip(
-                &index.canonical_root,
-                &git,
-                &config.index_dir,
-                outcome.detect_elapsed_ms(),
-                config.auto_update_budget_ms,
-            );
+            //
+            // Gated on `!quiet` like the staleness notice below: this is a
+            // human-facing hint on stderr, and `--quiet`'s contract is an
+            // empty stderr. Skipping the call (rather than just the print)
+            // also leaves the one-shot stamp unwritten, so a later
+            // non-quiet run still gets its single tip. Whether detection
+            // crosses the half-budget threshold is load-dependent, so
+            // printing it under --quiet made stderr nondeterministic.
+            if !quiet {
+                let git = crate::git_util::resolve_git_binary();
+                freshness::maybe_print_fsmonitor_tip(
+                    &index.canonical_root,
+                    &git,
+                    &config.index_dir,
+                    outcome.detect_elapsed_ms(),
+                    config.auto_update_budget_ms,
+                );
+            }
 
             // Any of these three means "index is behind and stays behind after
             // this bounded pass": spawn the detached catch-up regardless of the

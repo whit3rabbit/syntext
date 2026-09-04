@@ -47,7 +47,11 @@ pub(super) fn cmd_search(config: Config, args: &SearchArgs) -> i32 {
     // would suppress the filename prefix for both halves.
     let output_args = args.with_effective_output_defaults(&config);
 
-    let index = match Index::open(config.clone()) {
+    // Bounded LockConflict retry: `st` spawns its own background catch-up
+    // writer, so a search can land in that child's exclusive window through no
+    // fault of the caller. See `open_retry` -- every other error, corruption
+    // included, still returns on the first attempt.
+    let index = match super::open_retry::open_for_search(&config) {
         Ok(idx) => idx,
         // Only a missing index is eligible for fallback; a corrupt index or lock
         // conflict still fails loudly so we never mask real corruption. The
