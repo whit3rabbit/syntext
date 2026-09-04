@@ -9,8 +9,8 @@
 //! cheap enough to run locally or on every PR while still tracking the two
 //! costs that matter for interactive `st search` latency:
 //!
-//! 1. `detect_changed_files`: the three bounded git subprocess calls, with
-//!    and without a pending change to apply.
+//! 1. `detect_changed_files`: the single bounded `git status` subprocess
+//!    call, with and without a pending change to apply.
 //! 2. `Index::update_from_git`: detection plus applying the change to the
 //!    overlay, bounded by the same `UpdateLimits` the CLI uses by default
 //!    (`max_files: 200`, `budget_ms: 150`; see `cli/config.rs`).

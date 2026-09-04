@@ -23,6 +23,9 @@ pub use freshness::{ChangeSet, FreshnessError, UpdateLimits, UpdateOutcome};
 mod fsmonitor;
 mod helpers;
 pub(crate) mod io_util;
+#[cfg(not(target_arch = "wasm32"))]
+/// `git status --porcelain=v1 -z` record parser, used only by `freshness`.
+mod porcelain;
 pub(crate) use io_util::open_readonly_nofollow;
 #[cfg(any(unix, windows))]
 pub(crate) use io_util::verify_fd_matches_stat;

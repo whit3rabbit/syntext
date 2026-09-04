@@ -1551,7 +1551,7 @@ fn files_flag_lists_freshly_created_untracked_file_without_manual_update() {
         .arg(&index_dir)
         .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
         // Slow git spawns on Windows CI starve the default 150ms budget before
-        // ls-files --others detects untracked b.rs; give detection room.
+        // Untracked detection must see b.rs; give it room.
         .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .arg("--files")
         // Filter by extension via --glob; positionals to --files are path scope
@@ -1612,7 +1612,7 @@ fn invert_match_reflects_freshly_created_untracked_file_without_manual_update() 
         .arg(&index_dir)
         .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
         // Slow git spawns on Windows CI starve the default 150ms budget before
-        // ls-files --others detects untracked b.rs; give detection room.
+        // Untracked detection must see b.rs; give it room.
         .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .arg("-v")
         .arg("-l")
@@ -1975,9 +1975,9 @@ fn count_lines(path: &Path) -> usize {
 }
 
 /// End-to-end proof that a stale search spawns a detached `st update --quiet`
-/// catch-up: the spawned child runs its own three git detection commands
-/// (`diff HEAD`, `diff --cached`, `ls-files --others`), which is observable
-/// as extra lines appended to a logging `git` shim's log file after the
+/// catch-up: the spawned child runs its own git detection command
+/// (`git status --porcelain=v1 -z ...`), which is observable as an extra
+/// line appended to a logging `git` shim's log file after the
 /// parent search has already returned. This sidesteps the separate,
 /// documented limitation that overlay/pending updates from `commit_batch`
 /// are process-local only (see `Manifest::overlay_gen`'s doc comment) --
@@ -2038,7 +2038,7 @@ fn stale_search_spawns_async_catchup_git_child() {
 
     // Default config: auto_update_async_catchup is true, so this triggers
     // the detached `st update --quiet` spawn once results are printed. The
-    // parent's own bounded detection contributes exactly 3 log lines.
+    // parent's own bounded detection contributes exactly 1 log line.
     let out = st()
         .arg("--repo-root")
         .arg(repo.path())
@@ -2061,19 +2061,19 @@ fn stale_search_spawns_async_catchup_git_child() {
 
     let parent_git_calls = count_lines(&log_path);
     assert_eq!(
-        parent_git_calls, 3,
-        "expected exactly the parent's 3 detection calls before any catch-up runs"
+        parent_git_calls, 1,
+        "expected exactly the parent's 1 detection call before any catch-up runs"
     );
 
     // Poll the log file until the detached child's own (unlimited)
-    // `update_from_git` has logged all 3 of its git detection calls. Waiting
+    // `update_from_git` has logged its own git detection call. Waiting
     // for the full count (not just "more than before") means the child's
     // slowest work is done by the time this function returns, so it is much
     // less likely to still be forking git subprocesses -- and competing for
     // process-table slots -- while the next test in this binary starts.
     let mut saw_child_git_calls = false;
     for _ in 0..50 {
-        if count_lines(&log_path) >= parent_git_calls + 3 {
+        if count_lines(&log_path) > parent_git_calls {
             saw_child_git_calls = true;
             break;
         }
@@ -2091,7 +2091,7 @@ fn stale_search_spawns_async_catchup_git_child() {
 }
 
 /// `SYNTEXT_NO_ASYNC_UPDATE=1` must suppress the spawn entirely: no extra
-/// git invocations ever show up in the shim log beyond the parent's own 3,
+/// git invocations ever show up in the shim log beyond the parent's own 1,
 /// even after waiting past the window the spawn test uses to detect them.
 #[cfg(unix)]
 #[test]
@@ -2165,16 +2165,16 @@ fn no_async_update_env_suppresses_the_spawn() {
 
     let parent_git_calls = count_lines(&log_path);
     assert_eq!(
-        parent_git_calls, 3,
-        "expected only the parent's 3 detection calls"
+        parent_git_calls, 1,
+        "expected only the parent's 1 detection call"
     );
 
     // Wait past the window the spawn test uses, then confirm no extra calls
-    // ever landed: the count must stay pinned at exactly 3.
+    // ever landed: the count must stay pinned at exactly 1.
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(
         count_lines(&log_path),
-        3,
+        1,
         "no background `st update` should have run under SYNTEXT_NO_ASYNC_UPDATE=1"
     );
 }
@@ -2264,7 +2264,7 @@ fn hook_rewritten_command_auto_updates_and_searches() {
     let mut run_cmd = Command::new(clean_exe);
     run_cmd.current_dir(repo.path());
     // Slow git spawns on Windows CI starve the default 150ms budget before
-    // ls-files --others detects untracked b.rs; give detection room.
+    // Untracked detection must see b.rs; give it room.
     run_cmd.env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000");
     for arg in &parts[1..] {
         let clean_arg = arg.trim_matches('\'').trim_matches('"');

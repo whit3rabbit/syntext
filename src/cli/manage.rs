@@ -229,8 +229,8 @@ fn try_update_once(config: Config, quiet: bool) -> Result<i32, IndexError> {
     // A moved HEAD (commit, checkout, merge, rebase/rewrite -- exactly the
     // events post-commit/post-checkout/post-merge/post-rewrite hooks fire
     // on) leaves the working tree clean and matching the new HEAD, so none
-    // of `update_from_git`'s three git commands (diff HEAD, diff --cached,
-    // ls-files --others) see anything: they only detect *uncommitted* drift.
+    // `update_from_git`'s `git status` detection sees nothing: it only
+    // detects *uncommitted* drift.
     // Check base_commit staleness first and do a full rebuild when it
     // fired, so a hook-triggered `st update` actually picks up newly
     // committed content instead of silently no-op'ing.

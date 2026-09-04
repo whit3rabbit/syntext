@@ -3,7 +3,7 @@
 //!
 //! This tracks the cost path a real `st search` invocation pays when
 //! `auto_update` is enabled (the default): open the on-disk index, run the
-//! bounded `update_from_git` detection (three git commands under a time
+//! bounded `update_from_git` detection (one `git status` under a time
 //! budget), then execute a single query against the resulting snapshot.
 //! Regressions here show up as slower interactive searches, so this target
 //! is wired into a nightly CI gate (see `.github/workflows/nightly.yml`)

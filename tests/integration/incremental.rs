@@ -860,7 +860,7 @@ fn untracked_file_found_on_next_search_via_auto_update() {
         .arg("--index-dir")
         .arg(index_dir.path())
         // Slow git spawns on Windows CI starve the default 150ms budget before
-        // ls-files --others detects untracked b.rs; give detection room.
+        // Untracked detection must see b.rs; give it room.
         .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .args(["-q", "untracked_marker_xyz"])
         .output()
@@ -946,7 +946,7 @@ fn branch_switch_stale_then_caught_up_via_async_update() {
             .arg("--index-dir")
             .arg(index_dir.path())
             .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "1")
-            // Budget must not starve ls-files --others (untracked detection) on
+            // Budget must not starve untracked detection (`git status -uall`) on
             // slow Windows CI, or the 3-file delta is never seen and the
             // max_files=1 cap can't trip. Budget is independent of the cap.
             .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")

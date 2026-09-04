@@ -113,6 +113,7 @@ cargo clippy                  # lint, must pass with no warnings
 cargo bench                   # criterion benchmarks
 SYNTEXT_LOG_SELECTIVITY=1 cargo test --test correctness -- --nocapture
                               # show per-query selectivity stats
+cargo test --lib -- freshness porcelain   # unit: several name filters after `--` OR together
 cargo test --test tokenizer   # unit: tokenizer only
 cargo test --test posting     # unit: posting lists only
 cargo test --test query       # unit: query router only
@@ -155,6 +156,13 @@ To ensure search correctness, prevent false-negatives/positives, and maintain ro
 Run Criterion benches **sequentially**, one benchmark target at a time. Do not
 run multiple bench targets in parallel, and do not use one shell command that
 launches several Criterion benches back-to-back when collecting numbers for docs.
+
+**Criterion's `change:` line compares against the immediately preceding run, not
+`docs/BENCHMARKS.md`.** A "regressed" flag on a clean tree is noise; check
+`git log -- <path>` before hunting. The `bench_freshness/detect_*` groups are
+100% git subprocess cost and drift 10%+ with machine state. To A/B a change:
+`git stash push -u`, bench, `git stash pop`, bench again, and compare the two
+absolute numbers.
 
 ### Synthetic corpus benchmarks
 
@@ -304,6 +312,7 @@ All PRs must pass before merge:
 - **The working-tree anchor is a fail-OPEN cache** (`src/index/worktree_anchor.rs`, `worktree_codec.rs`), the opposite of `deletes_idx`. `git diff HEAD` reports an uncommitted file forever, so `worktree-<uuid>.idx` records size+mtime per flushed path and `retain_unflushed` drops the ones that have not moved. Losing it costs re-applies, not correctness, because `compute_delete_set` is idempotent. A path is anchored only when its mtime is 2s older than the commit's `read_epoch` (git's racily-clean rule); a racy path is left out and re-applied once.
 - **Durable incremental HEAD moves** live in `src/index/delta.rs` + `delta_apply.rs`: a moved HEAD (git hooks / `st update`, i.e. `base_commit != HEAD`) reuses `apply_changed_paths` + `commit_batch` then flushes the overlay to a new delta segment via `SegmentWriter` and persists the base delete-set to a generation-named `deletes-<uuid>.idx` sidecar (recorded in `manifest.overlay_deletes_file`). `rebuild_if_stale` is the seam; it falls back to full rebuild for non-ancestor HEAD (rebase/amend/force-push), oversized diffs, or any delta error. Segment growth is bounded by existing compaction (`max_segments`), which also physically drops deleted docs and clears the sidecar.
 - **`delete_set` is a source of truth, not a cache.** Search hides a base doc ONLY via `snapshot.delete_set` (`resolver.rs`), the verifier re-reads live file bytes, and results are never path-deduped (`search/mod.rs`). So a lost delete-set surfaces a modified file's stale base doc AND its new delta doc as duplicate matches. `deletes_idx` therefore FAILS CLOSED on load error (unlike the fail-open `paths.idx` cache): `open()` returns `CorruptIndex` rather than starting empty when `overlay_deletes_file` is set but unreadable.
+- **Change detection is one `git status` spawn per search** (`STATUS_ARGS` in `src/index/freshness.rs`, parsed by `src/index/porcelain.rs`). It replaced three sequential commands (`diff HEAD`, `diff --cached`, `ls-files --others`): each spawn cost ~12ms on 2000 files and `--cached` is subsumed by `status`. Three parallel spawns measured the same latency at 3x the processes and were rejected. `-uall` is load-bearing: the default mode collapses an untracked dir to `dir/`, and the update path would notify a directory and miss every file in it. Two tests in `tests/integration/cli.rs` count git shim invocations and expect exactly 1 per detection, so any new git call on the search path must update them.
 
 ## Project Structure
 
@@ -327,6 +336,9 @@ src/
     tests.rs                  # unit tests for tokenizer
   index/
     mod.rs                    # Index struct, top-level re-exports, search_fresh (bounded update + search)
+    freshness.rs              # detect_changed_files (one bounded `git status`), ChangeSet, UpdateLimits/Outcome
+    fsmonitor.rs              # core.fsmonitor tip + `st init --fsmonitor` enable helpers
+    porcelain.rs              # `git status --porcelain=v1 -z` record parser (torn-record and rename safe)
     tests.rs                  # unit tests for Index (path resolution, compaction, overlay)
     open.rs                   # open / open_inner entry points
     commit.rs                 # commit_batch logic
@@ -383,7 +395,7 @@ src/
     scope.rs                  # path-scope filtering: glob matching, --files mode, deduplication
     bench.rs                  # hidden bench-search subcommand (in-process latency)
     git_resolve.rs            # git binary resolution + path safety helpers
-    fallback.rs               # opt-in rg/grep fallback on missing index (--fallback / SYNTEXT_FALLBACK_RG)
+    fallback.rs               # rg/grep fallback on missing index, on by default (SYNTEXT_FALLBACK_RG=0 opts out, --fallback forces on)
     open_retry.rs             # bounded LockConflict retry for the search open path
     manage.rs                 # index/status/update subcommand handlers
     type_list.rs              # --type-list output (split out of manage.rs)

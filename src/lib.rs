@@ -166,8 +166,8 @@ pub struct Config {
     /// Maximum number of changed files to process in an auto-update before
     /// proceeding with a stale index. Default: 200.
     pub auto_update_max_files: usize,
-    /// Elapsed-time budget in milliseconds for the three git detection
-    /// commands in an auto-update. Default: 150.
+    /// Elapsed-time budget in milliseconds for the git detection command
+    /// (`git status`) in an auto-update. Default: 150.
     pub auto_update_budget_ms: u64,
     /// Whether `st search` should spawn a detached `st update --quiet`
     /// catch-up after printing results when the bounded auto-update above

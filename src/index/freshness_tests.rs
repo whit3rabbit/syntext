@@ -35,7 +35,7 @@ fn detect_changed_files_measures_detection_time() {
         return;
     }
     let canonical = repo.path().canonicalize().unwrap();
-    // Sanity bound only: three fast git subprocess calls on an empty repo
+    // Sanity bound only: one fast git subprocess call on an empty repo
     // should never take anywhere near 30s even on a loaded CI box. This
     // guards against `detect_elapsed_ms` being left at 0/uninitialized
     // rather than asserting a tight timing window.
@@ -77,12 +77,11 @@ fn detect_changed_files_budget_exceeded_bails_early() {
     if !git.is_file() {
         return;
     }
-    // Create files and make an initial commit so git diff HEAD finds them.
+    // Create files and make an initial commit so `git status` would report
+    // them as modified (not untracked) if detection ran at all.
     for i in 0..20 {
         fs::write(repo.path().join(format!("file_{i}.rs")), "// original\n").unwrap();
     }
-    // Stage and commit (need a valid HEAD for git diff HEAD to produce
-    // output on modified files).
     std::process::Command::new(&git)
         .arg("-C")
         .arg(repo.path())
@@ -99,15 +98,15 @@ fn detect_changed_files_budget_exceeded_bails_early() {
         .env("GIT_COMMITTER_EMAIL", "test@test")
         .output()
         .unwrap();
-    // Now modify files so git diff HEAD produces output.
+    // Now modify files so `git status` has something to report.
     for i in 0..20 {
         fs::write(repo.path().join(format!("file_{i}.rs")), "// modified\n").unwrap();
     }
     let canonical = repo.path().canonicalize().unwrap();
-    // budget=0 means "no time budget": no git command should run at all
-    // (the deadline pre-check fires before the first spawn), so the result
-    // is budget-exceeded with an empty path set. This is the fix for the
-    // previous behavior where the first git command always ran unbounded.
+    // budget=0 means "no time budget": git must not be spawned at all (the
+    // deadline pre-check fires before the spawn), so the result is
+    // budget-exceeded with an empty path set. This is the fix for the
+    // previous behavior where the git command always ran unbounded.
     let result = detect_changed_files(&canonical, &git, Some(0)).unwrap();
     assert!(
         result.budget_exceeded.is_some(),
@@ -121,7 +120,7 @@ fn detect_changed_files_budget_exceeded_bails_early() {
 }
 
 #[test]
-fn detect_changed_files_dedupes_path_reported_by_two_git_commands() {
+fn detect_changed_files_dedupes_path_reported_by_two_status_records() {
     let repo = init_git_repo();
     let git = crate::git_util::resolve_git_binary();
     if !git.is_file() {
@@ -129,11 +128,11 @@ fn detect_changed_files_dedupes_path_reported_by_two_git_commands() {
     }
     // Commit a file, then `git rm --cached` it (untrack it from the index
     // while leaving the on-disk content untouched). That single logical
-    // change is reported by BOTH `git diff HEAD` (path is deleted from
-    // the index relative to HEAD) and `git ls-files --others` (the file
-    // is now untracked). Without deduplication, ChangeSet.paths would
-    // count this one change twice, which could falsely trip a
-    // `max_files` cap set just above the true (deduped) delta size.
+    // change is reported by `git status` TWICE: a `D ` record (deleted from
+    // the index relative to HEAD) and a `?? ` record (the file is now
+    // untracked). Without deduplication, ChangeSet.paths would count this
+    // one change twice, which could falsely trip a `max_files` cap set
+    // just above the true (deduped) delta size.
     fs::write(repo.path().join("dup.rs"), "orig\n").unwrap();
     std::process::Command::new(&git)
         .arg("-C")
@@ -159,28 +158,26 @@ fn detect_changed_files_dedupes_path_reported_by_two_git_commands() {
         .unwrap();
     assert!(rm_status.success(), "git rm --cached must succeed");
 
-    // Sanity-check the premise: both raw git commands report the path
-    // (proves this scenario genuinely exercises the two-command overlap,
-    // not just one command finding it).
-    let diff_head = std::process::Command::new(&git)
+    // Sanity-check the premise: the raw status output carries two records
+    // for the path (proves this scenario genuinely exercises the overlap,
+    // not just one record finding it).
+    let status = std::process::Command::new(&git)
         .arg("-C")
         .arg(repo.path())
-        .args(["diff", "-z", "--name-only", "HEAD"])
+        .args(STATUS_ARGS)
         .output()
         .unwrap();
-    let ls_others = std::process::Command::new(&git)
-        .arg("-C")
-        .arg(repo.path())
-        .args(["ls-files", "-z", "--others", "--exclude-standard"])
-        .output()
-        .unwrap();
-    assert!(
-        !diff_head.stdout.is_empty(),
-        "premise check: `git diff HEAD` must report dup.rs"
-    );
-    assert!(
-        !ls_others.stdout.is_empty(),
-        "premise check: `git ls-files --others` must report dup.rs"
+    let mut xy_for_dup: Vec<&[u8]> = status
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|rec| rec.ends_with(b" dup.rs"))
+        .map(|rec| &rec[..2])
+        .collect();
+    xy_for_dup.sort();
+    let expected: Vec<&[u8]> = vec![b"??", b"D "];
+    assert_eq!(
+        xy_for_dup, expected,
+        "premise check: `git status` must report dup.rs as both `D ` and `??`"
     );
 
     let canonical = repo.path().canonicalize().unwrap();
@@ -204,38 +201,6 @@ fn detect_changed_files_dedupes_path_reported_by_two_git_commands() {
         "deduped change set must fit under max_files=1, got {} paths",
         result.paths.len()
     );
-}
-
-#[test]
-fn parse_nul_paths_splits_correctly() {
-    let input = b"src/main.rs\0src/lib.rs\0tests/test.rs\0";
-    let paths = parse_nul_paths(input);
-    assert_eq!(paths.len(), 3);
-    assert_eq!(paths[0], PathBuf::from("src/main.rs"));
-    assert_eq!(paths[1], PathBuf::from("src/lib.rs"));
-    assert_eq!(paths[2], PathBuf::from("tests/test.rs"));
-}
-
-#[test]
-fn parse_nul_paths_filters_unsafe_paths() {
-    let input = b"src/main.rs\0../../etc/passwd\0foo/bar.rs\0";
-    let paths = parse_nul_paths(input);
-    assert_eq!(paths.len(), 2);
-    assert_eq!(paths[0], PathBuf::from("src/main.rs"));
-    assert_eq!(paths[1], PathBuf::from("foo/bar.rs"));
-}
-
-#[test]
-fn parse_nul_paths_handles_empty_input() {
-    let paths = parse_nul_paths(b"");
-    assert!(paths.is_empty());
-}
-
-#[test]
-fn parse_nul_paths_handles_single_entry_no_trailing_nul() {
-    let paths = parse_nul_paths(b"only_file.rs");
-    assert_eq!(paths.len(), 1);
-    assert_eq!(paths[0], PathBuf::from("only_file.rs"));
 }
 
 #[test]
@@ -594,33 +559,31 @@ fn run_git_bounded_classifies_deadline_kill_as_partial() {
     }
 }
 
-/// Regression for the masked-staleness bug: the first two detection commands
-/// complete instantly and empty; the THIRD (`ls-files`) emits one record and
-/// stalls until killed. Pre-fix, the kill fell out of the loop (the top-of-loop
-/// deadline check only guards the *next* iteration, and there is none), so the
-/// result claimed `budget_exceeded: None` — a complete detection. Post-fix the
-/// kill is `Partial`, surfaced as exhaustion with the partial count.
+/// Regression for the masked-staleness bug, through `detect_changed_files`
+/// rather than `run_git_bounded` directly: the `status` shim emits one
+/// complete record and stalls until killed. The kill must surface as
+/// `budget_exceeded: Some(1)`, never as a complete detection with
+/// `budget_exceeded: None`, or the staleness notice and the detached async
+/// catch-up are suppressed. This is the only test that checks the `Partial`
+/// arm inside `detect_changed_files` itself.
 #[test]
 #[cfg(unix)]
-fn detect_changed_files_reports_budget_exceeded_when_last_command_is_killed() {
+fn detect_changed_files_reports_budget_exceeded_when_status_is_killed() {
     let dir = tempfile::TempDir::new().unwrap();
     let fake = write_fake_git(
         dir.path(),
         &format!(
-            "#!/bin/sh\ncase \"$*\" in\n  *calibrate*) printf 'untracked.rs\\0' ;;\n  \
-             *ls-files*) printf 'untracked.rs\\0'; {STALL_AFTER_CLOSING_STDOUT} ;;\n  \
+            "#!/bin/sh\ncase \"$*\" in\n  *calibrate*) printf '?? untracked.rs\\0' ;;\n  \
+             *status*) printf '?? untracked.rs\\0'; {STALL_AFTER_CLOSING_STDOUT} ;;\n  \
              *) exit 0 ;;\nesac\n"
         ),
     );
-    // One budget covers all three detection commands, so the two instant ones
-    // spend a spawn each before `ls-files` even starts; calibrating off a
-    // single measured spawn (x10) leaves room for all three.
     let budget = calibrated_kill_deadline_ms(&fake, dir.path());
     let result = detect_changed_files(dir.path(), &fake, Some(budget)).unwrap();
     assert_eq!(
         result.budget_exceeded,
         Some(1),
-        "a kill on the final command must report exhaustion with the partial count"
+        "a deadline kill must report exhaustion with the partial count"
     );
     assert!(result.paths.contains(std::path::Path::new("untracked.rs")));
 }

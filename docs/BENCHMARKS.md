@@ -656,8 +656,39 @@ Local run (Apple M4 Max, macOS, 10 samples):
 | `update_from_git_bounded_2000_files` | 27.78 ms |
 
 Steady-state detection (no changes) and single-file-changed detection cost
-roughly the same (~21 ms): both pay for the same three bounded git subprocess
+roughly the same (~27 ms): both paid for the same three bounded git subprocess
 calls (`detect_changed_files`), and the extra diff work for the one changed
 file is small relative to subprocess overhead. `update_from_git_bounded`
-adds ~5.7 ms on top for applying the change to the overlay, still well inside
-the 150 ms budget the CLI enforces by default.
+added under 1 ms on top for applying the change to the overlay, still well
+inside the 150 ms budget the CLI enforces by default.
+
+### bench-freshness: one `git status` spawn instead of three (2026-09-04)
+
+`detect_changed_files` used to run `git diff HEAD`, `git diff --cached`, and
+`git ls-files --others` back to back. Each spawn cost ~12 ms on this corpus
+and the path was pure subprocess overhead, so it now runs one
+`git status --porcelain=v1 -z -uall --no-renames --no-branch` and parses the
+records (`src/index/porcelain.rs`). `diff --cached` was redundant anyway: if
+the index differs from HEAD, `status` reports the path in either its X or Y
+column, and syntext only ever indexes worktree bytes. A three-spawns-in-parallel
+variant measured the same latency (15.2 ms) at three times the processes and
+was rejected.
+
+Same machine and command as the 2026-07-09 baseline. "Before" is the last run
+of the old code on the same day, not the 2026-07-09 table, since the
+Criterion comparison is against the immediately preceding run.
+
+| Benchmark | Before | After | Change |
+|---|---:|---:|---:|
+| `detect_no_changes_2000_files` | 35.84 ms | 15.47 ms | -56.6% |
+| `detect_one_changed_file_2000_files` | 33.87 ms | 15.16 ms | -55.7% |
+| `update_from_git_bounded_2000_files` | 36.57 ms | 16.97 ms | -55.0% |
+| `overlay_delta_commit_800_doc_overlay` | 589.76 us | 670.56 us | machine drift, see below |
+
+`overlay_delta_commit_800_doc_overlay` never spawns git (it is
+`notify_change` + `commit_batch` against an in-memory overlay), so it cannot
+be affected by this change. It was checked directly: a second run of the new
+code gave 681.99 us, and the old code stashed back in and run under the same
+machine state gave 631.57 us, which Criterion reports as no significant
+difference from the new code at 10 samples (p = 0.61). The shift from 590 us
+is the machine after the full test suite, not the code.

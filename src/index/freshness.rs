@@ -1,16 +1,20 @@
 //! Git-based change detection for bounded auto-update-on-search.
 //!
-//! `detect_changed_files` runs three git commands to discover modified, staged,
+//! `detect_changed_files` runs one `git status` to discover modified, staged,
 //! and untracked files since the last index build. An optional elapsed-time
-//! budget lets the caller bound latency: when the budget is exhausted between
-//! git calls, the function returns a partial `ChangeSet` with
-//! `budget_exceeded` set so the caller can proceed with a stale index rather
-//! than blocking the search.
+//! budget lets the caller bound latency: when the budget is exhausted, the
+//! function returns a partial `ChangeSet` with `budget_exceeded` set so the
+//! caller can proceed with a stale index rather than blocking the search.
 //!
-//! The three git commands are:
-//! 1. `git diff -z --name-only HEAD`  — working-tree changes since HEAD
-//! 2. `git diff -z --name-only --cached` — staged changes (covers repos with no commits)
-//! 3. `git ls-files -z --others --exclude-standard` — untracked files
+//! This used to be three sequential commands (`diff HEAD`, `diff --cached`,
+//! `ls-files --others`). Each spawn cost ~12 ms on a 2000-file repo, and the
+//! path was pure subprocess overhead, so one `status` call is ~2.4x faster
+//! (36 ms -> 15 ms measured). `diff --cached` was redundant on top of that:
+//! if the index differs from HEAD then either the worktree differs from the
+//! index (Y column) or the worktree equals the index and differs from HEAD
+//! (X column), and syntext only ever indexes worktree bytes. One spawn also
+//! matters most where it hurts most: on a loaded box, spawn latency is what
+//! blows up (see the `syspolicyd` note in CLAUDE.md).
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -18,8 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::git_util::is_safe_git_path;
-use crate::path_util::{normalize_to_forward_slashes, path_from_bytes};
+use crate::index::porcelain::parse_status_z;
 
 // fsmonitor helpers were split into a sibling module to keep this file under
 // the 400-line quality gate. Re-export so `freshness::enable_fsmonitor` /
@@ -30,7 +33,7 @@ pub use crate::index::fsmonitor::{enable_fsmonitor, maybe_print_fsmonitor_tip};
 pub(crate) use crate::index::fsmonitor::{is_fsmonitor_enabled, FSMONITOR_TIP_STAMP};
 
 /// Changed-file paths discovered by git, possibly incomplete if the time
-/// budget was exhausted before all three git commands completed.
+/// budget was exhausted before `git status` completed.
 #[derive(Debug, Clone)]
 pub struct ChangeSet {
     /// Changed file paths (repo-relative, forward-slash normalized where
@@ -38,10 +41,10 @@ pub struct ChangeSet {
     pub paths: HashSet<PathBuf>,
     /// `Some(n)` when the time budget was exhausted during detection,
     /// where `n` is the number of files found before the budget ran out.
-    /// `None` when all three git commands completed within budget.
+    /// `None` when detection completed within budget.
     pub budget_exceeded: Option<usize>,
-    /// Wall-clock time spent running the three git detection commands,
-    /// in milliseconds. Measured whether or not the budget was exhausted,
+    /// Wall-clock time spent running the git detection command, in
+    /// milliseconds. Measured whether or not the budget was exhausted,
     /// so callers can compare it against their own budget (e.g. to decide
     /// whether to suggest enabling `core.fsmonitor`).
     pub detect_elapsed_ms: u64,
@@ -78,7 +81,7 @@ pub enum UpdateOutcome {
     /// the next cycle rather than aborting the whole update. A dangling
     /// symlink is applied as a change, not skipped. A non-zero `skipped`
     /// signals a partial update. `detect_elapsed_ms` is the wall-clock time
-    /// the three git detection commands took (see `ChangeSet::detect_elapsed_ms`).
+    /// the git detection command took (see `ChangeSet::detect_elapsed_ms`).
     Updated {
         files: usize,
         skipped: usize,
@@ -115,7 +118,7 @@ pub enum UpdateOutcome {
 }
 
 impl UpdateOutcome {
-    /// Wall-clock time the three git detection commands took, regardless of
+    /// Wall-clock time the git detection command took, regardless of
     /// which variant resulted. Used by the bounded auto-update path to decide
     /// whether detection is slow enough to warrant the `core.fsmonitor` tip.
     pub fn detect_elapsed_ms(&self) -> u64 {
@@ -145,49 +148,50 @@ pub struct UpdateLimits {
     /// detected change set exceeds this, the method returns
     /// `UpdateOutcome::TooManyFiles` without applying any changes.
     pub max_files: Option<usize>,
-    /// Elapsed-time budget in milliseconds for the three git detection
-    /// commands. When exhausted, returns `BudgetExceeded` with a partial
-    /// file count.
+    /// Elapsed-time budget in milliseconds for the git detection command.
+    /// When exhausted, returns `BudgetExceeded` with a partial file count.
     pub budget_ms: Option<u64>,
 }
 
-/// Parse NUL-terminated git output into repo-relative paths.
+/// The one detection command. Every flag is load-bearing:
 ///
-/// NUL (`\0`) is the only safe record separator for git output: filenames on
-/// Unix may contain literal newlines. Splitting on `\n` would produce spurious
-/// tokens and yield incorrect results.
-///
-/// Paths are normalized to forward-slash separators before being returned so
-/// that the same file reported by two different git commands (e.g. `git diff
-/// HEAD` and `git ls-files --others`) collapses to one entry when inserted
-/// into `ChangeSet.paths`. Without this, the same logical path could be
-/// counted twice against `max_files` and falsely trip `TooManyFiles`.
-fn parse_nul_paths(bytes: &[u8]) -> Vec<PathBuf> {
-    bytes
-        .split(|&b| b == 0)
-        .map(path_from_bytes)
-        .filter(|path| is_safe_git_path(path))
-        .map(normalize_to_forward_slashes)
-        .collect()
-}
+/// - `--porcelain=v1`: pinned explicitly so `status.short`/`status.branch`
+///   style config cannot change the format. Porcelain also ignores
+///   `status.relativePaths`, so paths are always repo-root relative.
+/// - `-z`: NUL-terminated records, nothing quoted. Filenames on Unix may
+///   contain newlines, so `\n` is not a safe separator.
+/// - `-uall` (stuck form; `-u all` is wrong): list files inside untracked
+///   directories. The default mode collapses them to `newdir/`, and
+///   `apply_changed_paths` would `notify_change` a directory and miss every
+///   file in it. Also overrides a user's `status.showUntrackedFiles=no`.
+/// - `--no-renames`: no two-path `R`/`C` records regardless of
+///   `status.renames`/`diff.renames` (the parser tolerates them anyway).
+/// - `--no-branch`: no `## branch...` header regardless of `status.branch`.
+const STATUS_ARGS: [&str; 6] = [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "-uall",
+    "--no-renames",
+    "--no-branch",
+];
 
 /// Detect changed files in the repository.
 ///
-/// Runs the three git detection commands against `repo_root` using `git`,
-/// each bounded by an absolute `deadline` derived from `budget_ms`. When the
-/// budget is exhausted mid-command the running git process is killed, the
-/// partial result so far is returned with `budget_exceeded` set, and later
-/// commands are skipped.
+/// Runs `git status` (see [`STATUS_ARGS`]) against `repo_root` using `git`,
+/// bounded by an absolute `deadline` derived from `budget_ms`. When the
+/// budget is exhausted mid-command the git process is killed and whatever it
+/// emitted so far is returned with `budget_exceeded` set.
 ///
 /// # Error vs. empty-result semantics
 ///
-/// Git commands that SPAWN but exit non-zero are treated as "no data from
-/// this command", NOT an error: `git diff HEAD` exits non-zero on a repo with
-/// no commits, and all three exit non-zero in a non-git directory, which st
-/// supports (indexes can be built without git). Such repos degrade cleanly to
-/// `NoChanges`. Only a failure to SPAWN git (broken exec) is surfaced as
-/// `FreshnessError::Io`, signalling a genuinely broken git setup rather than
-/// an empty result.
+/// A git command that SPAWNS but exits non-zero is treated as "no data", NOT
+/// an error: `git status` exits non-zero in a non-git directory, which st
+/// supports (indexes can be built without git). Such directories degrade
+/// cleanly to `NoChanges`. A repo with no commits exits zero and reports its
+/// staged and untracked files normally. Only a failure to SPAWN git (broken
+/// exec) is surfaced as `FreshnessError::Io`, signalling a genuinely broken
+/// git setup rather than an empty result.
 ///
 /// # Security
 ///
@@ -203,37 +207,22 @@ pub fn detect_changed_files(
     let deadline = budget_ms.map(|ms| start + Duration::from_millis(ms));
     let mut changed: HashSet<PathBuf> = HashSet::new();
 
-    let commands: [&[&str]; 3] = [
-        // Fails gracefully (non-zero) on repos with no commits.
-        &["diff", "-z", "--name-only", "HEAD"],
-        // Staged changes (covers initial commit / repos with no commits).
-        &["diff", "-z", "--name-only", "--cached"],
-        // Untracked files that git-diff doesn't report.
-        &["ls-files", "-z", "--others", "--exclude-standard"],
-    ];
-
-    for args in commands {
-        // Skip (and report budget exhaustion) once the deadline has passed, so
-        // budget_ms=0 performs no git work at all instead of running the first
-        // command unbounded.
-        if deadline.is_some_and(|d| Instant::now() >= d) {
+    // Report budget exhaustion before spawning anything, so budget_ms=0
+    // performs no git work at all instead of running the command unbounded.
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        return Ok(partial(changed, start));
+    }
+    match run_git_bounded(git, repo_root, &STATUS_ARGS, deadline)? {
+        GitOutput::Complete(stdout) => changed.extend(parse_status_z(&stdout)),
+        GitOutput::Partial(stdout) => {
+            // Keep what git managed to emit (a real lower-bound estimate),
+            // but the set is incomplete: a deadline kill must surface as
+            // budget exhaustion, never as a complete change set, or the
+            // staleness notice and the detached async catch-up are lost.
+            changed.extend(parse_status_z(&stdout));
             return Ok(partial(changed, start));
         }
-        match run_git_bounded(git, repo_root, args, deadline)? {
-            GitOutput::Complete(stdout) => changed.extend(parse_nul_paths(&stdout)),
-            GitOutput::Partial(stdout) => {
-                // Keep what git managed to emit (a real lower-bound
-                // estimate), but the set is incomplete: report budget
-                // exhaustion even when this was the FINAL command.
-                // Previously a kill here returned `Ok(Some(buf))` (same shape
-                // as success), fell through the loop, and the result claimed
-                // `budget_exceeded: None` — masking staleness and suppressing
-                // the detached async catch-up.
-                changed.extend(parse_nul_paths(&stdout));
-                return Ok(partial(changed, start));
-            }
-            GitOutput::NoData => {}
-        }
+        GitOutput::NoData => {}
     }
 
     Ok(ChangeSet {

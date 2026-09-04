@@ -14,7 +14,7 @@ use crate::{Config, IndexError, IndexStats, SearchMatch, SearchOptions};
 impl super::Index {
     /// Detect changed files via git and apply them to the overlay.
     ///
-    /// Runs the three git detection commands bounded by `limits.budget_ms`.
+    /// Runs the `git status` detection command bounded by `limits.budget_ms`.
     /// When the budget is exhausted or the file count exceeds
     /// `limits.max_files`, no changes are applied and the corresponding
     /// `UpdateOutcome` variant is returned so the caller can proceed with
