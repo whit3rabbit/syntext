@@ -223,13 +223,25 @@ Posting list inflation from chunk-level documents outweighs the selectivity gain
 
 `cmd | st 'pat'` (and `st 'pat' -`) searches the stream in-memory without opening the index at all (`src/cli/stdin_search.rs`, dispatched before `Index::open` in `cmd_search`).
 
-**Decision**: implicit-stdin detection accepts only a pipe (FIFO) or a regular-file redirect, checked via `metadata("/dev/stdin")`. A tty, socket, `/dev/null`, or unresolvable stdin falls through to the repo-index path.
+**Decision**: implicit-stdin detection accepts only a pipe (FIFO) or a regular-file redirect. The check is an `fstat` on a dup of fd 0 (`BorrowedFd::try_clone_to_owned` → `File::metadata`), never a path lookup. A tty, socket, `/dev/null`, or unclassifiable stdin falls through to the repo-index path.
+
+**Why the descriptor and not `/dev/stdin`**: stating the path routes through macOS's `fdesc` filesystem, whose lookup re-resolves fd 0 out of the calling process's descriptor table and transiently fails with `EBADF` under process churn. Measured on a loaded 14-core macOS box with a real pipe on fd 0: 15 failures in 7980 `stat("/dev/stdin")` calls (0.19%) versus 0 in 7980 `fstat` calls. Because the failure arm fails safe (falls through to the index), each such miss silently searched the repo instead of the piped stream. That is the exact silent-wrong-result failure this design exists to prevent. `fstat` performs no name resolution and cannot lose that race.
 
 **Rationale**: agents' shells (Claude Code's Bash tool, CI) attach `/dev/null` or a socket to stdin, not a tty. A naive "stdin is not a terminal → read stdin" rule (rg's documented contract, softened by its own /dev/null special case) would make every bare `st pat` from an agent silently search an empty stream and exit 1, a regression of the primary use case, and the failure mode is silent. The conservative type check fails toward the old behavior (repo search), never toward an empty wrong result. This mirrors ripgrep's observed behavior (15.2.0, verified empirically): `/dev/null` stdin + no paths → searches the cwd; explicit `-` always reads stdin.
 
 **Alternatives considered**: extending the n-gram index to cover stream documents (rejected: streams are one-shot and usually small; a single in-memory `verify_regex` pass is fast enough and reuses the exact verifier used for candidate checking); streaming line-by-line instead of `read_to_end` (rejected: context rendering (`-A/-B/-C`) and `--json` re-scan whole content through the shared render pipeline, so full buffering is required anyway for identical output).
 
 The rg-contract behaviors, the discovered pre-existing divergences it exposed (`\r` stripping, binary policy, `--column`), and the mixed `-`/per-line `-v` decisions are recorded in `tests/oracle/DIVERGENCES.md` #13-#17, with byte-equality goldens plus a proptest in `tests/integration/oracle_cli.rs`.
+
+### Search waits briefly for the index lock instead of failing immediately
+
+`Index::open` takes a shared lock on the index directory, so it fails while any writer holds the exclusive one.
+
+**Decision**: the search path opens through `cli::open_retry::open_for_search`, which retries only `IndexError::LockConflict` on a fixed schedule (20, 40, 80, 160, 200ms, so 500ms total) before surfacing the same error and exit code 2. Every other error, `CorruptIndex` and `IndexNotFound` included, returns on the first attempt.
+
+**Rationale**: `st` manufactures this contention itself. A search whose bounded auto-update overruns its budget spawns a detached `st update --quiet` catch-up, and the next search can land inside that child's exclusive window. Measured against a 150ms transient lock, 34 of 100 searches exited 2 without the retry and 0 of 100 with it. An uncontended open is unaffected (no sleep on the first success, 7ms end to end). A genuinely long writer such as `st index` on a large repo or a compaction still produces the same loud failure, half a second later.
+
+**Alternatives considered**, all rejected: blocking indefinitely on the lock, because an interactive search must not hang behind a full rebuild. Dropping the shared lock on the read path, because it is what stops a reader from mmapping segments a writer is replacing, which is a SIGBUS risk rather than a correctness nicety. Retrying every error class, because that would put a wait and a misleading message in front of real corruption.
 
 ## Key invariant
 

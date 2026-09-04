@@ -1825,6 +1825,130 @@ fn auto_update_over_max_files_emits_notice_and_searches_normally() {
     );
 }
 
+/// The `core.fsmonitor` tip fires whenever git detection eats more than half
+/// the auto-update budget, which is load-dependent: on a loaded machine it
+/// used to leak onto stderr under `--quiet`, whose contract is an empty
+/// stderr. Forcing a 1ms budget makes the tip's precondition hold on every
+/// run, so an ungated tip fails this deterministically instead of ~1 run in
+/// 12 under load. The quiet run goes first on purpose: the tip is one-shot
+/// per index (stamp file), so a control run ahead of it would mask the leak.
+#[test]
+fn quiet_suppresses_the_fsmonitor_tip() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    fs::create_dir(&index_dir).unwrap();
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "test"]);
+    git(&["config", "user.email", "test@test"]);
+    fs::write(repo.path().join(".gitignore"), ".syntext/\n").unwrap();
+    git(&["add", ".gitignore"]);
+    git(&["commit", "-m", "ignore index", "--no-gpg-sign"]);
+    write_text(&repo.path().join("a.rs"), "fn tip_probe() {}\n");
+    git(&["add", "a.rs"]);
+    git(&["commit", "-m", "initial", "--no-gpg-sign"]);
+
+    build_index(repo.path(), &index_dir);
+
+    let run = |quiet: bool| {
+        let mut cmd = st();
+        cmd.arg("--repo-root")
+            .arg(repo.path())
+            .arg("--index-dir")
+            .arg(&index_dir)
+            // 1ms budget: any real `git` invocation overshoots half of it, so
+            // the tip's threshold is met on every run.
+            .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "1")
+            .env("SYNTEXT_NO_ASYNC_UPDATE", "1");
+        if quiet {
+            cmd.arg("--quiet");
+        }
+        cmd.arg("tip_probe").output().expect("run st")
+    };
+
+    let stamp = index_dir.join("fsmonitor-tip-shown");
+    let quiet_out = run(true);
+    assert_eq!(quiet_out.status.code(), Some(0));
+    assert_eq!(
+        stderr_text(&quiet_out),
+        "",
+        "--quiet must not print the fsmonitor tip"
+    );
+    assert!(
+        !stamp.exists(),
+        "a suppressed tip must not burn the one-shot stamp"
+    );
+
+    // Control: the same invocation without --quiet does emit the tip, which
+    // is what proves the assertions above were not vacuous.
+    let loud_out = run(false);
+    assert_eq!(loud_out.status.code(), Some(0));
+    assert!(
+        stderr_text(&loud_out).contains("core.fsmonitor"),
+        "expected the fsmonitor tip without --quiet, got: {}",
+        stderr_text(&loud_out)
+    );
+}
+
+/// A search that cannot get the index dir's shared lock retries on a bounded
+/// schedule (`cli::open_retry`) before giving up, because `st` creates that
+/// contention itself: a budget-overrunning search spawns a detached
+/// `st update --quiet` whose exclusive window can swallow the *next* search's
+/// open and turn it into exit 2.
+///
+/// This covers the user-visible contract only -- exit 2 and the same message,
+/// with the lock held for the child's whole lifetime, so the outcome cannot
+/// change. It deliberately does not wall-clock the child to prove the retry
+/// ran: `st` exec latency alone reaches multiple seconds while the OS
+/// assesses a freshly-linked binary, which swamps the 500ms schedule. That
+/// half is asserted in-process by `cli::open_retry`'s tests.
+#[test]
+fn search_of_a_locked_index_fails_loudly() {
+    let repo = tempfile::TempDir::new().unwrap();
+    let index_dir = repo.path().join(".syntext");
+    write_text(&repo.path().join("a.rs"), "fn lock_probe() {}\n");
+    build_index(repo.path(), &index_dir);
+
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(index_dir.join("lock"))
+        .expect("open index dir lock");
+    held.try_lock().expect("take exclusive index dir lock");
+
+    let out = st()
+        .arg("--repo-root")
+        .arg(repo.path())
+        .arg("--index-dir")
+        .arg(&index_dir)
+        .args(["--no-update", "lock_probe"])
+        .output()
+        .expect("run st");
+    held.unlock().expect("release index dir lock");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a lock held for the whole run must still fail loudly, got stderr: {}",
+        stderr_text(&out)
+    );
+    assert!(
+        stderr_text(&out).contains("locked by another process"),
+        "expected the lock-conflict message, got: {}",
+        stderr_text(&out)
+    );
+}
+
 /// Resolves the real `git` binary from `PATH` so the logging shim below can
 /// exec through to it and preserve real detection behavior.
 #[cfg(unix)]
@@ -2209,12 +2333,20 @@ fn broken_git_binary_yields_identical_exit_code_and_stdout() {
     let real_path = std::env::var("PATH").unwrap_or_default();
     let broken_path = format!("{}:{}", fake_bin.path().display(), real_path);
 
+    // Each run below auto-updates. Under load the 150ms detection budget is
+    // exceeded, which spawns the detached `st update --quiet` catch-up; that
+    // child holds the index dir's exclusive lock while a later run's
+    // `Index::open` tries for a shared one, and search deliberately fails
+    // loudly on LockConflict (exit 2). That is a real concurrency behavior,
+    // but it is not this test's subject: pinning the catch-up off removes the
+    // only concurrent writer so the git-health invariant is measured alone.
     let run_with_path = |query: &str, path: &str| {
         st().arg("--repo-root")
             .arg(repo.path())
             .arg("--index-dir")
             .arg(&index_dir)
             .env("PATH", path)
+            .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
             .arg(query)
             .output()
             .expect("run st")
