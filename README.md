@@ -122,7 +122,7 @@ What the agent gets:
 - **A Grep blocker** (Claude Code only). The built-in Grep tool is denied with a reason pointing at `st`, again only when an index exists, so the agent falls through to the indexed search.
 - **Rules text** (every harness). One shared block: use `st` when `.syntext/` exists, run `test -d .syntext || st index` before the first search, do not run `st update` after edits, and bound output with `--max-results`, `-l`, `-c`, `-m`, `-C`, `-g`, or `-t`.
 
-Installs are idempotent, write a timestamped backup before editing an existing file, and `st agent uninstall <harness> --global` removes only syntext-owned entries. Harnesses without a hook surface (Codex, Cline, Windsurf, Kilo Code, Antigravity) get the rules text only. The full matrix is under [Agent harnesses](#agent-harnesses).
+Running an install twice changes nothing. Each install backs up the file it edits with a timestamp, and `st agent uninstall <name> --global` removes the entries syntext wrote and nothing else. Integrations without a hook surface (Codex, Cline, Windsurf, Kilo Code, Antigravity) get the rules text alone. The full matrix, with every file each install touches, is [below](#agent-harnesses).
 
 ## Usage
 
