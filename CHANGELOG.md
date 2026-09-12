@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-12
+
+### Added
+- **Ripgrep features & context lines in Swift bindings and FFI**:
+  - Context lines: `-B`/`--before-context`, `-A`/`--after-context`, and `-C`/`--context` in `SyntextSearchOptions`. Returns atomic, race-free context lines via `Index::search_grouped` in `SyntextSearchMatch.context`, `beforeContext`, and `afterContext`.
+  - Fixed-strings: `-F`/`--fixed-strings` via `fixedStrings: true` escapes regex metacharacters, allowing literal search for symbols containing `()`, `[]`, `$`, etc.
+  - Word & line regexp: `-w`/`--word-regexp` (`wordRegexp: true`) and `-x`/`--line-regexp` (`lineRegexp: true`) for word boundary and whole-line matching.
+  - Ripgrep output formatter: `formattedGrepOutput(contextSeparator:)` on match collections and `index.grep(...)` / `index.grepAsync(...)` returning standard `path:line:content` and `path-line-content` text output for LLM tools.
+  - Swift Concurrency: native `async/await` helpers on `SyntextIndex` (`buildAsync`, `searchAsync`, `searchFreshAsync`, `grepAsync`) and `SyntextChatIndex` (`searchAsync`, `grepAsync`).
+  - Root `Package.swift`: Swift Package Manager manifest at the repository root allowing direct dependency resolution via Xcode and remote git URLs (`https://github.com/whit3rabbit/syntext`).
+  - Added `MemIndex::search_grouped` and enabled context line support in in-memory chat search.
+
 ## [2.4.0] - 2026-09-11
 
 ### Fixed
