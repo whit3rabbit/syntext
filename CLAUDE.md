@@ -313,6 +313,9 @@ All PRs must pass before merge:
 - **Durable incremental HEAD moves** live in `src/index/delta.rs` + `delta_apply.rs`: a moved HEAD (git hooks / `st update`, i.e. `base_commit != HEAD`) reuses `apply_changed_paths` + `commit_batch` then flushes the overlay to a new delta segment via `SegmentWriter` and persists the base delete-set to a generation-named `deletes-<uuid>.idx` sidecar (recorded in `manifest.overlay_deletes_file`). `rebuild_if_stale` is the seam; it falls back to full rebuild for non-ancestor HEAD (rebase/amend/force-push), oversized diffs, or any delta error. Segment growth is bounded by existing compaction (`max_segments`), which also physically drops deleted docs and clears the sidecar.
 - **`delete_set` is a source of truth, not a cache.** Search hides a base doc ONLY via `snapshot.delete_set` (`resolver.rs`), the verifier re-reads live file bytes, and results are never path-deduped (`search/mod.rs`). So a lost delete-set surfaces a modified file's stale base doc AND its new delta doc as duplicate matches. `deletes_idx` therefore FAILS CLOSED on load error (unlike the fail-open `paths.idx` cache): `open()` returns `CorruptIndex` rather than starting empty when `overlay_deletes_file` is set but unreadable.
 - **Change detection is one `git status` spawn per search** (`STATUS_ARGS` in `src/index/freshness.rs`, parsed by `src/index/porcelain.rs`). It replaced three sequential commands (`diff HEAD`, `diff --cached`, `ls-files --others`): each spawn cost ~12ms on 2000 files and `--cached` is subsumed by `status`. Three parallel spawns measured the same latency at 3x the processes and were rejected. `-uall` is load-bearing: the default mode collapses an untracked dir to `dir/`, and the update path would notify a directory and miss every file in it. Two tests in `tests/integration/cli.rs` count git shim invocations and expect exactly 1 per detection, so any new git call on the search path must update them.
+- **Nested git checkouts are pruned from the walk, and that is a freshness fix, not a dedupe nicety.** A linked worktree, submodule, or clone inside the repo is its own checkout. Git will not descend into a directory holding its own `.git`, so `git status --porcelain -uall` reports the whole subtree as ONE record with a trailing slash (`wt-x/`). Indexing that subtree therefore creates documents detection can never report per-file, and the lone directory record can never be applied, so it sits in the change set forever and `st status` shows the index permanently behind, re-spawning the catch-up child on every search. Two seams: `enumerate_files` (`src/index/walk.rs`) prunes any directory below the root holding a `.git`, and `parse_status_z` (`src/index/porcelain.rs`) drops trailing-slash records (free: git never emits one for a file). `Config::index_nested_checkouts` / `st index --index-nested` opts back in and accepts the staleness. **The `depth() > 0` guard in the prune predicate is load-bearing** -- `repo_root/.git` exists, so without it every build returns zero files. `.git/` itself is not pruned (no `.git/.git`), so `.git/hooks/*.sample` stays indexed and the `base_doc_count` ~20+ note above still holds.
+- **Checkout identity never spawns git** (`src/git_checkout.rs`, surfaced by `st status`). Kind, worktree name, and branch come from reading `<root>/.git` and `<gitdir>/HEAD`, because the one-spawn-per-detection budget above leaves no room for a `git rev-parse`. Both reads are `O_NOFOLLOW` and 4 KiB-capped, and labels with control characters are rejected rather than scrubbed, since a repo you cloned controls those bytes and they reach a terminal. The resolved gitdir is deliberately NOT required to be under the repo root: a linked worktree's gitdir legitimately points into the main repo's `.git/worktrees/<name>`.
+- **Cross-worktree and cross-branch search are out of scope by decision, not oversight.** `resolve_doc` (`src/search/resolver.rs`) verifies every match by re-reading live file bytes under the repo root, so a branch that is not checked out has no bytes to verify against. Zoekt-style branch masks would mean breaking that invariant plus a segment format bump. See `docs/DEFERRED.md` for the output-format decisions already made, should this be revisited.
 
 ## Project Structure
 
@@ -327,6 +330,7 @@ src/
     index.rs                  # syntext_index_* entry points (native directory index)
     mem.rs                    # syntext_mem_index_* entry points (in-memory docs)
   base64.rs                   # base64 encoding helpers
+  git_checkout.rs             # checkout identity: main / linked worktree / submodule, + branch (no subprocess)
   git_util.rs                 # git binary resolution + path safety (shared by CLI and index)
   path_util.rs                # path normalization utilities
   tokenizer/
@@ -397,7 +401,8 @@ src/
     git_resolve.rs            # git binary resolution + path safety helpers
     fallback.rs               # rg/grep fallback on missing index, on by default (SYNTEXT_FALLBACK_RG=0 opts out, --fallback forces on)
     open_retry.rs             # bounded LockConflict retry for the search open path
-    manage.rs                 # index/status/update subcommand handlers
+    manage.rs                 # index/verify/update subcommand handlers
+    status.rs                 # `st status`, reports worktree + branch (split out of manage.rs)
     type_list.rs              # --type-list output (split out of manage.rs)
     post_filter.rs            # -t/-g/--max-depth/-m filtering + the --max-results cap
     render/

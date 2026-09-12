@@ -63,6 +63,8 @@ pub(super) fn resolve_config(cli: &Cli) -> Config {
         index_dir,
         repo_root,
         verbose: false,
+        // `st index --index-nested` overrides this; see `manage::cmd_index`.
+        index_nested_checkouts: false,
         strict_permissions: true,
         verify_on_open,
         recalibrate: false,

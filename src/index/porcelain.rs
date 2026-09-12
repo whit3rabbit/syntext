@@ -78,6 +78,19 @@ pub(super) fn parse_status_z(bytes: &[u8]) -> Vec<PathBuf> {
 /// bytes -> `PathBuf`, reject traversal/absolute, normalize separators so the
 /// same file reported by two records collapses to one set entry.
 fn push_path(paths: &mut Vec<PathBuf>, raw: &[u8]) {
+    // A trailing slash means git reported a *directory*, which it only does for
+    // a nested checkout: git will not descend into a directory holding its own
+    // `.git`, so a linked worktree or submodule arrives as one record for the
+    // whole subtree even under `-uall`. It is not an indexable file, and the
+    // walk prunes that subtree anyway (see `index::walk`). Kept, it would be
+    // re-reported by every detection, so `st status` would show the index
+    // permanently behind and every search would re-spawn the catch-up child.
+    //
+    // Free to check: git never emits a trailing slash for a file path, so this
+    // costs no syscall, unlike stat'ing each changed path.
+    if raw.last() == Some(&b'/') {
+        return;
+    }
     let path = path_from_bytes(raw);
     if is_safe_git_path(&path) {
         paths.push(normalize_to_forward_slashes(path));

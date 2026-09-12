@@ -1,47 +1,12 @@
-//! Management subcommand handlers: index, status, update.
+//! Management subcommand handlers: index, verify, update.
+//!
+//! `st status` lives in [`super::status`], split out for the 400-line gate.
 
 use std::io::{self, Write};
 
-use crate::index::freshness::{self, UpdateLimits};
+use crate::index::freshness::UpdateLimits;
 use crate::index::Index;
 use crate::{Config, IndexError};
-
-/// Detect how many files the index is behind the working tree, bounded by
-/// `config.auto_update_budget_ms`. Read-only: unlike `update_from_git`, this
-/// never applies changes to the overlay.
-///
-/// Returns a lower-bound count and `None` on any detection failure (no git
-/// binary, non-git directory, or a spawn error) so callers can report
-/// `files_behind` as unknown/0 without erroring the command. When the time
-/// budget is exhausted mid-detection, the returned count is a partial
-/// (lower-bound) estimate, matching `UpdateOutcome::BudgetExceeded` semantics.
-fn detect_files_behind(index: &Index, config: &Config) -> Option<usize> {
-    let git = crate::git_util::resolve_git_binary();
-    if !git.is_file() {
-        return None;
-    }
-    match freshness::detect_changed_files(
-        &index.canonical_root,
-        &git,
-        Some(config.auto_update_budget_ms),
-    ) {
-        Ok(mut change_set) => {
-            // Discount paths a durable flush already made permanent, so
-            // `st update` followed by `st status` reports 0 instead of the
-            // same uncommitted files forever. A budget-exceeded run reports
-            // its partial estimate unfiltered: detection stopped early, so
-            // the set is not the real change set to filter against.
-            match change_set.budget_exceeded {
-                Some(behind) => Some(behind),
-                None => {
-                    index.retain_unflushed(&mut change_set.paths);
-                    Some(change_set.paths.len())
-                }
-            }
-        }
-        Err(_) => None,
-    }
-}
 
 pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bool) -> i32 {
     // Index::build always rebuilds; --force is accepted for rg/ug compat.
@@ -73,110 +38,6 @@ pub(super) fn cmd_index(mut config: Config, _force: bool, stats: bool, quiet: bo
             .and_then(|_| writeln!(out, "Grams:     {}", s.total_grams))
         {
             return handle_output(err);
-        }
-    }
-    drop(index);
-    0
-}
-
-pub(super) fn cmd_status(config: Config, json: bool) -> i32 {
-    let index = match Index::open(config.clone()) {
-        Ok(idx) => idx,
-        Err(e) => {
-            eprintln!("st status: {e}");
-            return 2;
-        }
-    };
-
-    let s = index.stats();
-    // Bounded by config.auto_update_budget_ms; None means detection failed
-    // (no git binary, non-git directory) and is reported as unknown/null.
-    let files_behind = detect_files_behind(&index, &config);
-
-    let git = crate::git_util::resolve_git_binary();
-    let mut base_stale_msg = None;
-    let behind = if let Some(ref base) = s.base_commit {
-        if crate::git_util::is_hex_commit(base) {
-            let canonical_root = std::fs::canonicalize(&config.repo_root)
-                .unwrap_or_else(|_| config.repo_root.clone());
-            if let Ok(output) = std::process::Command::new(&git)
-                .arg("-C")
-                .arg(&canonical_root)
-                .args([
-                    "rev-list",
-                    "--count",
-                    "--end-of-options",
-                    &format!("{base}..HEAD"),
-                ])
-                .output()
-            {
-                if output.status.success() {
-                    let n = String::from_utf8_lossy(&output.stdout)
-                        .trim()
-                        .parse::<usize>()
-                        .unwrap_or(0);
-                    if n > 0 {
-                        base_stale_msg = Some(format!("stale base, behind HEAD by {n} commit(s)"));
-                    }
-                    Some(n)
-                } else {
-                    // rev-list only fails when `base` is not a resolvable ref
-                    // (gc'd, shallow clone, or repo_root is no longer a git repo).
-                    // A merely non-ancestor HEAD still succeeds, so do not claim
-                    // "non-ancestor" here.
-                    base_stale_msg = Some(
-                        "stale base, base commit not found (cannot compare to HEAD)".to_string(),
-                    );
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            base_stale_msg = Some("stale base, invalid base commit hash in manifest".to_string());
-            None
-        }
-    } else {
-        None
-    };
-
-    if json {
-        // Use serde_json to avoid malformed output when index_dir contains
-        // characters that need JSON escaping (quotes, backslashes, etc.).
-        let obj = serde_json::json!({
-            "documents": s.total_documents,
-            "segments": s.total_segments,
-            "grams": s.total_grams,
-            "index_dir": config.index_dir.display().to_string(),
-            "files_behind": files_behind,
-            "base_behind_commits": behind,
-        });
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        if let Err(err) = writeln!(out, "{obj}") {
-            return handle_output(err);
-        }
-    } else {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-        let files_behind_display = match (files_behind, &base_stale_msg) {
-            (Some(fb), Some(msg)) => format!("{fb} ({msg})"),
-            (Some(fb), None) => fb.to_string(),
-            (None, Some(msg)) => format!("unknown ({msg})"),
-            (None, None) => "unknown".to_string(),
-        };
-        if let Err(err) = writeln!(out, "Index:     {}", config.index_dir.display())
-            .and_then(|_| writeln!(out, "Documents: {}", s.total_documents))
-            .and_then(|_| writeln!(out, "Segments:  {}", s.total_segments))
-            .and_then(|_| writeln!(out, "Grams:     {}", s.total_grams))
-            .and_then(|_| writeln!(out, "Behind:    {files_behind_display}"))
-        {
-            return handle_output(err);
-        }
-        if let Some(ref commit) = s.base_commit {
-            if let Err(err) = writeln!(out, "Commit:    {commit}") {
-                return handle_output(err);
-            }
         }
     }
     drop(index);
@@ -378,7 +239,7 @@ pub(super) fn cmd_update(config: Config, _flush: bool, quiet: bool) -> i32 {
     }
 }
 
-fn handle_output(err: io::Error) -> i32 {
+pub(super) fn handle_output(err: io::Error) -> i32 {
     if err.kind() == io::ErrorKind::BrokenPipe {
         0
     } else {

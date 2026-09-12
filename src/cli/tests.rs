@@ -9,8 +9,8 @@ use crate::index::Index;
 use crate::{Config, SearchOptions};
 
 use super::{
-    commands::AgentCommand, manage::cmd_index, manage::cmd_status, manage::cmd_update,
-    overlaps_sensitive_prefix, scope::cmd_files, search::cmd_search, search::SearchArgs, Cli,
+    commands::AgentCommand, manage::cmd_index, manage::cmd_update, overlaps_sensitive_prefix,
+    scope::cmd_files, search::cmd_search, search::SearchArgs, status::cmd_status, Cli,
     ManageCommand,
 };
 

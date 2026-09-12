@@ -18,10 +18,15 @@ use crate::{Config, IndexError};
 pub type FileRecord = (PathBuf, PathBuf, u64);
 
 /// Files excluded during repository walking, by reason.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct WalkSkips {
     /// Files larger than `Config::max_file_size`.
     pub too_large: usize,
+    /// Nested git checkouts whose subtrees were skipped entirely, as
+    /// `(repo-relative path, kind)`. Empty when `Config::index_nested_checkouts`
+    /// is set. See [`skip_nested_checkouts`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub nested_checkouts: Vec<(PathBuf, crate::git_checkout::CheckoutKind)>,
 }
 
 /// Walk the repository collecting indexable files. Respects `.gitignore`.
@@ -37,11 +42,13 @@ pub fn enumerate_files(config: &Config) -> Result<(Vec<FileRecord>, WalkSkips), 
     // file always wins over any symlink alias to it, regardless of walk order.
     let mut seen_canonical: HashSet<PathBuf> = HashSet::new();
 
-    let walker = WalkBuilder::new(&config.repo_root)
+    let mut builder = WalkBuilder::new(&config.repo_root);
+    builder
         .hidden(false) // include hidden files (gitignore handles exclusions)
         .git_ignore(true)
-        .follow_links(false)
-        .build();
+        .follow_links(false);
+    let nested = skip_nested_checkouts(&mut builder, config);
+    let walker = builder.build();
 
     // Pass 1: regular files.  Buffer symlink paths for pass 2.
     let mut symlink_paths: Vec<PathBuf> = Vec::new();
@@ -97,8 +104,85 @@ pub fn enumerate_files(config: &Config) -> Result<(Vec<FileRecord>, WalkSkips), 
         );
     }
 
+    skips.nested_checkouts = classify_skipped(nested, &config.repo_root);
+
     files.sort_unstable_by(|a, b| a.1.cmp(&b.1));
     Ok((files, skips))
+}
+
+/// Install the walk filter that prunes nested git checkouts, and return the
+/// sink the walker records them into. A no-op returning an empty sink when
+/// `Config::index_nested_checkouts` is set.
+///
+/// A linked worktree, submodule, or clone sitting inside the repository is its
+/// own checkout, and indexing it under the outer repo's root both duplicates
+/// every file and produces documents freshness can never refresh: `git status`
+/// will not descend into a directory holding its own `.git`, so the whole
+/// subtree arrives as a single directory entry (see `index::update`).
+///
+/// Two constraints on the predicate:
+///   - `depth() > 0` is load-bearing. `repo_root/.git` exists, so without the
+///     guard the walk root itself would be pruned and every build would return
+///     zero files.
+///   - Testing `is_dir()` first (from the readdir-supplied file type, no extra
+///     syscall) keeps the cost at one `stat` per directory rather than one per
+///     file. `.git/` itself is unaffected, since `.git/.git` does not exist, so
+///     `.git/hooks/*.sample` stays indexed.
+#[cfg(feature = "ignore")]
+fn skip_nested_checkouts(
+    builder: &mut WalkBuilder,
+    config: &Config,
+) -> std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>> {
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    if config.index_nested_checkouts {
+        return sink;
+    }
+    let recorder = std::sync::Arc::clone(&sink);
+    builder.filter_entry(move |entry| {
+        if entry.depth() == 0 {
+            return true;
+        }
+        if !entry.file_type().is_some_and(|t| t.is_dir()) {
+            return true;
+        }
+        if !crate::git_checkout::is_checkout_root(entry.path()) {
+            return true;
+        }
+        if let Ok(mut seen) = recorder.lock() {
+            seen.push(entry.path().to_path_buf());
+        }
+        false
+    });
+    sink
+}
+
+/// Turn recorded absolute checkout roots into repo-relative paths plus their
+/// kind, for the build summary. Classification runs here rather than inside the
+/// walk predicate because it reads files, and only the handful of directories
+/// actually pruned are worth that cost.
+#[cfg(feature = "ignore")]
+fn classify_skipped(
+    sink: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    repo_root: &Path,
+) -> Vec<(PathBuf, crate::git_checkout::CheckoutKind)> {
+    // A poisoned lock means a panic inside the predicate; report nothing rather
+    // than propagating, the skip itself already happened.
+    let Ok(seen) = sink.lock() else {
+        return Vec::new();
+    };
+    let mut out: Vec<_> = seen
+        .iter()
+        .map(|abs| {
+            let kind = crate::git_checkout::classify_nested(abs);
+            let rel = abs.strip_prefix(repo_root).unwrap_or(abs);
+            (
+                crate::path_util::normalize_to_forward_slashes(rel.to_path_buf()),
+                kind,
+            )
+        })
+        .collect();
+    out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 #[cfg(feature = "ignore")]

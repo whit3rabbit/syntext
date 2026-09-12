@@ -188,3 +188,155 @@ fn enumerate_files_counts_too_large_skips() {
         "oversized file must be excluded from the candidate list"
     );
 }
+
+/// A repo root with a `.git` directory, one tracked file, and a nested
+/// checkout at `nested/` whose `.git` is written by `make_dot_git`.
+fn repo_with_nested_checkout(make_dot_git: impl Fn(&std::path::Path)) -> tempfile::TempDir {
+    let repo = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    std::fs::write(
+        repo.path().join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .unwrap();
+    std::fs::write(repo.path().join("outer.rs"), b"fn outer() {}\n").unwrap();
+
+    let nested = repo.path().join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("inner.rs"), b"fn inner() {}\n").unwrap();
+    make_dot_git(&nested);
+    repo
+}
+
+fn rel_paths(files: &[super::FileRecord]) -> Vec<String> {
+    files
+        .iter()
+        .map(|(_, rel, _)| rel.display().to_string())
+        .collect()
+}
+
+#[test]
+fn nested_linked_worktree_is_pruned() {
+    use crate::git_checkout::CheckoutKind;
+    use crate::Config;
+
+    let repo = repo_with_nested_checkout(|nested| {
+        std::fs::write(
+            nested.join(".git"),
+            "gitdir: /elsewhere/.git/worktrees/foo\n",
+        )
+        .unwrap();
+    });
+    let config = Config {
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    let (files, skips) = super::enumerate_files(&config).unwrap();
+    let paths = rel_paths(&files);
+
+    assert!(
+        !paths.iter().any(|p| p.starts_with("nested/")),
+        "a linked worktree's files must not be indexed by the outer repo: {paths:?}"
+    );
+    assert!(paths.contains(&"outer.rs".to_string()));
+    assert_eq!(
+        skips.nested_checkouts,
+        vec![(std::path::PathBuf::from("nested"), CheckoutKind::Linked)],
+    );
+}
+
+#[test]
+fn nested_clone_with_a_git_directory_is_pruned() {
+    use crate::git_checkout::CheckoutKind;
+    use crate::Config;
+
+    let repo = repo_with_nested_checkout(|nested| {
+        std::fs::create_dir_all(nested.join(".git")).unwrap();
+        std::fs::write(nested.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    });
+    let config = Config {
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    let (files, skips) = super::enumerate_files(&config).unwrap();
+    let paths = rel_paths(&files);
+
+    assert!(
+        !paths.iter().any(|p| p.starts_with("nested/")),
+        "a nested clone's files must not be indexed by the outer repo: {paths:?}"
+    );
+    assert_eq!(
+        skips.nested_checkouts,
+        vec![(
+            std::path::PathBuf::from("nested"),
+            CheckoutKind::NestedClone
+        )],
+    );
+}
+
+#[test]
+fn the_repos_own_git_directory_is_still_walked() {
+    use crate::Config;
+
+    // Regression guard. The prune predicate asks "does this directory contain
+    // a `.git`?", so two things must stay true: the walk root itself is never
+    // pruned (it always has one), and `.git/` is not pruned either (there is
+    // no `.git/.git`). `Index::build`'s document count depends on the latter,
+    // per the `.git/hooks/*.sample` note in CLAUDE.md.
+    let repo = repo_with_nested_checkout(|nested| {
+        std::fs::write(nested.join(".git"), "gitdir: /elsewhere\n").unwrap();
+    });
+    std::fs::create_dir_all(repo.path().join(".git").join("hooks")).unwrap();
+    std::fs::write(
+        repo.path()
+            .join(".git")
+            .join("hooks")
+            .join("pre-commit.sample"),
+        b"#!/bin/sh\nexit 0\n",
+    )
+    .unwrap();
+
+    let config = Config {
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    let paths = rel_paths(&super::enumerate_files(&config).unwrap().0);
+    assert!(
+        paths.contains(&".git/hooks/pre-commit.sample".to_string()),
+        "the repo's own .git must still be walked: {paths:?}"
+    );
+    assert!(paths.contains(&"outer.rs".to_string()));
+}
+
+#[test]
+fn index_nested_checkouts_opts_back_in() {
+    use crate::Config;
+
+    let repo = repo_with_nested_checkout(|nested| {
+        std::fs::write(
+            nested.join(".git"),
+            "gitdir: /elsewhere/.git/worktrees/foo\n",
+        )
+        .unwrap();
+    });
+    let config = Config {
+        repo_root: repo.path().to_path_buf(),
+        index_nested_checkouts: true,
+        ..Config::default()
+    };
+
+    let (files, skips) = super::enumerate_files(&config).unwrap();
+    let paths = rel_paths(&files);
+
+    assert!(
+        paths.contains(&"nested/inner.rs".to_string()),
+        "--index-nested must index the subtree: {paths:?}"
+    );
+    assert!(
+        skips.nested_checkouts.is_empty(),
+        "nothing was skipped, so nothing should be reported"
+    );
+}

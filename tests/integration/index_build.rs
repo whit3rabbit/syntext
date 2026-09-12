@@ -861,3 +861,93 @@ fn v3_format_produces_dict_and_post_files() {
     );
     drop(index);
 }
+
+/// Run `git` in `dir`, asserting success.
+fn git_in(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
+    assert!(out.status.success(), "git {args:?} failed: {out:?}");
+}
+
+/// A real repo with a real linked worktree checked out *inside* it.
+fn repo_with_linked_worktree() -> TempDir {
+    let repo = TempDir::new().unwrap();
+    git_in(repo.path(), &["init", "--quiet"]);
+    git_in(repo.path(), &["config", "user.email", "t@example.com"]);
+    git_in(repo.path(), &["config", "user.name", "t"]);
+    std::fs::write(
+        repo.path().join("marker.rs"),
+        b"fn nested_worktree_marker() {}\n",
+    )
+    .unwrap();
+    git_in(repo.path(), &["add", "-A"]);
+    git_in(repo.path(), &["commit", "--quiet", "-m", "init"]);
+    // A worktree inside the repo, not gitignored: exactly the layout that
+    // used to produce a second copy of every file in the index.
+    git_in(
+        repo.path(),
+        &["worktree", "add", "--quiet", "-b", "side", "wt-x"],
+    );
+    repo
+}
+
+#[test]
+fn nested_worktree_files_are_not_indexed_twice() {
+    let repo = repo_with_linked_worktree();
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        ..Config::default()
+    };
+
+    // The worktree really is checked out on disk: this test would pass
+    // vacuously if `git worktree add` had silently produced nothing.
+    assert!(
+        repo.path().join("wt-x").join("marker.rs").is_file(),
+        "fixture must have a real second copy on disk"
+    );
+
+    let index = Index::build(config).expect("build");
+    let hits = index
+        .search("nested_worktree_marker", &SearchOptions::default())
+        .expect("search");
+    let paths: Vec<String> = hits.iter().map(|m| m.path.display().to_string()).collect();
+
+    assert_eq!(
+        paths,
+        vec!["marker.rs".to_string()],
+        "the linked worktree's copy must not appear as a second match: {paths:?}"
+    );
+    drop(index);
+}
+
+#[test]
+fn index_nested_checkouts_indexes_the_worktree_copy() {
+    let repo = repo_with_linked_worktree();
+    let index_dir = TempDir::new().unwrap();
+    let config = Config {
+        index_dir: index_dir.path().to_path_buf(),
+        repo_root: repo.path().to_path_buf(),
+        index_nested_checkouts: true,
+        ..Config::default()
+    };
+
+    let index = Index::build(config).expect("build");
+    let hits = index
+        .search("nested_worktree_marker", &SearchOptions::default())
+        .expect("search");
+    let mut paths: Vec<String> = hits.iter().map(|m| m.path.display().to_string()).collect();
+    paths.sort();
+
+    assert_eq!(
+        paths,
+        vec!["marker.rs".to_string(), "wt-x/marker.rs".to_string()],
+        "opting in must index both copies: {paths:?}"
+    );
+    drop(index);
+}

@@ -692,3 +692,40 @@ code gave 681.99 us, and the old code stashed back in and run under the same
 machine state gave 631.57 us, which Criterion reports as no significant
 difference from the new code at 10 samples (p = 0.61). The shift from 590 us
 is the machine after the full test suite, not the code.
+
+## Nested-checkout prune, `index_build` (2026-09-04)
+
+The walk now asks "does this directory hold a `.git`?" for every directory
+below the root (`skip_nested_checkouts` in `src/index/walk.rs`), which is one
+extra `stat` per directory. Measured against a clean checkout of the parent
+commit in a scratch worktree, per the A/B rule above, not against Criterion's
+`change:` line.
+
+`cargo bench --bench index_build -- --sample-size 10`, macOS, debug-free
+release bench profile:
+
+| Benchmark | Before | After |
+|---|---:|---:|
+| `full_build_300_files` | 78.96 ms (66.91-100.56) | 69.13 ms (68.16-70.94) |
+| `commit_batch_single_edit` | 404.34 us | 378.55 us |
+
+Both after-values sit inside the before-run's confidence interval. The wide
+before-interval is machine noise, which is exactly what the A/B rule above
+warns about. This bench cannot show the real cost anyway: `create_synthetic_repo`
+builds only four directories, so it adds four stats.
+
+To measure the cost that actually scales, a synthetic tree of 5,101
+directories holding 5,000 files (roughly one file per directory, a
+pathological shape for this change) was indexed seven times with each binary:
+
+| | median | min |
+|---|---:|---:|
+| Before | 0.510 s | 0.440 s |
+| After | 0.530 s | 0.490 s |
+
+About +20 ms, or +4%, consistent with ~5,100 extra `stat` calls. Real
+repositories hold far more files per directory, so the same absolute cost lands
+against a much longer build: the Linux kernel has a comparable directory count
+against roughly 80,000 files. Accepted as the price of a correctness fix, since
+the alternative was indexing a duplicate subtree that freshness could never
+refresh (see the nested-checkout bullet in `CLAUDE.md`).

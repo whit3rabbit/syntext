@@ -137,3 +137,50 @@ Currently accepted and warned about as unimplemented
 (`src/cli/args/compat.rs`). zvec-grep applies type-aware size caps at index
 time (1 MiB code, 256 MiB text, 16 MiB structured data, 10 MiB images).
 syntext has size handling at ingestion but no query-time equivalent.
+
+## Cross-worktree and cross-branch search (2026-09-04)
+
+Scoped out of the nested-checkout work deliberately. Two separate features,
+with different gating concerns.
+
+### Cross-worktree search (`--worktrees`)
+
+Search sibling checkouts of the same repo in one invocation, labelled by
+worktree. Each linked worktree already resolves its own `repo_root` and its
+own `.syntext/` (`detect_repo_root` finds the `.git` *file*), so the pieces
+exist. Bytes are on disk and verifiable, so nothing architectural blocks it.
+
+**Why deferred:** results cannot simply be merged. `render_results`
+(`src/cli/search/output.rs`) takes `files: HashMap<PathBuf, MatchedFile>` keyed
+by repo-relative path, so the same relative path in two worktrees collides, and
+`get_file_size` (`src/cli/render/json.rs`) re-looks-up by relative path in a
+single snapshot. The cheap shape is one search-and-render pass per worktree
+rather than a merged result set, which makes `--max-results`, `-c`, `--stats`,
+and the `--json` summary per-worktree. Decide that tradeoff before starting.
+
+### Searching a ref that is not checked out (`--rev`)
+
+**Why deferred:** it cannot go through the index. `resolve_doc`
+(`src/search/resolver.rs`) verifies every match with
+`open_beneath(root_fd, canonical_root, rel_path)` against live disk bytes, and a
+non-checked-out branch has none. Indexing branches Zoekt-style (a per-document
+branch mask) means breaking that invariant *and* a segment format bump. The
+cheap version delegates to `git grep <rev>`, mirroring the rg/grep delegation
+already in `src/cli/fallback.rs`.
+
+### Output format, already decided
+
+Both features must respect these. They were settled during the 2026-09-04
+design pass, so do not relitigate them:
+
+- A hit from another worktree prints as a **real, openable path**
+  (`../wt-foo/src/main.rs:42:`), never a `[wt-foo] src/main.rs` label. An agent
+  hands any printed path straight to a read or edit tool, so a bare label is a
+  trap. The worktree name goes in a `--json` field, not the text path.
+- A hit from a non-checked-out ref prints `ref:path:line` (git grep's form)
+  precisely *because* that is not a path.
+
+Prior art surveyed: Zoekt (64-bit branch mask per document, path+content dedup
+across branches, `branch:` as a query atom that pre-filters), Sourcegraph
+(default branch only, opt-in `search.index.branches` per repo, `repo:X@a:b`
+query syntax, unindexed revs still searchable but slower), and `git grep <rev>`.

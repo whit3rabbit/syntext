@@ -56,6 +56,11 @@ pub(crate) mod base64;
 /// Command-line interface (used by the `st` binary).
 #[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]
 pub mod cli;
+/// Git checkout identity: plain clone, linked worktree, or submodule. Public
+/// because [`index::walk::WalkSkips`] reports the kind of each nested checkout
+/// the index walk skipped.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod git_checkout;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod git_util;
 /// Git hook integrations (used by the `st` binary).
@@ -133,6 +138,16 @@ pub struct Config {
     /// controls verbosity by installing (or not installing) a `log` logger, not
     /// via this flag.
     pub verbose: bool,
+    /// Index the contents of nested git checkouts (linked worktrees,
+    /// submodules, clones inside the repo) found during the walk.
+    /// Default: false. CLI: `st index --index-nested`.
+    ///
+    /// Off by default because indexing them is incoherent with freshness, not
+    /// merely redundant: `git status` refuses to descend into a directory
+    /// holding its own `.git`, so it reports one entry for the whole subtree.
+    /// Those files can therefore never be kept up to date incrementally, and
+    /// the lone directory entry sits in the change set permanently.
+    pub index_nested_checkouts: bool,
     /// Reject index directories with group/other permission bits (unix only).
     /// Permissive modes allow SIGBUS DoS via concurrent ftruncate on mmap'd
     /// segment files. Default: true.
@@ -193,6 +208,7 @@ impl Config {
             max_file_size: 10 * 1024 * 1024,
             max_segments: 10,
             verbose: false,
+            index_nested_checkouts: false,
             strict_permissions: true,
             verify_on_open: false,
             recalibrate: false,

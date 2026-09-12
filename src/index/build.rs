@@ -285,6 +285,25 @@ pub(super) fn build_index_from_file_list(
             walk_skips.too_large,
         )
     );
+    // One line per pruned nested checkout, capped so a repo full of submodules
+    // cannot bury the rest of the build output. Debug level, not warn: the
+    // `st index` subcommand forces verbose on (unless `--quiet`), so this
+    // prints by default there, while the internal `rebuild_if_stale` rebuild
+    // runs at Warn and stays silent on the search path.
+    for (path, kind) in walk_skips.nested_checkouts.iter().take(3) {
+        log::debug!(
+            "skipping nested {} {} (use --index-nested to include)",
+            kind.noun(),
+            path.display()
+        );
+    }
+    if walk_skips.nested_checkouts.len() > 3 {
+        log::debug!(
+            "and {} more nested checkout(s) skipped",
+            walk_skips.nested_checkouts.len() - 3
+        );
+    }
+
     let oversized_paths = skipped_oversized_path.load(Ordering::Relaxed);
     if oversized_paths > 0 {
         log::debug!("skipped {oversized_paths} file(s) with oversized paths (> u16::MAX bytes)");

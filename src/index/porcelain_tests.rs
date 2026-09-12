@@ -104,3 +104,34 @@ fn duplicate_path_across_records_is_returned_twice() {
     // untracked. The parser is a list; `ChangeSet.paths` does the dedup.
     assert_eq!(paths(b"D  dup.rs\0?? dup.rs\0"), vec!["dup.rs", "dup.rs"]);
 }
+
+#[test]
+fn directory_records_are_dropped() {
+    // git reports a nested checkout (linked worktree, submodule, nested clone)
+    // as ONE record for the whole subtree, with a trailing slash, because it
+    // refuses to descend into a directory holding its own `.git` -- even under
+    // `-uall`. Verified against real git output; see `index::walk` for the
+    // matching prune on the indexing side.
+    let out = b"?? wt-x/\0?? real.rs\0 M src/lib.rs\0";
+    assert_eq!(
+        super::parse_status_z(out),
+        vec![
+            std::path::PathBuf::from("real.rs"),
+            std::path::PathBuf::from("src/lib.rs"),
+        ],
+        "the directory record must not enter the change set"
+    );
+}
+
+#[test]
+fn a_file_named_like_a_directory_prefix_still_survives() {
+    // Guard against over-matching: only a trailing slash is a directory.
+    let out = b"?? wt-x\0?? a/b/c.rs\0";
+    assert_eq!(
+        super::parse_status_z(out),
+        vec![
+            std::path::PathBuf::from("wt-x"),
+            std::path::PathBuf::from("a/b/c.rs"),
+        ]
+    );
+}

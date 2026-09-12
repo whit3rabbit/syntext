@@ -4051,3 +4051,88 @@ fn st_update_persists_uncommitted_drift_for_a_later_process() {
     let flush = run_repo(repo.path(), index.path(), &["update", "--flush", "--quiet"]);
     assert_eq!(flush.status.code(), Some(0), "{}", stderr_text(&flush));
 }
+
+/// `st status --json` reports which checkout the index belongs to, so an agent
+/// working in a worktree can tell whose tree it is editing. Every field here
+/// comes from reading `.git` and `HEAD` directly, never from a `git`
+/// subprocess: `freshness` budgets exactly one spawn per detection, and the
+/// shim-counting tests above assert that number.
+#[test]
+fn status_json_reports_worktree_identity() {
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+
+    let repo = tempfile::TempDir::new().unwrap();
+    git(repo.path(), &["init", "--quiet"]);
+    // Pin the initial branch: git's default is `master` on older versions and
+    // `main` on newer ones, and `--initial-branch` only exists from 2.28.
+    // symbolic-ref works everywhere and the repo has no commits yet.
+    git(repo.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(repo.path(), &["config", "user.email", "t@example.com"]);
+    git(repo.path(), &["config", "user.name", "t"]);
+    fs::write(repo.path().join("a.rs"), b"fn a() {}\n").unwrap();
+    git(repo.path(), &["add", "-A"]);
+    git(repo.path(), &["commit", "--quiet", "-m", "init"]);
+    // The linked worktree gets its own TempDir rather than a sibling of the
+    // repo: a sibling would outlive a panicking test and leave the next run
+    // failing on "already exists".
+    let wt_home = tempfile::TempDir::new().unwrap();
+    let worktree = wt_home.path().join("wt-side");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "side",
+            worktree.to_str().unwrap(),
+        ],
+    );
+
+    // Main checkout: a branch, but no worktree name.
+    let out = st()
+        .current_dir(repo.path())
+        .args(["index", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "st index failed: {out:?}");
+    let main_status = st()
+        .current_dir(repo.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let main: serde_json::Value =
+        serde_json::from_slice(&main_status.stdout).expect("status --json must be valid JSON");
+    assert_eq!(main["worktree_kind"], "main");
+    assert!(
+        main["worktree_name"].is_null(),
+        "a main checkout has no name"
+    );
+    assert_eq!(main["branch"], "main", "branch comes from .git/HEAD");
+
+    // Linked worktree: its own index, its own branch, and a name.
+    let out = st()
+        .current_dir(&worktree)
+        .args(["index", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "st index in worktree failed: {out:?}");
+    let wt_status = st()
+        .current_dir(&worktree)
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let wt: serde_json::Value = serde_json::from_slice(&wt_status.stdout).unwrap();
+    assert_eq!(wt["worktree_kind"], "linked");
+    assert_eq!(wt["worktree_name"], "wt-side");
+    assert_eq!(wt["branch"], "side");
+    assert!(wt["detached_head"].is_null(), "HEAD is on a branch");
+}

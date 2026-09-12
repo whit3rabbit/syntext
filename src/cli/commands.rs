@@ -132,6 +132,12 @@ pub enum ManageCommand {
         /// reusing the prior calibrated value (use after hardware changes).
         #[arg(long)]
         recalibrate: bool,
+        /// Also index nested git checkouts (linked worktrees, submodules,
+        /// clones inside the repo). Off by default: `git status` does not
+        /// descend into them, so their files cannot be kept fresh
+        /// incrementally and will go stale until the next full rebuild.
+        #[arg(long)]
+        index_nested: bool,
     },
     /// Show index statistics.
     Status {

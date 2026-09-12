@@ -19,6 +19,7 @@ mod render;
 mod scope;
 mod search;
 mod search_args;
+mod status;
 mod stdin_search;
 #[cfg(feature = "symbols")]
 mod sym;
@@ -34,9 +35,10 @@ use config::resolve_config;
 #[cfg(test)]
 use config::{clamp_max_file_size, overlaps_sensitive_prefix, MAX_FILE_SIZE_CEILING};
 use init::{cmd_agent, cmd_init};
-use manage::{cmd_index, cmd_status, cmd_update, cmd_verify};
+use manage::{cmd_index, cmd_update, cmd_verify};
 use scope::cmd_files;
 use search::{cmd_search, SearchArgs};
+use status::cmd_status;
 
 /// Run the CLI. Returns the process exit code.
 pub fn run() -> i32 {
@@ -79,8 +81,10 @@ pub fn run() -> i32 {
             stats,
             quiet,
             recalibrate,
+            index_nested,
         }) => {
             config.recalibrate = recalibrate;
+            config.index_nested_checkouts = index_nested;
             cmd_index(config, force, stats, quiet)
         }
         Some(ManageCommand::Status { json }) => cmd_status(config, json),

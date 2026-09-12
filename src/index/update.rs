@@ -145,7 +145,24 @@ impl super::Index {
             // symlink: exists() follows symlinks and reports a broken symlink
             // as absent, which would misclassify a git-reported modification as
             // a deletion and evict a still-present path.
-            let present = std::fs::symlink_metadata(&abs).is_ok();
+            let meta = std::fs::symlink_metadata(&abs).ok();
+            // A directory in the change set is never an indexable file. It has
+            // exactly one source: git will not descend into a directory holding
+            // its own `.git`, so a nested checkout (linked worktree, submodule,
+            // clone) surfaces as ONE entry for the whole subtree even under
+            // `-uall`. Left in, it fails notify_change every time and is
+            // re-reported by every subsequent detection, so the index reads as
+            // permanently behind and keeps re-spawning the catch-up child. The
+            // walk prunes these same subtrees (see `index::walk`).
+            if meta.as_ref().is_some_and(|m| m.is_dir()) {
+                log::debug!(
+                    "skip changed path {}: nested checkout or directory, not an indexable file",
+                    path.display()
+                );
+                skipped += 1;
+                continue;
+            }
+            let present = meta.is_some();
             if present {
                 // Canonicalize and verify the resolved path is still under
                 // canonical_root. A compromised git binary could emit paths
