@@ -9,7 +9,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use syntext::index::Index;
-use syntext::{Config, IndexError, SearchOptions};
+use syntext::{Config, SearchOptions};
+
+#[path = "lock_retry.rs"]
+mod lock_retry;
+use lock_retry::{
+    commit_batch_result, commit_batch_with_retry, is_lock_conflict, retry_lock_contention,
+    retry_transient_write_lock,
+};
 
 /// Create a temp directory with some source files, build an index, return both.
 fn setup() -> (tempfile::TempDir, tempfile::TempDir, Index) {
@@ -51,39 +58,6 @@ fn search(index: &Index, pattern: &str) -> Vec<(String, u32)> {
         .into_iter()
         .map(|m| (m.path.to_string_lossy().into_owned(), m.line_number))
         .collect()
-}
-
-fn commit_batch_with_retry(index: &Index) {
-    const MAX_ATTEMPTS: usize = 5;
-    const RETRY_DELAY: Duration = Duration::from_millis(10);
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        match index.commit_batch() {
-            Ok(()) => return,
-            Err(IndexError::LockConflict(_)) if attempt < MAX_ATTEMPTS => {
-                thread::sleep(RETRY_DELAY);
-            }
-            Err(err) => panic!("commit_batch failed on attempt {attempt}: {err}"),
-        }
-    }
-}
-
-/// Like `commit_batch_with_retry`, but returns the result instead of
-/// panicking on non-LockConflict errors. Used by tests that assert on
-/// specific error variants.
-fn commit_batch_result(index: &Index) -> Result<(), IndexError> {
-    const MAX_ATTEMPTS: usize = 5;
-    const RETRY_DELAY: Duration = Duration::from_millis(10);
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        match index.commit_batch() {
-            Err(IndexError::LockConflict(_)) if attempt < MAX_ATTEMPTS => {
-                thread::sleep(RETRY_DELAY);
-            }
-            other => return other,
-        }
-    }
-    unreachable!()
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +155,16 @@ fn notify_change_immediate_works() {
     let main_path = repo.path().join("src/main.rs");
     fs::write(&main_path, "fn immediate_test() {}\n").unwrap();
 
-    index.notify_change_immediate(&main_path).unwrap();
+    // Same bounded retry as `commit_batch_with_retry`: the first commit after
+    // a build can hit a transient `write.lock` holder (see
+    // `retry_transient_write_lock`). LockConflict is returned before the
+    // pending queue is drained, so the edit is still queued and calling
+    // again is safe (duplicate notifies dedup in `take_for_commit`).
+    retry_lock_contention(
+        || index.notify_change_immediate(&main_path),
+        is_lock_conflict,
+    )
+    .unwrap_or_else(|err| panic!("notify_change_immediate failed within retry budget: {err}"));
 
     let results = search(&index, "immediate_test");
     assert!(
@@ -525,7 +508,7 @@ fn concurrent_commit_batch_returns_lock_conflict() {
         .truncate(false)
         .open(&lock_path)
         .unwrap();
-    lock_file.try_lock().unwrap();
+    retry_transient_write_lock(&lock_file);
 
     // commit_batch should fail with LockConflict, not block or succeed.
     let result = index.commit_batch();

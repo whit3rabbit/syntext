@@ -8,6 +8,10 @@ use tempfile::TempDir;
 use syntext::index::Index;
 use syntext::Config;
 
+#[path = "lock_retry.rs"]
+mod lock_retry;
+use lock_retry::commit_batch_with_retry;
+
 fn setup(dir: &TempDir) -> Config {
     let repo = dir.path().join("repo");
     let index_dir = dir.path().join("idx");
@@ -166,7 +170,7 @@ fn symbol_index_maintained_incrementally() {
     let new_path = repo_root.join("added.rs");
     fs::write(&new_path, "pub fn brand_new_fn() {}\n").unwrap();
     idx.notify_change(&new_path).unwrap();
-    idx.commit_batch().unwrap();
+    commit_batch_with_retry(&idx);
     assert!(
         !idx.search_symbols("brand_new_fn", None).unwrap().is_empty(),
         "incremental add must make the new symbol visible without a full reindex"
@@ -175,7 +179,7 @@ fn symbol_index_maintained_incrementally() {
     // Delete the file and commit: the symbol must be evicted.
     fs::remove_file(&new_path).unwrap();
     idx.notify_delete(&new_path).unwrap();
-    idx.commit_batch().unwrap();
+    commit_batch_with_retry(&idx);
     assert!(
         idx.search_symbols("brand_new_fn", None).unwrap().is_empty(),
         "incremental delete must evict the symbol"

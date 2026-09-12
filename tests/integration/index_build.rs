@@ -14,6 +14,10 @@ use syntext::index::ExternalFileRecord;
 use syntext::index::Index;
 use syntext::{Config, SearchOptions};
 
+#[path = "lock_retry.rs"]
+mod lock_retry;
+use lock_retry::commit_batch_with_retry;
+
 /// Path to the fixture corpus committed to the repo.
 fn corpus_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/corpus")
@@ -597,7 +601,7 @@ fn utf16_le_via_incremental_commit_is_searchable() {
     std::fs::write(&new_path, &utf16le).unwrap();
 
     idx.notify_change(&new_path).unwrap();
-    idx.commit_batch().unwrap();
+    commit_batch_with_retry(&idx);
 
     let opts = SearchOptions::default();
     let matches = idx.search("incremental_utf16", &opts).unwrap();
@@ -850,7 +854,7 @@ fn v3_format_produces_dict_and_post_files() {
     index
         .notify_change(&repo_dir.path().join("new_file.rs"))
         .expect("notify_change should succeed");
-    index.commit_batch().expect("commit_batch should succeed");
+    commit_batch_with_retry(&index);
 
     let results2 = index
         .search("new_function_xyz", &opts)
