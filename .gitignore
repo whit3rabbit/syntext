@@ -41,6 +41,7 @@ dist/
 # falls back to the pinned release zip when this directory is absent)
 swift/build/
 swift/.build/
+/.build/
 
 # Python
 __pycache__/

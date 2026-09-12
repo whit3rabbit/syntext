@@ -4,7 +4,8 @@ use std::os::raw::c_char;
 use std::path::PathBuf;
 
 use crate::ffi::dto::{
-    ConfigJson, LimitsJson, MatchDto, SearchFreshDto, SearchOptionsJson, StatsDto, UpdateOutcomeDto,
+    from_file_matches, ConfigJson, LimitsJson, MatchDto, SearchFreshDto, SearchOptionsJson,
+    StatsDto, UpdateOutcomeDto,
 };
 use crate::ffi::{
     borrow_index, catch, ffi_ptr, ffi_status, owned_json, parse_opt_json, req_str, syntext_error,
@@ -77,10 +78,18 @@ pub extern "C" fn syntext_index_search(
     ffi_ptr(err_out, || unsafe {
         let idx = borrow_index(idx)?;
         let pattern = req_str(pattern, "pattern")?;
-        let opts =
-            parse_opt_json::<SearchOptionsJson>(options_json, "options")?.into_search_options();
-        let matches = idx.search(pattern, &opts)?;
-        let dtos: Vec<MatchDto> = matches.iter().map(MatchDto::from_search_match).collect();
+        let opts_json = parse_opt_json::<SearchOptionsJson>(options_json, "options")?;
+        let before = opts_json.before_context.unwrap_or(0);
+        let after = opts_json.after_context.unwrap_or(0);
+        let (routing_pattern, opts) = opts_json.into_search_options_and_effective_pattern(pattern);
+
+        let dtos = if before > 0 || after > 0 {
+            let groups = idx.search_grouped(&routing_pattern, &opts)?;
+            from_file_matches(&groups, before, after)
+        } else {
+            let matches = idx.search(&routing_pattern, &opts)?;
+            matches.iter().map(MatchDto::from_search_match).collect()
+        };
         owned_json(&dtos)
     })
 }
@@ -99,16 +108,26 @@ pub extern "C" fn syntext_index_search_fresh(
     ffi_ptr(err_out, || unsafe {
         let idx = borrow_index(idx)?;
         let pattern = req_str(pattern, "pattern")?;
-        let opts =
-            parse_opt_json::<SearchOptionsJson>(options_json, "options")?.into_search_options();
+        let opts_json = parse_opt_json::<SearchOptionsJson>(options_json, "options")?;
+        let before = opts_json.before_context.unwrap_or(0);
+        let after = opts_json.after_context.unwrap_or(0);
+        let (routing_pattern, opts) = opts_json.into_search_options_and_effective_pattern(pattern);
         let limits = if limits_json.is_null() {
             DEFAULT_LIMITS
         } else {
             parse_opt_json::<LimitsJson>(limits_json, "limits")?.into_limits()
         };
-        let (matches, outcome) = idx.search_fresh(pattern, &opts, limits)?;
+
+        let (dtos, outcome) = if before > 0 || after > 0 {
+            let (groups, outcome) = idx.search_grouped_fresh(&routing_pattern, &opts, limits)?;
+            (from_file_matches(&groups, before, after), outcome)
+        } else {
+            let (matches, outcome) = idx.search_fresh(&routing_pattern, &opts, limits)?;
+            let dtos = matches.iter().map(MatchDto::from_search_match).collect();
+            (dtos, outcome)
+        };
         let dto = SearchFreshDto {
-            matches: matches.iter().map(MatchDto::from_search_match).collect(),
+            matches: dtos,
             update_outcome: UpdateOutcomeDto::from(outcome),
         };
         owned_json(&dto)

@@ -115,6 +115,87 @@ final class SyntextIndexTests: XCTestCase {
         XCTAssertEqual(
             try idx.search("hit", options: SyntextSearchOptions(maxResults: 5)).count, 5)
     }
+
+    func testContextLines() throws {
+        let repo = try makeRepo([
+            "lines.txt": "alpha\nbravo\ncharlie needle delta\necho\nfoxtrot\n"
+        ])
+        let idx = try SyntextIndex.build(
+            indexDir: tmp.appendingPathComponent("idx").path, repoRoot: repo.path)
+
+        // Context 1 line before, 2 lines after
+        let matches = try idx.search(
+            "needle",
+            options: SyntextSearchOptions(beforeContext: 1, afterContext: 2)
+        )
+        XCTAssertEqual(matches.count, 1)
+        let m = matches[0]
+        XCTAssertEqual(m.lineNumber, 3)
+        XCTAssertEqual(m.context.count, 4)
+        XCTAssertEqual(m.beforeContext.map(\.lineContent), ["bravo"])
+        XCTAssertEqual(m.beforeContext.map(\.lineNumber), [2])
+        XCTAssertEqual(m.afterContext.map(\.lineContent), ["echo", "foxtrot"])
+        XCTAssertEqual(m.afterContext.map(\.lineNumber), [4, 5])
+    }
+
+    func testFixedStrings() throws {
+        let repo = try makeRepo([
+            "code.rs": "let val = map.get(key)[0];\nlet other = 42;\n"
+        ])
+        let idx = try SyntextIndex.build(
+            indexDir: tmp.appendingPathComponent("idx").path, repoRoot: repo.path)
+
+        // "map.get(key)[0]" has unescaped regex metacharacters: ., (, ), [, ]
+        let matches = try idx.search(
+            "map.get(key)[0]",
+            options: SyntextSearchOptions(fixedStrings: true)
+        )
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches[0].lineNumber, 1)
+        XCTAssertEqual(matches[0].matchText(), "map.get(key)[0]")
+    }
+
+    func testWordRegexp() throws {
+        let repo = try makeRepo([
+            "words.txt": "account count counter\n"
+        ])
+        let idx = try SyntextIndex.build(
+            indexDir: tmp.appendingPathComponent("idx").path, repoRoot: repo.path)
+
+        let matches = try idx.search(
+            "count",
+            options: SyntextSearchOptions(wordRegexp: true)
+        )
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches[0].submatchStart, 8)
+        XCTAssertEqual(matches[0].matchText(), "count")
+    }
+
+    func testFormattedGrepOutput() throws {
+        let repo = try makeRepo([
+            "sample.txt": "111\n222 match\n333\n"
+        ])
+        let idx = try SyntextIndex.build(
+            indexDir: tmp.appendingPathComponent("idx").path, repoRoot: repo.path)
+
+        let output = try idx.grep("match", options: SyntextSearchOptions(context: 1))
+        XCTAssertEqual(output, "sample.txt-1-111\nsample.txt:2:222 match\nsample.txt-3-333")
+    }
+
+    func testAsyncSearch() async throws {
+        let repo = try makeRepo([
+            "async.txt": "hello from async task\n"
+        ])
+        let idx = try await SyntextIndex.buildAsync(
+            indexDir: tmp.appendingPathComponent("idx").path, repoRoot: repo.path)
+
+        let matches = try await idx.searchAsync("async")
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches[0].lineNumber, 1)
+
+        let grepOut = try await idx.grepAsync("async")
+        XCTAssertEqual(grepOut, "async.txt:1:hello from async task")
+    }
 }
 
 final class SyntextChatIndexTests: XCTestCase {
@@ -127,7 +208,7 @@ final class SyntextChatIndexTests: XCTestCase {
         XCTAssertTrue(try chats.search("needle").isEmpty)
         try chats.commit()
 
-        var matches = try chats.search("needle")
+        let matches = try chats.search("needle")
         XCTAssertEqual(matches.count, 2)
         XCTAssertEqual(Set(matches.map(\.path)), ["chats/1", "chats/2"])
         XCTAssertEqual(matches[0].matchText(), "needle")

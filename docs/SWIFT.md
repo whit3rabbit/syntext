@@ -75,8 +75,16 @@ Every match carries both a lossy UTF-8 rendering (`lineContent`, for display) an
 { "path_filter": null, "file_type": null, "exclude_type": null,
   "file_types": [], "exclude_types": [], "max_results": null,
   "case_insensitive": false, "verify_pattern": null,
-  "skip_line_content": false, "deterministic": false }
+  "skip_line_content": false, "deterministic": false,
+  "fixed_strings": false, "word_regexp": false, "line_regexp": false,
+  "before_context": null, "after_context": null }
 ```
+
+- `fixed_strings`: (`-F`) match literally instead of as a regex.
+- `word_regexp`: (`-w`) match at word boundaries.
+- `line_regexp`: (`-x`) match whole lines.
+- `before_context` / `after_context`: (`-B` / `-A` / `-C`) capture surrounding context lines on each match.
+- `grep(pattern, options:)`: returns matches formatted as standard ripgrep text output (`path:line:content` and `path-line-context`).
 
 `max_results`: absent **or `0`** uses the FFI default 10,000; other explicit values are capped at 1,000,000 (no lower-bound clamping: any value from 1 up to the cap passes through unchanged). A negative value fails JSON decoding (the field is unsigned) and surfaces as error code 100.
 

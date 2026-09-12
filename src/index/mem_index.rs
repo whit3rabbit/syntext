@@ -107,6 +107,25 @@ impl MemIndex {
             opts,
         )
     }
+
+    /// Search and group results per file/document, capturing verified content
+    /// for context lines.
+    pub fn search_grouped(
+        &self,
+        pattern: &str,
+        opts: &SearchOptions,
+    ) -> Result<Vec<crate::FileMatches>, IndexError> {
+        let canonical_root = std::path::Path::new(".");
+        let outcome = crate::search::search_with_content(
+            self.snapshot.load_full(),
+            &self.config,
+            canonical_root,
+            pattern,
+            opts,
+            true,
+        )?;
+        Ok(crate::search::group_outcome(outcome))
+    }
 }
 
 #[cfg(test)]

@@ -138,6 +138,60 @@ public final class SyntextIndex: @unchecked Sendable {
         try checkStatus(rc)
     }
 
+    // ── Concurrency & LLM Tool Helpers ───────────────────────
+    /// Build a fresh index asynchronously off the calling thread.
+    public static func buildAsync(
+        indexDir: String,
+        repoRoot: String,
+        config: SyntextConfig = SyntextConfig()
+    ) async throws -> SyntextIndex {
+        try await Task.detached(priority: .userInitiated) {
+            try SyntextIndex.build(indexDir: indexDir, repoRoot: repoRoot, config: config)
+        }.value
+    }
+
+    /// Search for a pattern asynchronously off the calling thread.
+    public func searchAsync(
+        _ pattern: String,
+        options: SyntextSearchOptions = SyntextSearchOptions()
+    ) async throws -> [SyntextSearchMatch] {
+        try await Task.detached(priority: .userInitiated) {
+            try self.search(pattern, options: options)
+        }.value
+    }
+
+    /// Bounded git auto-update, then search asynchronously off the calling thread.
+    public func searchFreshAsync(
+        _ pattern: String,
+        options: SyntextSearchOptions = SyntextSearchOptions(),
+        limits: SyntextUpdateLimits? = nil
+    ) async throws -> SyntextSearchResult {
+        try await Task.detached(priority: .userInitiated) {
+            try self.searchFresh(pattern, options: options, limits: limits)
+        }.value
+    }
+
+    /// Execute a search and return output formatted for an LLM tool in standard ripgrep format.
+    public func grep(
+        _ pattern: String,
+        options: SyntextSearchOptions = SyntextSearchOptions(),
+        contextSeparator: String = "--"
+    ) throws -> String {
+        let matches = try search(pattern, options: options)
+        return matches.formattedGrepOutput(contextSeparator: contextSeparator)
+    }
+
+    /// Asynchronous version of `grep`.
+    public func grepAsync(
+        _ pattern: String,
+        options: SyntextSearchOptions = SyntextSearchOptions(),
+        contextSeparator: String = "--"
+    ) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            try self.grep(pattern, options: options, contextSeparator: contextSeparator)
+        }.value
+    }
+
     // ── Internals ─────────────────────────────────────────────
     private func searchImpl(
         _ pattern: String,

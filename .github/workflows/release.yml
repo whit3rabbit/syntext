@@ -373,15 +373,18 @@ jobs:
           import os, pathlib, re
           ver = os.environ["VER"]
           sha = os.environ["SHA"]
-          p = pathlib.Path("swift/Package.swift")
-          s = p.read_text()
-          url = f'url: "https://github.com/whit3rabbit/syntext/releases/download/v{ver}/syntext-swift-{ver}.xcframework.zip"'
-          s, n_url = re.subn(
-              r'url: "https://github\.com/whit3rabbit/syntext/releases/download/[^"]*syntext-swift-[^"]*\.xcframework\.zip"',
-              url, s)
-          s, n_sha = re.subn(r'checksum: "[0-9a-f]{64}"', f'checksum: "{sha}"', s)
-          assert n_url == 1 and n_sha == 1, f"expected exactly one url+checksum pin, got {n_url}/{n_sha}"
-          p.write_text(s)
+          for path_str in ["swift/Package.swift", "Package.swift"]:
+              p = pathlib.Path(path_str)
+              if not p.exists():
+                  continue
+              s = p.read_text()
+              url = f'url: "https://github.com/whit3rabbit/syntext/releases/download/v{ver}/syntext-swift-{ver}.xcframework.zip"'
+              s, n_url = re.subn(
+                  r'url: "https://github\.com/whit3rabbit/syntext/releases/download/[^"]*syntext-swift-[^"]*\.xcframework\.zip"',
+                  url, s)
+              s, n_sha = re.subn(r'checksum: "[0-9a-f]{64}"', f'checksum: "{sha}"', s)
+              assert n_url == 1 and n_sha == 1, f"expected exactly one url+checksum pin in {path_str}, got {n_url}/{n_sha}"
+              p.write_text(s)
           EOF
 
       - name: Commit, push, and tag
@@ -390,7 +393,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add swift/Package.swift
+          git add swift/Package.swift Package.swift
           if git diff --cached --quiet; then
             echo "No changes"; exit 0
           fi

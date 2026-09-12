@@ -28,6 +28,12 @@ public enum SyntextError: Error, Sendable {
 }
 
 // ── Wire DTOs (internal) ─────────────────────────────────────
+struct ContextLineDto: Decodable {
+    let lineNumber: Int
+    let lineContent: String
+    let isMatch: Bool
+}
+
 struct MatchDto: Decodable {
     let path: String
     let lineNumber: Int
@@ -36,6 +42,7 @@ struct MatchDto: Decodable {
     let byteOffset: UInt64
     let submatchStart: Int
     let submatchEnd: Int
+    let context: [ContextLineDto]?
 }
 
 struct StatsDto: Decodable {
@@ -65,6 +72,28 @@ struct SearchFreshDto: Decodable {
 }
 
 // ── Public results ───────────────────────────────────────────
+/// One context line surrounding a match, or the matched line itself.
+public struct SyntextContextLine: Sendable, Equatable, Codable {
+    /// 1-based line number.
+    public let lineNumber: Int
+    /// Lossy UTF-8 rendering of the line.
+    public let lineContent: String
+    /// True if this line is the matching line; false if it is a context line.
+    public let isMatch: Bool
+
+    public init(lineNumber: Int, lineContent: String, isMatch: Bool) {
+        self.lineNumber = lineNumber
+        self.lineContent = lineContent
+        self.isMatch = isMatch
+    }
+
+    init(dto: ContextLineDto) {
+        self.lineNumber = dto.lineNumber
+        self.lineContent = dto.lineContent
+        self.isMatch = dto.isMatch
+    }
+}
+
 /// One line-level search match.
 ///
 /// `lineContent` is a lossy UTF-8 rendering for display. `lineContentBytes`
@@ -85,6 +114,18 @@ public struct SyntextSearchMatch: Sendable, Equatable {
     public let submatchStart: Int
     /// Exclusive byte offset of the match end within `lineContentBytes`.
     public let submatchEnd: Int
+    /// Surrounding context lines (ordered by line number) if context was requested.
+    public let context: [SyntextContextLine]
+
+    /// Preceding context lines.
+    public var beforeContext: [SyntextContextLine] {
+        context.filter { !$0.isMatch && $0.lineNumber < lineNumber }
+    }
+
+    /// Following context lines.
+    public var afterContext: [SyntextContextLine] {
+        context.filter { !$0.isMatch && $0.lineNumber > lineNumber }
+    }
 
     /// The matched substring, lossily decoded from the exact bytes.
     public func matchText() -> String {
@@ -102,6 +143,7 @@ public struct SyntextSearchMatch: Sendable, Equatable {
         byteOffset = dto.byteOffset
         submatchStart = dto.submatchStart
         submatchEnd = dto.submatchEnd
+        context = dto.context?.map(SyntextContextLine.init(dto:)) ?? []
     }
 }
 
@@ -180,6 +222,16 @@ public struct SyntextSearchOptions: Sendable, Encodable {
     public var verifyPattern: String?
     public var skipLineContent: Bool
     public var deterministic: Bool
+    /// Treat the pattern as a literal string instead of a regular expression (`-F`).
+    public var fixedStrings: Bool
+    /// Only show matches surrounded by word boundaries (`-w`).
+    public var wordRegexp: Bool
+    /// Only show matches surrounded by line boundaries (`-x`).
+    public var lineRegexp: Bool
+    /// Number of context lines to capture before each match (`-B`).
+    public var beforeContext: Int?
+    /// Number of context lines to capture after each match (`-A`).
+    public var afterContext: Int?
 
     public init(
         pathFilter: String? = nil,
@@ -191,7 +243,13 @@ public struct SyntextSearchOptions: Sendable, Encodable {
         caseInsensitive: Bool = false,
         verifyPattern: String? = nil,
         skipLineContent: Bool = false,
-        deterministic: Bool = false
+        deterministic: Bool = false,
+        fixedStrings: Bool = false,
+        wordRegexp: Bool = false,
+        lineRegexp: Bool = false,
+        context: Int? = nil,
+        beforeContext: Int? = nil,
+        afterContext: Int? = nil
     ) {
         self.pathFilter = pathFilter
         self.fileType = fileType
@@ -203,6 +261,55 @@ public struct SyntextSearchOptions: Sendable, Encodable {
         self.verifyPattern = verifyPattern
         self.skipLineContent = skipLineContent
         self.deterministic = deterministic
+        self.fixedStrings = fixedStrings
+        self.wordRegexp = wordRegexp
+        self.lineRegexp = lineRegexp
+        self.beforeContext = beforeContext ?? context
+        self.afterContext = afterContext ?? context
+    }
+}
+
+extension Collection where Element == SyntextSearchMatch {
+    /// Render matches in standard ripgrep format (`path:line:content`),
+    /// using `-` for context lines, `:` for matches, and `--` separator between non-contiguous blocks.
+    public func formattedGrepOutput(contextSeparator: String = "--") -> String {
+        var lines: [String] = []
+        var lastPath: String? = nil
+        var lastLineNumber: Int? = nil
+
+        for m in self {
+            if !m.context.isEmpty {
+                for c in m.context {
+                    if let lp = lastPath, let ll = lastLineNumber {
+                        if lp == m.path && c.lineNumber == ll {
+                            // Avoid duplicating identical line from overlapping context
+                            continue
+                        }
+                        if lp != m.path || c.lineNumber > ll + 1 {
+                            if !lines.isEmpty {
+                                lines.append(contextSeparator)
+                            }
+                        }
+                    }
+                    let sep = c.isMatch ? ":" : "-"
+                    lines.append("\(m.path)\(sep)\(c.lineNumber)\(sep)\(c.lineContent)")
+                    lastPath = m.path
+                    lastLineNumber = c.lineNumber
+                }
+            } else {
+                if let lp = lastPath, let ll = lastLineNumber {
+                    if lp != m.path || m.lineNumber > ll + 1 {
+                        if !lines.isEmpty {
+                            lines.append(contextSeparator)
+                        }
+                    }
+                }
+                lines.append("\(m.path):\(m.lineNumber):\(m.lineContent)")
+                lastPath = m.path
+                lastLineNumber = m.lineNumber
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

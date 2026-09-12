@@ -84,6 +84,37 @@ public final class SyntextChatIndex: @unchecked Sendable {
         return dtos.map(SyntextSearchMatch.init(dto:))
     }
 
+    /// Search the committed snapshot asynchronously off the calling thread.
+    public func searchAsync(
+        _ pattern: String,
+        options: SyntextSearchOptions = SyntextSearchOptions()
+    ) async throws -> [SyntextSearchMatch] {
+        try await Task.detached(priority: .userInitiated) {
+            try self.search(pattern, options: options)
+        }.value
+    }
+
+    /// Execute a search and return output formatted for an LLM tool in standard ripgrep format.
+    public func grep(
+        _ pattern: String,
+        options: SyntextSearchOptions = SyntextSearchOptions(),
+        contextSeparator: String = "--"
+    ) throws -> String {
+        let matches = try search(pattern, options: options)
+        return matches.formattedGrepOutput(contextSeparator: contextSeparator)
+    }
+
+    /// Asynchronous version of `grep`.
+    public func grepAsync(
+        _ pattern: String,
+        options: SyntextSearchOptions = SyntextSearchOptions(),
+        contextSeparator: String = "--"
+    ) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            try self.grep(pattern, options: options, contextSeparator: contextSeparator)
+        }.value
+    }
+
     private func checkStatus(_ rc: Int32) throws {
         if rc != SYNTEXT_OK {
             throw SyntextError.indexError(code: UInt32(rc), message: "operation failed (code \(rc))")

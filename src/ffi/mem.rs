@@ -3,7 +3,7 @@
 use std::os::raw::c_char;
 use std::sync::Arc;
 
-use crate::ffi::dto::{MatchDto, SearchOptionsJson};
+use crate::ffi::dto::{from_file_matches, MatchDto, SearchOptionsJson};
 use crate::ffi::{
     borrow_mem, bytes, catch, ffi_ptr, ffi_status, owned_json, parse_opt_json, req_str,
     syntext_error, syntext_mem_index,
@@ -96,10 +96,18 @@ pub extern "C" fn syntext_mem_index_search(
     ffi_ptr(err_out, || unsafe {
         let midx = borrow_mem(midx)?;
         let pattern = req_str(pattern, "pattern")?;
-        let opts =
-            parse_opt_json::<SearchOptionsJson>(options_json, "options")?.into_search_options();
-        let matches = midx.search(pattern, &opts)?;
-        let dtos: Vec<MatchDto> = matches.iter().map(MatchDto::from_search_match).collect();
+        let opts_json = parse_opt_json::<SearchOptionsJson>(options_json, "options")?;
+        let before = opts_json.before_context.unwrap_or(0);
+        let after = opts_json.after_context.unwrap_or(0);
+        let (routing_pattern, opts) = opts_json.into_search_options_and_effective_pattern(pattern);
+
+        let dtos = if before > 0 || after > 0 {
+            let groups = midx.search_grouped(&routing_pattern, &opts)?;
+            from_file_matches(&groups, before, after)
+        } else {
+            let matches = midx.search(&routing_pattern, &opts)?;
+            matches.iter().map(MatchDto::from_search_match).collect()
+        };
         owned_json(&dtos)
     })
 }
