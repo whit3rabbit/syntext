@@ -70,3 +70,5 @@ TODO.md
 
 # Claude Code local plan files
 .zcode/
+.agents/
+.codex/

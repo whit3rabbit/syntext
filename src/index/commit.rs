@@ -20,9 +20,9 @@ use crate::IndexError;
 /// the guard is dropped still armed and [`PendingEdits::requeue_uncommitted`]
 /// restores the drained edits so they survive to the next commit attempt. If
 /// `commit_inner` returns `Ok(())`, the caller sets `take = None` to disarm.
-struct RequeueGuard<'a> {
-    pending: &'a PendingEdits,
-    take: Option<TakeResult>,
+pub(crate) struct RequeueGuard<'a> {
+    pub(crate) pending: &'a PendingEdits,
+    pub(crate) take: Option<TakeResult>,
 }
 
 impl Drop for RequeueGuard<'_> {
@@ -95,10 +95,19 @@ impl Index {
     /// Implementation of [`commit_batch`](Index::commit_batch) operating on an
     /// already-drained [`TakeResult`]. Re-queueing on error is the caller's
     /// responsibility via the `RequeueGuard`.
-    fn commit_inner(
+    pub(crate) fn commit_inner(
         &self,
         old_snap: &IndexSnapshot,
         take: &mut TakeResult,
+    ) -> Result<(), IndexError> {
+        self.commit_inner_with_preloaded(old_snap, take, None)
+    }
+
+    pub(crate) fn commit_inner_with_preloaded(
+        &self,
+        old_snap: &IndexSnapshot,
+        take: &mut TakeResult,
+        preloaded: Option<&std::collections::HashMap<std::path::PathBuf, Arc<[u8]>>>,
     ) -> Result<(), IndexError> {
         // Total base doc count for the overlay ratio capacity check.
         let base_doc_count: u32 = old_snap.base_segments().iter().map(|s| s.doc_count).sum();
@@ -120,7 +129,18 @@ impl Index {
         let mut vanished_paths: std::collections::HashSet<std::path::PathBuf> =
             std::collections::HashSet::new();
         for path in &take.newly_changed {
-            match self.classify_changed_file(path) {
+            let outcome = if let Some(content) = preloaded.and_then(|p| p.get(path)) {
+                if content.len() > self.config.max_file_size as usize
+                    || crate::index::walk::is_binary(content)
+                {
+                    ChangedFileOutcome::Excluded
+                } else {
+                    ChangedFileOutcome::Indexed(Arc::clone(content))
+                }
+            } else {
+                self.classify_changed_file(path)
+            };
+            match outcome {
                 ChangedFileOutcome::Indexed(content) => new_files.push((path.clone(), content)),
                 ChangedFileOutcome::Excluded => {
                     excluded_changed.insert(path.clone());

@@ -35,6 +35,9 @@
 compile_error!("the \"wasm\" and \"ffi\" features are mutually exclusive (ffi requires native filesystem support, wasm targets a filesystem-free wasm32 build)");
 
 // ── Public API ───────────────────────────────────────────────
+/// Persistent change tracking and content fingerprinting.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod changes;
 /// Error types for index operations.
 pub mod error;
 /// C ABI for the Swift/xcframework bindings (ffi feature only).
@@ -84,23 +87,7 @@ pub(crate) mod tokenizer;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod __internal {
-    // base64
     pub use crate::base64::encode;
-    // path
-    pub use crate::path::filter;
-    // posting
-    pub use crate::posting::{
-        roaring_util, varint_decode, varint_encode, PostingList, ROARING_THRESHOLD,
-    };
-    // query
-    pub use crate::query::regex_decompose;
-    pub use crate::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
-    // tokenizer
-    pub use crate::tokenizer::{
-        build_all, build_covering, build_covering_inner, gram_hash, CoveringSet, MAX_GRAM_LEN,
-        MIN_GRAM_LEN,
-    };
-    // index submodules
     pub use crate::index::manifest::Manifest;
     pub use crate::index::overlay::{
         compute_delete_set, EditKind, FileEdit, OverlayDoc, OverlayView,
@@ -112,6 +99,16 @@ pub mod __internal {
     };
     pub use crate::index::snapshot::{new_snapshot, BaseSegments, IndexSnapshot};
     pub use crate::index::walk::is_binary;
+    pub use crate::path::filter;
+    pub use crate::posting::{
+        roaring_util, varint_decode, varint_encode, PostingList, ROARING_THRESHOLD,
+    };
+    pub use crate::query::regex_decompose;
+    pub use crate::query::{is_literal, literal_grams, route_query, GramQuery, QueryRoute};
+    pub use crate::tokenizer::{
+        build_all, build_covering, build_covering_inner, gram_hash, CoveringSet, MAX_GRAM_LEN,
+        MIN_GRAM_LEN,
+    };
 }
 
 use std::path::PathBuf;

@@ -1,6 +1,8 @@
 //! Index builder (`Index::build`) and reader (`Index::open`).
 
 #[cfg(not(target_arch = "wasm32"))]
+mod batch_apply;
+#[cfg(not(target_arch = "wasm32"))]
 mod build;
 #[cfg(not(target_arch = "wasm32"))]
 mod build_external;

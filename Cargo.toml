@@ -61,6 +61,9 @@ uuid = { version = "1", features = ["v4", "js"] }
 # Checksum — pure arithmetic, WASM-compatible
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
+# Fast cryptographic content hashing for file fingerprints (syntext::changes)
+blake3 = { version = "1", default-features = false, features = ["std"] }
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -173,6 +176,10 @@ required-features = ["oracle"]
 [[test]]
 name = "cli"
 path = "tests/integration/cli.rs"
+
+[[test]]
+name = "changes"
+path = "tests/integration/changes.rs"
 
 [[test]]
 name = "symbols"
