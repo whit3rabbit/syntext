@@ -261,6 +261,11 @@ fn assert_st_matches_rg(
         // (LockConflict). Disabling the async catch-up keeps the lock boundary
         // clean: the subprocess's synchronous bounded update is the only writer.
         .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        // Slow git spawns under CI concurrency can starve the default 150ms
+        // budget before git status completes. When the budget is exhausted, st
+        // searches stale and misses unindexed live files, triggering a false Tier-A
+        // failure. Give git status a generous 10s budget, matching incremental.rs.
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .output()
         .map_err(|e| format!("step {step}: failed to run st: {e}"))?;
 
@@ -296,10 +301,12 @@ fn assert_st_matches_rg(
                 "step {step}: Tier A Violation: rg found {:?} but st did not.\n\
                  Query: {:?}\n\
                  st stdout:\n{}\n\
+                 st stderr:\n{}\n\
                  rg stdout:\n{}",
                 m,
                 query,
                 String::from_utf8_lossy(&st_output.stdout),
+                String::from_utf8_lossy(&st_output.stderr),
                 String::from_utf8_lossy(&rg_output.stdout),
             ));
         }
@@ -310,11 +317,13 @@ fn assert_st_matches_rg(
             "step {step}: Tier B Violation: st={} matches, rg={} matches.\n\
              Query: {:?}\n\
              st stdout:\n{}\n\
+             st stderr:\n{}\n\
              rg stdout:\n{}",
             st_matches.len(),
             rg_matches.len(),
             query,
             String::from_utf8_lossy(&st_output.stdout),
+            String::from_utf8_lossy(&st_output.stderr),
             String::from_utf8_lossy(&rg_output.stdout),
         ));
     }
@@ -742,6 +751,128 @@ fn golden_incremental_grow_past_limit() {
     // and st should have removed it from the index. Both should report 0 matches.
     // We use a literal that was only in the old content.
     assert_st_matches_rg(repo.path(), &index_dir, "parse_query", 1, max_file_size).unwrap();
+
+    drop(index);
+}
+
+#[test]
+fn test_regression_incremental_differential_nightly() {
+    if !rg_available() {
+        return;
+    }
+
+    let repo = TempDir::new().unwrap();
+    let index_dir_tmp = TempDir::new().unwrap();
+    let index_dir: PathBuf = index_dir_tmp.path().to_path_buf();
+
+    let initial_files = [
+        ("src/main.rs", b"fn parse_query() {}\n".as_ref()),
+        ("src/lib.rs", b"fn reparse() { let x = 1; }\n".as_ref()),
+        ("src/util.rs", b"fn helper() {}\n".as_ref()),
+        ("filler_0.rs", b"// filler 0\nfn unused_0() {}\n".as_ref()),
+        ("filler_1.rs", b"// filler 1\nfn unused_1() {}\n".as_ref()),
+        ("filler_2.rs", b"// filler 2\nfn unused_2() {}\n".as_ref()),
+        ("filler_3.rs", b"// filler 3\nfn unused_3() {}\n".as_ref()),
+        ("filler_4.rs", b"// filler 4\nfn unused_4() {}\n".as_ref()),
+        ("filler_5.rs", b"// filler 5\nfn unused_5() {}\n".as_ref()),
+        ("filler_6.rs", b"// filler 6\nfn unused_6() {}\n".as_ref()),
+        ("filler_7.rs", b"// filler 7\nfn unused_7() {}\n".as_ref()),
+        ("filler_8.rs", b"// filler 8\nfn unused_8() {}\n".as_ref()),
+        ("filler_9.rs", b"// filler 9\nfn unused_9() {}\n".as_ref()),
+    ];
+    for (path, content) in &initial_files {
+        let abs = repo.path().join(path);
+        fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        fs::write(&abs, content).unwrap();
+    }
+
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .ok();
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "oracle"]);
+    git(&["config", "user.email", "oracle@example.com"]);
+    fs::write(repo.path().join(".gitignore"), b".syntext/\n.git/\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "init", "--no-gpg-sign"]);
+
+    let max_file_size: u64 = 512 * 1024;
+    let config = Config {
+        index_dir: index_dir.clone(),
+        repo_root: repo.path().to_path_buf(),
+        max_file_size,
+        auto_update: false,
+        ..Config::default()
+    };
+
+    let mut index = build_with_retry(config.clone()).expect("build index");
+
+    let mutations = [
+        MutationOp::ModifyFile {
+            path: "src/util.rs".into(),
+            content: vec![
+                100, 101, 102, 32, 115, 110, 97, 107, 101, 95, 99, 97, 115, 101, 40, 99, 97, 109,
+                101, 108, 67, 97, 115, 101, 41, 58, 10, 32, 32, 32, 32, 112, 97, 114, 115, 101, 10,
+            ],
+        },
+        MutationOp::ModifyFile {
+            path: "src/util.rs".into(),
+            content: vec![
+                47, 47, 32, 84, 79, 68, 79, 58, 32, 113, 117, 101, 114, 121, 10, 102, 110, 32, 104,
+                101, 108, 112, 101, 114, 40, 41, 32, 123, 125, 10,
+            ],
+        },
+        MutationOp::RenameFile {
+            from: "src/main.rs".into(),
+            to: "docs/notes.md".into(),
+        },
+        MutationOp::RenameFile {
+            from: "src/lib.rs".into(),
+            to: "src/helper.rs".into(),
+        },
+        MutationOp::DeleteFile {
+            path: "src/helper.rs".into(),
+        },
+        MutationOp::CreateFile {
+            path: "src/lib.rs".into(),
+            content: vec![
+                100, 101, 102, 32, 115, 110, 97, 107, 101, 95, 99, 97, 115, 101, 40, 99, 97, 109,
+                101, 108, 67, 97, 115, 101, 41, 58, 10, 32, 32, 32, 32, 112, 97, 114, 115, 101, 10,
+            ],
+        },
+        MutationOp::DeleteFile {
+            path: "docs/notes.md".into(),
+        },
+        MutationOp::BinaryifyFile {
+            path: "src/lib.rs".into(),
+        },
+    ];
+    let query = "fn";
+
+    for (step, op) in mutations.iter().enumerate() {
+        let needs_commit =
+            apply_mutation(repo.path(), &index, op, max_file_size, &git).unwrap_or(false);
+
+        if needs_commit {
+            match commit_batch_with_retry(&index) {
+                Ok(()) => {}
+                Err(IndexError::OverlayFull { .. }) => {
+                    break;
+                }
+                Err(e) => panic!("step {step}: commit_batch failed: {e}"),
+            }
+
+            drop(index);
+            assert_st_matches_rg(repo.path(), &index_dir, query, step, max_file_size)
+                .expect("incremental differential mismatch");
+            index = open_with_retry(config.clone()).expect("reopen index");
+        }
+    }
 
     drop(index);
 }
