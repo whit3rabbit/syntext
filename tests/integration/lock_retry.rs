@@ -94,3 +94,17 @@ pub fn retry_transient_write_lock(lock_file: &std::fs::File) {
     )
     .unwrap_or_else(|err| panic!("try_lock on write.lock failed within retry budget: {err}"));
 }
+
+/// `apply_change_batch`, retrying `LockConflict` within the calibrated budget.
+pub fn apply_change_batch_with_retry(
+    index: &Index,
+    batch: &syntext::changes::ChangeBatch,
+) -> Result<u64, IndexError> {
+    retry_lock_contention(|| index.apply_change_batch(batch), is_lock_conflict)
+}
+
+/// Build the index, retrying `LockConflict` within the calibrated budget.
+pub fn build_with_retry(config: syntext::Config) -> Result<Index, IndexError> {
+    retry_lock_contention(|| Index::build(config.clone()), is_lock_conflict)
+}
+

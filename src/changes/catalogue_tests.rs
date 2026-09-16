@@ -18,6 +18,13 @@ fn catalogue_lifecycle_and_observation() {
     // 1. Add file
     let file1 = repo_root.join("hello.rs");
     fs::write(&file1, b"fn hello() {}\n").unwrap();
+    let t0 = SystemTime::now() - Duration::from_secs(20);
+    fs::File::options()
+        .write(true)
+        .open(&file1)
+        .unwrap()
+        .set_modified(t0)
+        .unwrap();
 
     // Read epoch past racy margin
     let past = SystemTime::now() + Duration::from_secs(5);
@@ -38,8 +45,13 @@ fn catalogue_lifecycle_and_observation() {
 
     // 3. Touch file (mtime updated, content same)
     let past_read = SystemTime::now() + Duration::from_secs(10);
-    // Rewriting same content updates mtime
-    fs::write(&file1, b"fn hello() {}\n").unwrap();
+    let t1 = SystemTime::now() - Duration::from_secs(10);
+    fs::File::options()
+        .write(true)
+        .open(&file1)
+        .unwrap()
+        .set_modified(t1)
+        .unwrap();
     let batch3 = cat.observe_paths(&repo_root, &[PathBuf::from("hello.rs")], past_read);
     assert_eq!(batch3.records[0].kind, ChangeKind::Touched);
     assert_eq!(cat.generation(), 1); // Touched does not bump generation

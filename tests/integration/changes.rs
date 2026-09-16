@@ -9,6 +9,7 @@ use syntext::{Config, SearchOptions};
 
 #[path = "lock_retry.rs"]
 mod lock_retry;
+use lock_retry::{apply_change_batch_with_retry, build_with_retry};
 
 fn setup() -> (TempDir, TempDir, Index, Catalogue) {
     let repo_dir = TempDir::new().unwrap();
@@ -28,7 +29,7 @@ fn setup() -> (TempDir, TempDir, Index, Catalogue) {
         )
         .unwrap();
     }
-    let index = Index::build(config).unwrap();
+    let index = build_with_retry(config).unwrap();
     let cat = Catalogue::open_or_create(index_dir.path()).unwrap();
 
     (repo_dir, index_dir, index, cat)
@@ -57,12 +58,14 @@ fn add_and_query_via_apply_change_batch() {
     assert_eq!(batch.records[0].kind, ChangeKind::Added);
     assert!(batch.records[0].content.is_some());
 
-    let gen = index.apply_change_batch(&batch).unwrap();
+    let gen = apply_change_batch_with_retry(&index, &batch).unwrap();
     assert_eq!(gen, batch.generation);
 
     let hits = search(&index, "alpha_beta_omega");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, "doc.rs");
+
+    drop(index);
 }
 
 #[test]
@@ -81,11 +84,13 @@ fn preloaded_content_survives_immediate_disk_deletion() {
     assert!(!transient.exists());
 
     // apply_change_batch succeeds because the buffer was already loaded in memory
-    index.apply_change_batch(&batch).unwrap();
+    apply_change_batch_with_retry(&index, &batch).unwrap();
 
     let hits = search(&index, "transient_payload_key");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, "transient.rs");
+
+    drop(index);
 }
 
 #[test]
@@ -94,19 +99,34 @@ fn touched_file_does_not_mutate_index() {
 
     let file = repo.path().join("touch_test.rs");
     fs::write(&file, b"fn touch_target() {}\n").unwrap();
+    let t0 = SystemTime::now() - Duration::from_secs(20);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(t0)
+        .unwrap();
 
     let past_read = SystemTime::now() + Duration::from_secs(5);
     let batch1 = cat.observe_paths(repo.path(), &[PathBuf::from("touch_test.rs")], past_read);
-    index.apply_change_batch(&batch1).unwrap();
+    apply_change_batch_with_retry(&index, &batch1).unwrap();
     assert_eq!(search(&index, "touch_target").len(), 1);
 
-    // Re-writing exact same content updates mtime
-    fs::write(&file, b"fn touch_target() {}\n").unwrap();
+    // Updating mtime while keeping content same
+    let t1 = SystemTime::now() - Duration::from_secs(10);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(t1)
+        .unwrap();
     let batch2 = cat.observe_paths(repo.path(), &[PathBuf::from("touch_test.rs")], past_read);
     assert_eq!(batch2.records[0].kind, ChangeKind::Touched);
 
-    let gen = index.apply_change_batch(&batch2).unwrap();
+    let gen = apply_change_batch_with_retry(&index, &batch2).unwrap();
     assert_eq!(gen, batch1.generation); // Touched did not increment generation
+
+    drop(index);
 }
 
 #[test]
@@ -118,14 +138,14 @@ fn modify_and_delete_lifecycle() {
 
     let past_read = SystemTime::now() + Duration::from_secs(5);
     let batch1 = cat.observe_paths(repo.path(), &[PathBuf::from("lifecycle.rs")], past_read);
-    index.apply_change_batch(&batch1).unwrap();
+    apply_change_batch_with_retry(&index, &batch1).unwrap();
     assert_eq!(search(&index, "initial_token_abc").len(), 1);
 
     // Modify content
     fs::write(&file, b"fn modified_token_xyz() {}\n").unwrap();
     let batch2 = cat.observe_paths(repo.path(), &[PathBuf::from("lifecycle.rs")], past_read);
     assert_eq!(batch2.records[0].kind, ChangeKind::Modified);
-    index.apply_change_batch(&batch2).unwrap();
+    apply_change_batch_with_retry(&index, &batch2).unwrap();
 
     assert!(search(&index, "initial_token_abc").is_empty());
     assert_eq!(search(&index, "modified_token_xyz").len(), 1);
@@ -134,9 +154,11 @@ fn modify_and_delete_lifecycle() {
     fs::remove_file(&file).unwrap();
     let batch3 = cat.observe_paths(repo.path(), &[PathBuf::from("lifecycle.rs")], past_read);
     assert_eq!(batch3.records[0].kind, ChangeKind::Deleted);
-    index.apply_change_batch(&batch3).unwrap();
+    apply_change_batch_with_retry(&index, &batch3).unwrap();
 
     assert!(search(&index, "modified_token_xyz").is_empty());
+
+    drop(index);
 }
 
 #[test]
@@ -148,7 +170,7 @@ fn consumer_lag_and_acknowledgement() {
     let past_read = SystemTime::now() + Duration::from_secs(5);
 
     let b1 = cat.observe_paths(repo.path(), &[PathBuf::from("f1.rs")], past_read);
-    index.apply_change_batch(&b1).unwrap();
+    apply_change_batch_with_retry(&index, &b1).unwrap();
 
     assert_eq!(cat.consumer_lag("synrepo"), 1);
     cat.acknowledge("synrepo", 1);
@@ -157,8 +179,10 @@ fn consumer_lag_and_acknowledgement() {
     let f2 = repo.path().join("f2.rs");
     fs::write(&f2, b"fn two() {}\n").unwrap();
     let b2 = cat.observe_paths(repo.path(), &[PathBuf::from("f2.rs")], past_read);
-    index.apply_change_batch(&b2).unwrap();
+    apply_change_batch_with_retry(&index, &b2).unwrap();
 
     assert_eq!(cat.consumer_lag("synrepo"), 1);
     assert_eq!(cat.consumer_lag("other_consumer"), 2);
+
+    drop(index);
 }
