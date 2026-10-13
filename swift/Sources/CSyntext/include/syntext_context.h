@@ -121,10 +121,15 @@ syntext_context_engine *syntext_context_engine_new(
     syntext_error **err_out);
 void syntext_context_engine_free(syntext_context_engine *engine);
 
-/* Evidence within an explicit budget: {"question", "evidence_tokens",
- * "scopes"?, "exclude"?}. Returns {"blocks", "evidence_text",
- * "evidence_tokens", "budget", "lowest_trust", "receipt", "receipt_json"}. */
+/* Evidence within an explicit budget, for hosts that build the prompt
+ * themselves. memory (nullable) recalls older turns of that conversation:
+ * its scope is granted and its "kept_turns" most recent turns (already
+ * verbatim in the host's prompt) are left out. request: {"question",
+ * "evidence_tokens", "kept_turns"?, "scopes"?, "exclude"?}. Returns
+ * {"blocks", "evidence_text", "evidence_tokens", "budget", "lowest_trust",
+ * "receipt", "receipt_json"}. */
 char *syntext_context_prepare(const syntext_context_engine *engine,
+                              const syntext_context_memory *memory,
                               const char *request_json,
                               syntext_error **err_out);
 /* A whole prompt for a window. memory (nullable) supplies history and its

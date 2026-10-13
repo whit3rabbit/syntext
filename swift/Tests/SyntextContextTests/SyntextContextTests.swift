@@ -115,6 +115,24 @@ final class SyntextContextTests: XCTestCase {
         XCTAssertEqual(try again.history().map(\.content), ["I bought it on March 3rd.", "Noted."])
     }
 
+    func testPrepareRecallsOlderTurnsForHostOwnedPrompts() throws {
+        let store = try openStore()
+        let chat = try SyntextConversation(store: store, session: "chat-2", mode: .app("notes"))
+        try chat.recordExchange(question: "My invoice number is INV-7731.", answer: "Noted.")
+        try chat.recordExchange(question: "Which invoice did I mention?", answer: "INV-7731.")
+        let engine = try SyntextContextEngine(store: store)
+        let question = "What was my invoice number?"
+
+        let plain = try engine.prepare(question: question, evidenceTokens: 400)
+        XCTAssertFalse(plain.evidenceText.contains("INV-7731"), "memory scope is not granted by default")
+
+        let packet = try engine.prepare(
+            question: question, evidenceTokens: 400, conversation: chat, keptTurns: 2)
+        XCTAssertTrue(packet.evidenceText.contains("My invoice number is INV-7731."))
+        XCTAssertFalse(packet.evidenceText.contains("Which invoice did I mention?"))
+        XCTAssertEqual(packet.lowestTrust, .memory)
+    }
+
     func testOversizedQuestionIsAnError() throws {
         let store = try openStore()
         let engine = try SyntextContextEngine(store: store)
@@ -133,6 +151,19 @@ final class SyntextContextTests: XCTestCase {
             SyntextChatRequest(question: "When does the ingest worker restart?", window: 2048, system: system))
         XCTAssertEqual(turn.messages.first?.content, system)
         XCTAssertFalse(turn.packet.isEmpty)
+    }
+
+    func testSeparateMessagePlacement() throws {
+        let store = try openStore()
+        try store.upsert([SyntextContextDocument(id: "a", text: "The ingest worker restarts nightly.")])
+        let engine = try SyntextContextEngine(
+            store: store, options: .init(order: .document, placement: .separateMessage))
+        let question = "When does the ingest worker restart?"
+        let turn = try engine.assemble(SyntextChatRequest(question: question, window: 2048))
+        let users = turn.messages.filter { $0.role == .user }
+        XCTAssertEqual(users.count, 2)
+        XCTAssertTrue(users[0].content.contains("<evidence id=\"E1\""))
+        XCTAssertEqual(users[1].content, question)
     }
 
     func testPathSyncRemoveCompactAndReadOnlyReload() throws {

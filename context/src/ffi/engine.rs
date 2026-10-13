@@ -112,18 +112,23 @@ pub extern "C" fn syntext_context_engine_free(engine: *mut syntext_context_engin
 }
 
 /// Evidence for a question within an explicit token budget, for hosts that
-/// manage their own history. `request_json`: `{"question",
-/// "evidence_tokens", "scopes"?, "exclude"?}`. Returns an evidence packet
-/// JSON: `{"blocks", "evidence_text", "evidence_tokens", "budget",
-/// "lowest_trust", "receipt", "receipt_json"}`.
+/// build the prompt themselves. `memory` (nullable) recalls older turns of
+/// that conversation: its scope is granted and its `kept_turns` most recent
+/// turns, already verbatim in the host's prompt, are left out.
+/// `request_json`: `{"question", "evidence_tokens", "kept_turns"?,
+/// "scopes"?, "exclude"?}`. Returns an evidence packet JSON: `{"blocks",
+/// "evidence_text", "evidence_tokens", "budget", "lowest_trust", "receipt",
+/// "receipt_json"}`.
 #[no_mangle]
 pub extern "C" fn syntext_context_prepare(
     engine: *const syntext_context_engine,
+    memory: *const syntext_context_memory,
     request_json: *const c_char,
     err_out: *mut *mut syntext_error,
 ) -> *mut c_char {
     ffi_ptr(err_out, || unsafe {
         let engine = borrow_engine(engine)?;
+        let memory = borrow_memory(memory);
         let req: PrepareDto = req_json(request_json, "request")?;
         let packet = engine
             .prepare(&PrepareRequest {
@@ -131,6 +136,8 @@ pub extern "C" fn syntext_context_prepare(
                 evidence_tokens: req.evidence_tokens,
                 scopes: req.filter.scopes().map_err(ffi_error)?,
                 exclude: req.filter.exclude().map_err(ffi_error)?,
+                memory,
+                kept_turns: req.kept_turns,
             })
             .map_err(ffi_error)?;
         owned_json(&PacketDto::new(&packet))

@@ -56,17 +56,26 @@ public final class SyntextContextEngine: @unchecked Sendable {
 
     /// Evidence for `question` within an explicit token budget, for hosts
     /// that manage their own history and prompt (insert `evidenceText` into
-    /// the last user message).
+    /// the last user message). With `conversation`, older turns are
+    /// recalled as evidence; its `keptTurns` most recent turns, which the
+    /// host already has verbatim in its prompt, are left out.
     public func prepare(
         question: String,
         evidenceTokens: Int,
+        conversation: SyntextConversation? = nil,
+        keptTurns: Int = 0,
         scopes: [String]? = nil,
         exclude: [String] = []
     ) throws -> SyntextEvidencePacket {
         let request = PrepareRequestDto(
-            question: question, evidenceTokens: evidenceTokens, scopes: scopes, exclude: exclude)
+            question: question, evidenceTokens: evidenceTokens, keptTurns: keptTurns,
+            scopes: scopes, exclude: exclude)
         let cRequest = try CZString(encodeJSON(request))
-        let json = try ffiCall { err in syntext_context_prepare(handle, cRequest?.ptr, err) }
+        let json = try withExtendedLifetime(conversation) {
+            try ffiCall { err in
+                syntext_context_prepare(handle, conversation?.handle, cRequest?.ptr, err)
+            }
+        }
         return try decode(PacketDto.self, takeString(json)).packet
     }
 
@@ -111,12 +120,15 @@ public final class SyntextContextEngine: @unchecked Sendable {
     public func prepareAsync(
         question: String,
         evidenceTokens: Int,
+        conversation: SyntextConversation? = nil,
+        keptTurns: Int = 0,
         scopes: [String]? = nil,
         exclude: [String] = []
     ) async throws -> SyntextEvidencePacket {
         try await Task.detached(priority: .userInitiated) {
             try self.prepare(
-                question: question, evidenceTokens: evidenceTokens, scopes: scopes, exclude: exclude)
+                question: question, evidenceTokens: evidenceTokens, conversation: conversation,
+                keptTurns: keptTurns, scopes: scopes, exclude: exclude)
         }.value
     }
 

@@ -101,7 +101,10 @@ fn sync_prepare_search_and_check_receipt() {
     let engine = engine(store);
     let req = c(r#"{"question": "Are failed charges retried?", "evidence_tokens": 600}"#);
     let mut err = null_mut();
-    let packet = json(syntext_context_prepare(engine, req.as_ptr(), &mut err), err);
+    let packet = json(
+        syntext_context_prepare(engine, null(), req.as_ptr(), &mut err),
+        err,
+    );
     assert!(packet["evidence_text"]
         .as_str()
         .unwrap()
@@ -273,6 +276,33 @@ fn assemble_with_memory_and_a_host_token_counter() {
     assert_eq!(turn["packet"]["receipt"]["model"], "test-model");
     assert!(turn["prompt_tokens"].as_u64().unwrap() <= 1024);
 
+    // A host that builds its own prompt recalls the conversation through
+    // `prepare`, leaving out the turns it already keeps verbatim.
+    let ask = |kept: u32| {
+        let req = c(&serde_json::json!({
+            "question": "When was it bought?",
+            "evidence_tokens": 400,
+            "kept_turns": kept,
+        })
+        .to_string());
+        let mut err = null_mut();
+        json(
+            syntext_context_prepare(engine, memory, req.as_ptr(), &mut err),
+            err,
+        )
+    };
+    let recalled = ask(0);
+    assert!(recalled["evidence_text"]
+        .as_str()
+        .unwrap()
+        .contains("March 3rd"));
+    assert_eq!(recalled["lowest_trust"], "memory");
+    let kept = ask(2);
+    assert!(!kept["evidence_text"]
+        .as_str()
+        .unwrap()
+        .contains("March 3rd"));
+
     let huge = "word ".repeat(5_000);
     let req = c(&serde_json::json!({"question": huge, "window": 1024}).to_string());
     let mut err = null_mut();
@@ -292,14 +322,14 @@ fn assemble_with_memory_and_a_host_token_counter() {
 #[test]
 fn boundary_misuse_is_an_error_not_a_crash() {
     let mut err = null_mut();
-    let out = syntext_context_prepare(null(), c("{}").as_ptr(), &mut err);
+    let out = syntext_context_prepare(null(), null(), c("{}").as_ptr(), &mut err);
     expect_error(out, err, SYNTEXT_ERR_INVALID_ARGUMENT);
 
     let dir = tempfile::tempdir().unwrap();
     let store = open_store(dir.path());
     let engine = engine(store);
     let mut err = null_mut();
-    let out = syntext_context_prepare(engine, c("not json").as_ptr(), &mut err);
+    let out = syntext_context_prepare(engine, null(), c("not json").as_ptr(), &mut err);
     expect_error(out, err, SYNTEXT_ERR_INVALID_ARGUMENT);
 
     let missing = dir.path().join("nothing-here");
@@ -370,6 +400,67 @@ fn a_host_can_keep_the_policy_in_a_constant_system_prompt() {
         "system prompt unchanged"
     );
     assert!(!turn["packet"]["blocks"].as_array().unwrap().is_empty());
+    syntext_context_engine_free(engine);
+    syntext_context_store_free(store);
+}
+
+#[test]
+fn placement_and_order_options_reach_the_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path());
+    let docs = c(r#"[{"id": "a", "text": "The ingest worker restarts nightly."}]"#);
+    let mut err = null_mut();
+    json(
+        syntext_context_store_upsert(store, docs.as_ptr(), &mut err),
+        err,
+    );
+    let mut err = null_mut();
+    let engine = syntext_context_engine_new(
+        store,
+        c(r#"{"placement": "separate_message", "order": "document"}"#).as_ptr(),
+        None,
+        null_mut(),
+        &mut err,
+    );
+    assert!(!engine.is_null(), "{:?}", take_error(err));
+    let question = "When does the ingest worker restart?";
+    let req = c(&serde_json::json!({"question": question, "window": 2048}).to_string());
+    let mut err = null_mut();
+    let turn = json(
+        syntext_context_assemble(engine, null(), req.as_ptr(), &mut err),
+        err,
+    );
+    let users: Vec<&Value> = turn["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .collect();
+    assert_eq!(
+        users.len(),
+        2,
+        "evidence and question are separate messages"
+    );
+    assert!(users[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("<evidence id=\"E1\""));
+    assert_eq!(users[1]["content"], question);
+
+    let mut err = null_mut();
+    let bad = syntext_context_engine_new(
+        store,
+        c(r#"{"placement": "system"}"#).as_ptr(),
+        None,
+        null_mut(),
+        &mut err,
+    );
+    assert!(
+        bad.is_null(),
+        "evidence can never be placed in the system role"
+    );
+    let (code, _) = take_error(err).expect("error handle");
+    assert_eq!(code, SYNTEXT_ERR_INVALID_ARGUMENT);
     syntext_context_engine_free(engine);
     syntext_context_store_free(store);
 }

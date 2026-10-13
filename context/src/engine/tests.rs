@@ -192,6 +192,47 @@ fn memory_keeps_recent_turns_verbatim_and_recalls_older_ones() {
 }
 
 #[test]
+fn prepare_recalls_older_turns_for_hosts_that_own_the_prompt() {
+    let (_d, engine) = engine_with(docs());
+    let memory = ConversationMemory::new(
+        Arc::clone(engine.store()),
+        "s3",
+        MemoryMode::Project("billing".into()),
+    )
+    .unwrap();
+    memory
+        .record_exchange("My invoice number is INV-7731.", "Thanks, noted INV-7731.")
+        .unwrap();
+    memory
+        .record_exchange("Which invoice did I mention?", "INV-7731.")
+        .unwrap();
+    let q = "What was my invoice number?";
+
+    // Without the memory, its scope is not readable.
+    let plain = engine.prepare(&PrepareRequest::new(q, 1024)).unwrap();
+    assert!(!plain.evidence_text.contains("INV-7731"));
+
+    // The host keeps the last exchange verbatim; only older turns return.
+    let packet = engine
+        .prepare(&PrepareRequest::new(q, 1024).memory(&memory, 2))
+        .unwrap();
+    assert!(
+        packet
+            .evidence_text
+            .contains("My invoice number is INV-7731."),
+        "older turn recalled: {}",
+        packet.evidence_text
+    );
+    assert!(
+        !packet
+            .evidence_text
+            .contains("Which invoice did I mention?"),
+        "turns already in the host's prompt are not repeated"
+    );
+    assert_eq!(packet.lowest_trust(), Some(Trust::Memory));
+}
+
+#[test]
 fn memory_off_keeps_history_in_process_only() {
     let (_d, engine) = engine_with(docs());
     let memory =

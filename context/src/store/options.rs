@@ -44,7 +44,8 @@ impl Default for StoreOptions {
     }
 }
 
-/// Outcome of an [`ContextStore::apply`] (or `upsert` / `remove`).
+/// Outcome of [`ContextStore::apply`](super::ContextStore::apply) (or
+/// `upsert` / `remove`).
 #[derive(Debug, Clone, Serialize)]
 pub struct IngestReport {
     /// Store generation after the write (unchanged when nothing changed).

@@ -24,8 +24,9 @@ is syntext's repository walk, change detection is syntext's BLAKE3 change
 catalogue, and an optional syntext index supplies exact identifier matches
 verified against the live working tree.
 
-The design reasoning, with the alternatives that were rejected, is in
-[docs/CONTEXT.md](../docs/CONTEXT.md).
+How it works, integration guides for Rust, Swift, and C (including apps that
+already ship their own Rust library), and the design reasoning with the
+alternatives that were rejected are in [docs/CONTEXT.md](../docs/CONTEXT.md).
 
 ## Quick start
 
@@ -74,16 +75,49 @@ The built-in `HeuristicCounter` errs toward over-counting so prompts fit
 before a tokenizer is wired in.
 
 To add exact identifier matches verified against live files, attach a syntext
-index over the same directory, under the same label as its `DirectorySource`:
+index over the same directory, under the same label as its `DirectorySource`.
+Open it through the re-exported `syntext_context::syntext`, so the index type
+matches the one the engine was built with:
 
 ```rust
-use syntext_context::SyntextSource;
+use syntext_context::{syntext, SyntextSource};
 
 let config = syntext::Config::new(".syntext".into(), ".".into());
 let index = Arc::new(syntext::index::Index::open(config)?);
 let engine = ContextEngine::builder(Arc::clone(&store))
     .syntext(SyntextSource::new(index, "repo")?)
     .build();
+```
+
+A host that builds its own prompt (its own history, template, or prompt
+cache) asks for evidence only, and places `packet.evidence_text` in the last
+user message. With `memory`, older turns are recalled while the `kept_turns`
+the host already has verbatim are left out:
+
+```rust
+use syntext_context::PrepareRequest;
+
+let packet = engine.prepare(&PrepareRequest::new(question, 2400).memory(&memory, kept_turns))?;
+```
+
+## Swift and C
+
+With the `ffi` feature the crate exports a C ABI
+(`swift/Sources/CSyntext/include/syntext_context.h`), compiled into the same
+static library as syntext's own. The Swift package wraps it as the
+`SyntextContext` product:
+
+```swift
+import SyntextContext
+
+let store = try SyntextContextStore(directory: storeDir)
+try store.sync(SyntextDirectorySource(label: "repo", root: projectPath))
+let engine = try SyntextContextEngine(store: store, tokenCounter: { tokenizer.count($0) })
+let chat = try SyntextConversation(store: store, session: chatID, mode: .project("my-app"))
+let turn = try engine.assemble(
+    SyntextChatRequest(question: question, window: 8192), conversation: chat)
+// turn.messages -> the model; then:
+try chat.recordExchange(question: question, answer: answer)
 ```
 
 ## Try it
@@ -194,5 +228,8 @@ of `open_read_only` readers, which pick up new generations with `reload()`.
 
 ```sh
 cargo test -p syntext-context
+cargo test -p syntext-context --features ffi
 cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
+cargo clippy -p syntext-context --all-targets --features ffi --no-deps -- -D warnings
+./swift/Scripts/build-xcframework.sh && (cd swift && swift test)   # macOS
 ```

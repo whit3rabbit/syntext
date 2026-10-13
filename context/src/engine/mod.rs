@@ -28,7 +28,6 @@ pub use request::{ChatRequest, ChatTurn, EvidencePacket, PrepareRequest};
 
 use crate::compile::CompileOptions;
 use crate::error::{ContextError, Result};
-use crate::memory::ConversationMemory;
 use crate::pack::{pack, Budget, PackOptions, MESSAGE_OVERHEAD};
 use crate::receipt::{EvidenceRef, Receipt, RECEIPT_VERSION};
 use crate::render::{ChatMessage, RenderOptions};
@@ -155,6 +154,12 @@ impl ContextEngine {
         if let Some(s) = &req.scopes {
             opts.scopes = s.clone();
         }
+        if let Some(m) = req.memory {
+            if let Some(scope) = m.scope() {
+                opts.scopes = opts.scopes.grant(scope.clone());
+            }
+            opts.exclude.extend(m.recent_keys(req.kept_turns));
+        }
         opts.exclude.extend(req.exclude.iter().cloned());
         let retrieved = self.retrieve(req.question, &opts)?;
         let t = Instant::now();
@@ -218,26 +223,17 @@ impl ContextEngine {
             base.generation = g;
         }
         let limit = req.window.saturating_sub(base.generation);
-        let mut scopes = req
-            .scopes
-            .clone()
-            .unwrap_or_else(|| self.retrieve.scopes.clone());
-        if let Some(scope) = req.memory.and_then(ConversationMemory::scope) {
-            scopes = scopes.grant(scope.clone());
-        }
         loop {
             let budget = base.measure(counter, req.system, kept, req.question);
-            let mut exclude = req.exclude.clone();
-            if let Some(m) = req.memory {
-                exclude.extend(m.recent_keys(kept.len()));
-            }
             let mut evidence_tokens = budget.evidence_tokens();
             let needed = loop {
                 let packet = self.prepare(&PrepareRequest {
                     question: req.question,
                     evidence_tokens,
-                    scopes: Some(scopes.clone()),
-                    exclude: exclude.clone(),
+                    scopes: req.scopes.clone(),
+                    exclude: req.exclude.clone(),
+                    memory: req.memory,
+                    kept_turns: kept.len(),
                 })?;
                 let messages = packet.messages(req.system, kept, req.question);
                 let prompt_tokens = counter.count_messages(&messages);

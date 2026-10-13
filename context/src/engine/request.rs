@@ -46,7 +46,8 @@ impl EvidencePacket {
     }
 }
 
-/// A request for evidence under an explicit token budget.
+/// A request for evidence under an explicit token budget, for hosts that
+/// build the prompt themselves.
 #[derive(Debug, Clone)]
 pub struct PrepareRequest<'a> {
     /// The question.
@@ -57,6 +58,12 @@ pub struct PrepareRequest<'a> {
     pub scopes: Option<ScopeFilter>,
     /// Documents to leave out.
     pub exclude: Vec<DocKey>,
+    /// Conversation memory to recall older turns from: its scope is
+    /// granted, and its `kept_turns` most recent turns are left out.
+    pub memory: Option<&'a ConversationMemory>,
+    /// How many of `memory`'s most recent turns the host already has
+    /// verbatim in its prompt (so they are not repeated as evidence).
+    pub kept_turns: usize,
 }
 
 impl<'a> PrepareRequest<'a> {
@@ -67,7 +74,18 @@ impl<'a> PrepareRequest<'a> {
             evidence_tokens,
             scopes: None,
             exclude: Vec::new(),
+            memory: None,
+            kept_turns: 0,
         }
+    }
+
+    /// Recall older turns of `memory` as evidence. The host keeps its
+    /// `kept_turns` most recent turns verbatim in its own prompt; those are
+    /// left out of the evidence.
+    pub fn memory(mut self, memory: &'a ConversationMemory, kept_turns: usize) -> Self {
+        self.memory = Some(memory);
+        self.kept_turns = kept_turns;
+        self
     }
 }
 

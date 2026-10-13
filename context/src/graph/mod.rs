@@ -1,6 +1,6 @@
 //! Entity graph: canonical entities, aliases, and typed relations.
 //!
-//! Every entity is identified by a canonical key ([`fold_key`]): lowercase
+//! Every entity is identified by a canonical key (`fold_key`): lowercase
 //! subwords joined by spaces, so `parse_query`, `parseQuery`, and "Parse
 //! Query" are one entity without any alias bookkeeping. Explicit aliases
 //! cover what folding cannot (an acronym and its expansion, `import numpy as
@@ -11,8 +11,6 @@
 //! The graph is optional per store ([`GraphMode`]) and lives inside the
 //! store's own segments: there is no separate graph database to run, and a
 //! store compiled with `GraphMode::Off` simply has no graph signal.
-//!
-//! [`fold_key`]: crate::analysis::fold_key
 
 mod code;
 mod prose;

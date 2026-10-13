@@ -200,6 +200,9 @@ impl Filter {
 pub(super) struct PrepareDto {
     pub question: String,
     pub evidence_tokens: usize,
+    /// Turns of the memory handle already verbatim in the host's prompt.
+    #[serde(default)]
+    pub kept_turns: usize,
     #[serde(flatten)]
     pub filter: Filter,
 }

@@ -16,8 +16,9 @@
 //! Only the selected evidence enters the prompt, and it enters as untrusted
 //! reference data in a user message, never in the system role.
 //!
-//! With the `ffi` feature, [`ffi`] adds a C ABI (used by the Swift package)
-//! on top of syntext's own; it is the only module allowed `unsafe`.
+//! With the `ffi` feature, the `ffi` module adds a C ABI (used by the
+//! Swift package) on top of syntext's own; it is the only module allowed
+//! `unsafe`.
 #![cfg_attr(not(feature = "ffi"), forbid(unsafe_code))]
 #![cfg_attr(feature = "ffi", deny(unsafe_code))]
 #![warn(missing_docs)]
@@ -39,6 +40,11 @@ pub mod store;
 pub mod structure;
 pub mod tokens;
 pub mod types;
+
+/// The syntext crate this engine is built on. Open the index for a
+/// [`SyntextSource`] through this path rather than a separate `syntext`
+/// dependency, which could resolve to a different, incompatible copy.
+pub use syntext;
 
 pub use compile::{
     decode_text, CompileOptions, DirectorySource, SkipReason, SourceDoc, SyncProgress, SyncReport,

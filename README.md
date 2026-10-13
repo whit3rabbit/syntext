@@ -298,7 +298,9 @@ source versions the model saw.
 cargo run -p syntext-context --release --example ask -- . "Where is route_query defined?" --window 4096 --syntext
 ```
 
-See [docs/CONTEXT.md](docs/CONTEXT.md) for the design.
+It is usable from Rust, from Swift (the `SyntextContext` product of the Swift
+package), and through a C ABI. See [docs/CONTEXT.md](docs/CONTEXT.md) for how
+it works, integration guides, and the design.
 
 ## Architecture
 
