@@ -103,7 +103,7 @@ extension SyntextContextEngine {
     public static func toolDefinitionsJSON(format: SyntextToolFormat = .openAI) throws -> String {
         let cFormat = CZString(format.rawValue)
         let json = try ffiCall { err in syntext_context_tool_definitions(cFormat?.ptr, err) }
-        return try takeString(json)
+        return takeString(json)
     }
 
     /// Run a tool call the model made. `arguments` is the call's JSON as
