@@ -165,7 +165,7 @@ pub fn decode_text(bytes: &[u8]) -> Option<String> {
 }
 
 fn utf16(bytes: &[u8], f: fn([u8; 2]) -> u16) -> Option<String> {
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| f([c[0], c[1]])).collect();
+    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|&c| f(c)).collect();
     let text = String::from_utf16_lossy(&units);
     (!text.chars().take(8192).any(|c| c == '\0')).then_some(text)
 }

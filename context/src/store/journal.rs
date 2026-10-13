@@ -13,7 +13,7 @@
 //! open the torn tail is cut off, so later appends stay reachable.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -69,7 +69,10 @@ impl Journal {
             return Ok((journal, Vec::new()));
         }
         let (turns, valid_end) = parse(&bytes)?;
-        let file = OpenOptions::new().read(true).append(true).open(&path)?;
+        // Read-write rather than append: Windows grants an append handle no
+        // right to truncate, and both cutting a torn tail here and rolling
+        // back a failed append need one. `append` seeks to `len` instead.
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
         if (valid_end as usize) < bytes.len() {
             log::warn!(
                 "memory journal: truncating {} torn bytes after {} records",
@@ -128,7 +131,7 @@ impl Journal {
         if sync {
             sync_dir(dir)?;
         }
-        let file = OpenOptions::new().read(true).append(true).open(&path)?;
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
         Ok(Journal {
             file,
             len: buf.len() as u64,
@@ -141,13 +144,17 @@ impl Journal {
     pub(crate) fn append(&mut self, turn: &Turn) -> Result<()> {
         let mut buf = Vec::new();
         encode(turn, &mut buf)?;
-        let res = self.file.write_all(&buf).and_then(|()| {
-            if self.sync {
-                self.file.sync_data()
-            } else {
-                Ok(())
-            }
-        });
+        let res = self
+            .file
+            .seek(SeekFrom::Start(self.len))
+            .and_then(|_| self.file.write_all(&buf))
+            .and_then(|()| {
+                if self.sync {
+                    self.file.sync_data()
+                } else {
+                    Ok(())
+                }
+            });
         if let Err(e) = res {
             let _ = self.file.set_len(self.len);
             return Err(e.into());
