@@ -281,6 +281,27 @@ Supported harnesses:
 
 Each install is idempotent, preserves unrelated settings, writes a timestamped backup before editing an existing file, and removes only syntext-owned entries on uninstall.
 
+## Context engine for small-window models
+
+The workspace also contains [`syntext-context`](context/README.md), a library
+for inference hosts that lets a local model with a 4K to 8K token window work
+over repositories, documents, and conversation histories far larger than its
+window. It compiles sources into a local store of structural passages (whole
+paragraphs, sections, and functions), and for each question assembles a
+token-budgeted packet of cited evidence: lexical ranking, an optional entity
+graph, and exact identifier matches from a syntext index over the live
+working tree. Evidence goes in the user turn as lower-trust reference data,
+never in the system role, and every packet comes with a receipt of the exact
+source versions the model saw.
+
+```sh
+cargo run -p syntext-context --release --example ask -- . "Where is route_query defined?" --window 4096 --syntext
+```
+
+It is usable from Rust, from Swift (the `SyntextContext` product of the Swift
+package), and through a C ABI. See [docs/CONTEXT.md](docs/CONTEXT.md) for how
+it works, integration guides, and the design.
+
 ## Architecture
 
 ```
@@ -320,6 +341,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the quantitative analysis: 
 ## Docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): selectivity math, index size estimates, posting list encoding, design tradeoffs
+- [docs/CONTEXT.md](docs/CONTEXT.md): the `syntext-context` engine for small-window local models
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md): methodology, per-query tables, and historical runs
 - [docs/SECURITY.md](docs/SECURITY.md): threat model, audit findings, and accepted risks
 - [docs/SWIFT.md](docs/SWIFT.md): Swift bindings and the C ABI

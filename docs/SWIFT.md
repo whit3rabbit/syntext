@@ -2,7 +2,7 @@
 
 Use syntext from Swift (macOS 12+) to index source-code projects on disk and to search in-memory content such as chat transcripts. The bindings are a hand-written C ABI (`src/ffi/`, `ffi` Cargo feature) compiled into a static library, shipped as the `SyntextFFI.xcframework` binary target of the Swift package in [`swift/`](../swift/), and wrapped by a thin Swift layer.
 
-- Package: `Syntext` (products: `Syntext` library)
+- Package: `Syntext` (products: `Syntext` for search, `SyntextContext` for the context engine)
 - Platforms: macOS (arm64 + x86_64 in one universal slice)
 - Zero additional Rust or Swift dependencies
 
@@ -62,6 +62,34 @@ try chats.commit()                                     // removal applies atomic
 - Nothing is searchable until `commit()`; a commit is an atomic snapshot swap, so searches in flight keep seeing the old snapshot.
 - `commit()` rebuilds the whole snapshot: O(total indexed content), right-sized for thousands of small documents. For large corpora use `SyntextIndex`.
 - Content that looks binary (a NUL byte in the first 8 KiB) is silently skipped at commit, exactly like on-disk ingestion.
+
+## Context engine (`SyntextContext`)
+
+The `SyntextContext` product wraps the context engine: it compiles a project
+(and notes, and conversation turns) into a local store and, for each question,
+assembles a token-budgeted prompt of cited evidence for a model with a small
+context window. The full guide, including architecture and integration
+patterns, is [docs/CONTEXT.md](CONTEXT.md).
+
+```swift
+import SyntextContext
+
+let store = try SyntextContextStore(directory: "\(appSupport)/context/myproject")
+try await store.syncAsync(SyntextDirectorySource(label: "repo", root: "/path/to/project")) { progress in
+    print("\(progress.observed)/\(progress.total)")
+    return true                                    // false cancels; nothing is published
+}
+let engine = try SyntextContextEngine(store: store, tokenCounter: { text in tokenizer.count(text) })
+let chat = try SyntextConversation(store: store, session: chatID, mode: .project("myproject"))
+let turn = try await engine.assembleAsync(
+    SyntextChatRequest(question: question, window: 8192, system: systemPrompt), conversation: chat)
+// turn.messages -> your model; afterwards:
+try chat.recordExchange(question: question, answer: answer)
+```
+
+`SyntextContext` is a separate product so apps using only `Syntext` are
+unaffected by it. Its C symbols ship in the xcframework from the release that
+introduces the product; before that, build the xcframework locally (below).
 
 ## Search results and byte-exactness
 
@@ -130,7 +158,7 @@ Every match carries both a lossy UTF-8 rendering (`lineContent`, for display) an
 
 ## Limitations
 
-- **One Rust static library per application.** The xcframework exports every Rust symbol (std, regex, rayon, ...); linking a second Rust staticlib into the same binary fails at link time.
+- **One Rust static library per application.** The xcframework exports every Rust symbol (std, regex, rayon, ...); linking a second Rust staticlib into the same binary fails at link time. An app that already links its own Rust library should build syntext and the context engine into that library instead of linking this xcframework; see "Apps with their own Rust library" in [docs/CONTEXT.md](CONTEXT.md).
 - `commit()` on `SyntextChatIndex` is O(total content) (see above).
 - The initial `swift/Package.swift` URL pin points at the latest published release; before the first release carrying the `ffi` feature, only the local build path resolves.
 - iOS is not built yet; adding slices to the xcframework is the follow-up path.
@@ -143,8 +171,8 @@ Every match carries both a lossy UTF-8 rendering (`lineContent`, for display) an
 #         swift/build/syntext-swift-<version>.xcframework.zip (+ .sha256)
 ```
 
-The script builds the Rust staticlib for `aarch64-apple-darwin` and `x86_64-apple-darwin` (on-demand `cargo rustc --crate-type staticlib`; the manifest crate-type stays `["cdylib","rlib"]` so ordinary builds are unaffected), merges them with `lipo` into one universal library (static-library xcframework slices are per-platform, not per-arch), and packages the checksummed zip that the release workflow publishes.
+The script builds the Rust staticlib for `aarch64-apple-darwin` and `x86_64-apple-darwin` from the `syntext-context` crate with its `ffi` feature, which enables syntext's own, so one library exports both `syntext.h` and `syntext_context.h` (on-demand `cargo rustc --crate-type staticlib`; manifest crate types are unchanged, so ordinary builds are unaffected), merges them with `lipo` into one universal library (static-library xcframework slices are per-platform, not per-arch), and packages the checksummed zip that the release workflow publishes.
 
 ## C ABI reference
 
-The full ABI (entry points, ownership rules, error codes) is documented in the hand-written header `swift/Sources/CSyntext/include/syntext.h`, which mirrors `src/ffi/` one to one. Rust-side integration tests: `tests/integration/ffi.rs` (`cargo test --features ffi`).
+The full ABI (entry points, ownership rules, error codes) is documented in the hand-written headers `swift/Sources/CSyntext/include/syntext.h` (mirrors `src/ffi/`) and `syntext_context.h` (mirrors `context/src/ffi/`). Rust-side integration tests: `tests/integration/ffi.rs` (`cargo test --features ffi`) and `context/tests/ffi.rs` (`cargo test -p syntext-context --features ffi`).

@@ -61,10 +61,13 @@ pub(crate) struct MatchedFile {
     /// Encoding-normalized bytes the verifier matched against.
     pub normalized: Arc<[u8]>,
     /// On-disk raw byte length (pre-normalize) for `bytes_searched`.
+    // Read only by the CLI's `--json` renderer.
+    #[cfg_attr(not(feature = "cli"), allow(dead_code))]
     pub raw_len: u64,
     /// Offset of the first NUL byte when this input is binary (stdin streams
     /// only; indexed files are never binary). Consumed by `--json`'s end
     /// event, which reports it the way rg does.
+    #[cfg_attr(not(feature = "cli"), allow(dead_code))]
     pub first_nul: Option<u64>,
 }
 

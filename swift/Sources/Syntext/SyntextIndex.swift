@@ -4,7 +4,7 @@ import Foundation
 import CSyntext
 
 /// Encode any FFI input DTO to a JSON string.
-func encodeJSON<T: Encodable>(_ v: T) throws -> String {
+package func encodeJSON<T: Encodable>(_ v: T) throws -> String {
     String(data: try SyntextJSON.encoder.encode(v), encoding: .utf8) ?? "{}"
 }
 

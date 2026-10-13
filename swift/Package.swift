@@ -27,6 +27,10 @@ let package = Package(
     platforms: [.macOS(.v12)],
     products: [
         .library(name: "Syntext", targets: ["Syntext"]),
+        // The context engine (docs/CONTEXT.md). A separate product: its C
+        // symbols ship in the same xcframework from the release that adds
+        // it, so apps using only `Syntext` never depend on them.
+        .library(name: "SyntextContext", targets: ["SyntextContext"]),
     ],
     targets: [
         ffiTarget,
@@ -37,8 +41,14 @@ let package = Package(
         .target(
             name: "Syntext",
             dependencies: ["CSyntext", "SyntextFFI"]),
+        .target(
+            name: "SyntextContext",
+            dependencies: ["Syntext", "CSyntext", "SyntextFFI"]),
         .testTarget(
             name: "SyntextTests",
             dependencies: ["Syntext"]),
+        .testTarget(
+            name: "SyntextContextTests",
+            dependencies: ["SyntextContext"]),
     ]
 )

@@ -51,6 +51,36 @@ jobs:
       - name: cargo clippy
         run: cargo clippy -- -D warnings
 
+  test-context:
+    # The context engine is a workspace member; root-level `cargo test` and
+    # `cargo clippy` select only the `syntext` package, so it gets its own job.
+    name: Test (syntext-context, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: context-${{ matrix.os }}
+
+      - name: cargo test -p syntext-context
+        run: cargo test -p syntext-context
+
+      - name: cargo test -p syntext-context --features ffi
+        run: cargo test -p syntext-context --features ffi
+
+      - name: cargo clippy -p syntext-context
+        # --no-deps: lint this crate, not `syntext` built without its `cli` feature.
+        run: |
+          cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
+          cargo clippy -p syntext-context --all-targets --features ffi --no-deps -- -D warnings
+
   test-symbols:
     name: Test (symbols feature)
     runs-on: ubuntu-latest

@@ -1,0 +1,58 @@
+[package]
+name = "syntext-context"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Retrieval-driven context engine that lets small-window local models work over large repositories, documents, and conversation histories"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/whit3rabbit/syntext"
+keywords = ["llm", "retrieval", "context", "inference", "rag"]
+categories = ["text-processing", "development-tools"]
+# Depends on the in-tree `syntext` crate by path; flip once a release
+# process exists for this crate.
+publish = false
+
+[lib]
+name = "syntext_context"
+path = "src/lib.rs"
+
+[features]
+# C ABI for Swift and other foreign hosts. Enables syntext's own C ABI too:
+# both are compiled into one static library, so an app links one Rust
+# library (see swift/Scripts/build-xcframework.sh).
+ffi = ["syntext/ffi"]
+
+[dependencies]
+# Exact-match search, repository walking, binary detection, and BLAKE3 change
+# tracking come from syntext itself. `native` brings the filesystem pieces
+# without the CLI (clap) dependency.
+syntext = { path = "..", version = "2.5.0", default-features = false, features = ["native"] }
+
+# Lock-free snapshot publication for concurrent readers.
+arc-swap = "1"
+# Library diagnostics go through the `log` facade (silent unless the host
+# installs a logger), matching syntext.
+log = "0.4"
+# Substring verification for phrase/identifier matching.
+memchr = "2"
+# Parallel compilation and reranking.
+rayon = "1"
+# Definition-line detection in source code.
+regex = "1"
+# Manifest, journal records, and receipts.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Segment file identifiers.
+uuid = { version = "1", features = ["v4"] }
+# Section and journal checksums.
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+
+[[test]]
+name = "ffi"
+path = "tests/ffi.rs"
+required-features = ["ffi"]

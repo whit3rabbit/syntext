@@ -2,6 +2,11 @@
 # Build the SyntextFFI.xcframework (macOS arm64 + x86_64) from the Rust
 # staticlib and stage a versioned, checksummed zip for release.
 #
+# The staticlib is built from the syntext-context crate with its `ffi`
+# feature, which enables syntext's own: one library exports both C ABIs
+# (syntext.h and syntext_context.h), because an app can link only one Rust
+# static library.
+#
 # Usage:
 #   ./swift/Scripts/build-xcframework.sh
 #
@@ -29,11 +34,11 @@ rm -rf swift/build/SyntextFFI.xcframework
 
 THIN=()
 for T in "${TARGETS[@]}"; do
-  echo "==> cargo rustc --target $T (staticlib, ffi)"
-  # Manifest crate-type stays ["cdylib","rlib"]; the staticlib is produced
-  # on demand only, so plain builds/tests/publish are unaffected.
-  cargo rustc --lib --release --features ffi --target "$T" --crate-type staticlib
-  THIN+=("target/$T/release/libsyntext.a")
+  echo "==> cargo rustc --target $T (staticlib, syntext + context ffi)"
+  # Manifest crate types are unchanged; the staticlib is produced on demand
+  # only, so plain builds/tests/publish are unaffected.
+  cargo rustc -p syntext-context --lib --release --features ffi --target "$T" --crate-type staticlib
+  THIN+=("target/$T/release/libsyntext_context.a")
 done
 
 # Static-library xcframework slices are per-PLATFORM, not per-arch: two .a
