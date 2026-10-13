@@ -22,6 +22,7 @@ fn ranked(store: &ContextStore, q: &str) -> Vec<RankedPassage> {
     retrieve(
         &store.snapshot(),
         None,
+        None,
         &CompileOptions::default(),
         q,
         &RetrieveOptions::default(),
@@ -154,6 +155,7 @@ fn hostile_evidence_is_neutralized_in_the_prompt() {
     };
     let passages = retrieve(
         &store.snapshot(),
+        None,
         None,
         &CompileOptions::default(),
         "when does the deploy key rotate",

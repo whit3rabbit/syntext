@@ -56,6 +56,11 @@ What a host gets:
 - **Exact, fresh matches.** With a syntext index attached, identifiers in the
   question are searched exactly against the live working tree. A file edited
   since the last sync is cited as it is now.
+- **Meaning, with the host's own model.** Optionally, the host's embedding
+  model adds semantic retrieval: "How do I get my money back?" finds
+  "Refunds are issued within 45 days". Vectors are stored compactly beside
+  the index and computed once per text, so the model never runs during a
+  sync.
 - **Evidence as data, not instructions.** Retrieved text is rendered in a
   user message as sanitized, trust-labelled `<evidence>` blocks, never in the
   system role. The host's rules and tool permissions keep their authority.
@@ -83,13 +88,17 @@ ASSEMBLE  (per question, milliseconds)
   question -> terms, identifiers, phrases, entity keys, intent
     |-- lexical: BM25 over postings, rarest terms first, budgeted
     |-- graph:   entity seeds -> bounded multi-hop beam walk -> evidence chains
-    '-- exact:   syntext identifier search -> stored or live passages
+    |-- exact:   syntext identifier search -> stored or live passages
+    '-- semantic (optional): question vector -> nearest passage vectors
   pool -> rerank (re-read text, exact features) -> chain lifting -> ranked passages
        -> pack (floor, merge, caps, dedupe, fill, condense, widen, exact fit)
        -> render (evidence in a user message, policy in the system prompt)
        -> receipt
 
 PERSIST   conversation turns -> durable journal -> live segment -> durable segment
+
+EMBED     (optional, resumable, in the background)
+  live passages without a vector -> host embedding model -> 8-bit vectors beside each segment
 ```
 
 The two halves meet at the store. Compilation runs once per document
@@ -106,7 +115,8 @@ postings, then the text of only the few hundred passages it reranks.
 | `context/src/graph/` | Canonical entities (`fold_key`), aliases, typed edges from code and prose |
 | `context/src/compile/` | `SourceDoc` to compiled passages; directory sync over syntext's walk and change catalogue |
 | `context/src/store/` | `.ctxs` segments, manifest commit point, staged writes, journal, compaction, snapshots |
-| `context/src/retrieve/` | Query analysis, BM25 candidates, graph walk, syntext exact bridge, reranker, chain lifting |
+| `context/src/retrieve/` | Query analysis, BM25 candidates, graph walk, syntext exact bridge, semantic scan, reranker, chain lifting |
+| `context/src/embed/` | `Embedder` trait, the embedding job, vector sidecars, compaction carry-over |
 | `context/src/pack/` | Budget, span merging, caps, condensation, widening, exact fit |
 | `context/src/render/` | Evidence blocks, sanitization, message assembly, `EVIDENCE_POLICY` |
 | `context/src/memory.rs` | Scoped conversation memory over the journal |
@@ -193,6 +203,7 @@ A store is a directory:
   manifest.json        live segment list, generation, compile options (checksummed)
   seg-*.ctxs           immutable segments in the crate's own binary format
   journal.log          conversation turns not yet compacted into a segment
+  seg-*.<model>.vec    8-bit passage vectors per segment and embedding model (optional)
   sources/<label>/     per-directory-source change catalogue (syntext)
   write.lock           exclusive writer lock
 ```
@@ -250,7 +261,8 @@ A store is a directory:
   (people, dates, quantities), `Recall` (earlier conversation), or
   `General`.
 
-**Candidates** come from three generators:
+**Candidates** come from three generators, plus a fourth when the engine
+has an embedder:
 
 1. **Lexical**: BM25F over the postings, rarest terms first, within a
    postings budget (`RetrieveOptions::postings_budget`). Very common terms
@@ -275,6 +287,10 @@ A store is a directory:
    - A hit in a file that is new or changed since the last sync is
      segmented from the live bytes on the spot and competes as a live
      candidate.
+4. **Semantic** (optional `Embedder`): the question is embedded with the
+   host's model and compared, by an exact scan, with the stored vector of
+   every visible passage; the 50 nearest (`semantic_candidates`) join the
+   pool. See [Semantic retrieval](#semantic-retrieval).
 
 **Reranking** (`retrieve/rerank.rs`) re-reads the text of the best
 candidates (`rerank_limit`, 200). It computes these signals, each normalized
@@ -290,7 +306,9 @@ to 0..1 and weighted by `RankWeights`:
 - graph activation;
 - an intent-aware prior on the passage kind (a `Locate` question favours
   definitions, a `Recall` question favours turns);
-- recency for conversation turns.
+- recency for conversation turns;
+- vector similarity to the question, when an embedder is attached (halved
+  for questions that name identifiers, which exact matching serves better).
 
 A `Locate` question doubles the symbol and structure weights. Test files are
 de-prioritized (x0.8) unless the question asks about tests, and vendored
@@ -321,7 +339,11 @@ it. Which passages qualify depends on how they were reached:
 evidence budget, in these steps:
 
 1. **Floor.** Passages scoring under `relevance_floor` (0.3) of the best are
-   dropped.
+   dropped, except chain hops raised by chain lifting and the three
+   passages nearest the question by vector. One score scale cannot weigh
+   those kinds of evidence against wording: a passage that echoes the
+   question's words would otherwise push the end of a chain, or a
+   paraphrased answer, under the floor.
 2. **Merge.** Passages in the same document within `merge_gap_lines` (3)
    lines merge into one span. The merge is capped in two ways: one span may
    add up to at most 30% of the budget (`max_span_share`), and a merged
@@ -407,6 +429,40 @@ Question: Where is the retry backoff computed?
   least-trusted source in the packet, so the host can apply its own tool
   permission model. For example, it can require confirmation for
   side-effecting tools on a turn that carries external content.
+
+### Semantic retrieval
+
+Lexical, graph, and exact matching cannot connect a question to an answer
+that shares none of its words. An optional embedding model can.
+
+- **The host's model.** The engine runs no model. The host implements
+  `Embedder` (an id, a vector length, and functions embedding passages and
+  queries) with whatever it already runs: a small sentence encoder on CPU,
+  an in-process runtime, or an embeddings endpoint.
+- **A separate, resumable job.** `ContextStore::embed` gives live passages
+  vectors, prose first. It never runs during a sync: a CPU encoder manages
+  tens of passages a second, so a large tree takes minutes. A budget
+  (`max_passages`), a cancel from the progress callback, or an error stops
+  it early and keeps what was done; the next run continues. Queries use
+  whatever has been embedded so far.
+- **Embedded once per text.** Each passage is embedded together with its
+  location (file, section, symbol) and stored under a hash of exactly that
+  text. Re-syncing a file reuses the vectors of its unchanged passages, and
+  compaction copies vectors to the new segments, so the model only ever
+  sees new text. A different embedder id never reuses another model's
+  vectors; its first run re-embeds, and the old model's files are removed.
+- **Sidecar files.** Vectors live in `seg-<...>.<model>.vec` beside each
+  segment: one 8-bit row per passage (unit-normalized, one scale per row),
+  checksummed. Like syntext's path cache they are fail-open: a missing or
+  damaged sidecar only means fewer vectors until the next run.
+- **Exact scan.** A query embeds the question and scans every visible
+  passage's vector. At 384 dimensions that is milliseconds per hundred
+  thousand passages, so an approximate index would only pay off near a
+  million.
+- **One more signal, not a second ranking.** Similarity is scaled within
+  the question's neighbourhood (nearest passage 1, 50th nearest 0) and
+  weighted with the other signals, halved for identifier questions. The
+  three nearest passages skip the relevance floor.
 
 ### Conversation memory
 
@@ -667,6 +723,48 @@ Identifier questions are then answered from the working tree as it is now,
 even between syncs. Give the `SyntextSource` the same scope and trust as the
 directory source (`with_scope`, `with_trust`).
 
+### Semantic retrieval with your embedding model
+
+Implement `Embedder`, or wrap a closure with `FnEmbedder`, then embed in the
+background and attach the embedder to the engine:
+
+```rust
+use syntext_context::{EmbedOptions, Embedder};
+
+struct MyEncoder {/* the host's model */}
+
+impl Embedder for MyEncoder {
+    fn id(&self) -> &str {
+        "bge-small-en-v1.5" // model and settings: vectors compare only within one id
+    }
+    fn dims(&self) -> usize {
+        384
+    }
+    fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        self.encode_batch(texts)
+    }
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, String> {
+        // BGE models want an instruction before short queries.
+        let q = format!("Represent this sentence for searching relevant passages: {text}");
+        Ok(self.encode_batch(&[&q])?.remove(0))
+    }
+}
+
+let encoder = Arc::new(MyEncoder::load()?);
+// After a sync, in the background; resumable and cancellable.
+let report = store.embed_with(encoder.as_ref(), &EmbedOptions::default(), |p| {
+    println!("embedded {}/{}", p.done, p.total);
+    true // false stops early, keeping what was done
+})?;
+let engine = ContextEngine::builder(Arc::clone(&store))
+    .embedder(encoder)
+    .build();
+```
+
+`EmbedReport` says how many passages were embedded, reused from identical
+text, covered, and still remaining. Run it again after each sync. Unchanged
+passages cost nothing, and only changed text reaches the model.
+
 ### Search tool
 
 To let the model search on its own, expose `retrieve` as a read-only tool:
@@ -715,6 +813,7 @@ for check in receipt.check_sources(Path::new("/path/to/project"), "repo") {
 | `Index` | Error from the attached syntext index | See syntext's `IndexError` |
 | `WindowExceeded { needed, limit }` | System prompt and question alone do not fit | Shorten the question or system prompt, or use a larger window |
 | `Cancelled` | Cancelled from a sync progress callback | Nothing was published |
+| `Embedder` | The host's embedder failed or returned malformed vectors | Fix the model; vectors embedded before the failure are kept |
 
 ### Configuration reference
 
@@ -747,6 +846,7 @@ existing store keeps the options in its manifest):
 | `weights` | see `RankWeights` | Signal weights |
 | `scopes` | `default` only | Readable scopes |
 | `intent` | detected | Override the detected intent |
+| `semantic_candidates` | 50 | Passages nearest the question by vector added as candidates (with an embedder) |
 
 `PackOptions`:
 
@@ -875,6 +975,26 @@ Engine options (`SyntextContextEngineOptions`, `nil` keeps a default):
 - `placement`: `.withQuestion` or `.separateMessage`.
 - `appendPolicy`: whether the evidence policy is appended to the system
   prompt.
+
+### Semantic retrieval
+
+```swift
+// Wrap the app's embedding model; called from any thread.
+let embedder = try SyntextContextEmbedder(id: "bge-small-en-v1.5", dimensions: 384) { texts, isQuery in
+    try encoder.embed(isQuery ? texts.map { bgeQueryPrefix + $0 } : texts)
+}
+// After a sync, in the background; resumable, unchanged text is never re-embedded.
+let report = try await store.embedAsync(embedder) { progress in
+    print("embedded \(progress.done)/\(progress.total)")
+    return true                          // false stops early, keeping what was done
+}
+let engine = try SyntextContextEngine(store: store, tokenCounter: count, embedder: embedder)
+```
+
+`store.embed(_:maxPassages:batch:pruneOtherModels:progress:)` returns a
+`SyntextEmbedReport` (`embedded`, `reused`, `covered`, `remaining`,
+`cancelled`). An embedder that throws, or returns vectors of the wrong
+shape, fails the call with an error for which `isEmbedderFailure` is true.
 
 ### Bring your own prompt
 
@@ -1029,7 +1149,12 @@ These are the same as `syntext.h`:
   `(userdata, text, len)` with text that is not NUL-terminated, and may be
   called from any thread, concurrently. Its `userdata` must stay valid until
   the engine is freed. A sync progress callback
-  (`syntext_context_progress_fn`) returns `false` to cancel.
+  (`syntext_context_progress_fn`) returns `false` to cancel. An embedding
+  callback (`syntext_context_embed_fn`) gets `(userdata, texts, lens,
+  count, is_query, out)`, writes `count * dims` floats to `out`, and returns
+  `true` on success; it may also be called from any thread, and its
+  `userdata` must stay valid until the embedder and every engine created
+  with it are freed.
 
 ### Functions
 
@@ -1046,7 +1171,10 @@ These are the same as `syntext.h`:
 | `syntext_context_store_compact(store, force, err)` | `CompactReport` JSON, or `null` when nothing was due |
 | `syntext_context_store_stats(store, err)` | `StoreStats` JSON |
 | `syntext_context_store_reload(store, &changed, err)` | Status; `changed` set when a new generation was loaded |
-| `syntext_context_engine_new(store, options_json, count, count_userdata, err)` | Engine handle |
+| `syntext_context_embedder_new(id, dims, embed, userdata, err)` | Embedder handle (a host model behind `syntext_context_embed_fn`) |
+| `syntext_context_embedder_free(embedder)` | |
+| `syntext_context_store_embed(store, embedder, options_json, progress, userdata, err)` | `EmbedReport` JSON |
+| `syntext_context_engine_new(store, options_json, count, count_userdata, embedder, err)` | Engine handle (`embedder` may be NULL) |
 | `syntext_context_engine_free(engine)` | |
 | `syntext_context_prepare(engine, memory, request_json, err)` | Evidence packet JSON |
 | `syntext_context_assemble(engine, memory, request_json, err)` | Chat turn JSON |
@@ -1096,6 +1224,9 @@ Inputs (every field except those named in the description is optional):
  "history": [{"role": "user", "content": "..."}],
  "generation_reserve": 1024, "history_share": 0.3, "scopes": null, "exclude": []}
 
+// embed options (all optional)
+{"batch": 32, "max_passages": 5000, "prune_other_models": true}
+
 // search request (question required)
 {"question": "...", "max_results": 8, "scopes": null, "exclude": []}
 
@@ -1137,6 +1268,10 @@ Outputs:
 // sync report
 {"generation": 7, "scanned": 9076, "added": 0, "modified": 3, "removed": 1,
  "skipped": 12, "uncertain": 0}
+
+// embed report
+{"model": "bge-small-en-v1.5", "embedded": 120, "reused": 2400,
+ "covered": 9500, "remaining": 0, "cancelled": false}
 ```
 
 ### Error codes
@@ -1157,6 +1292,7 @@ use `SYNTEXT_ERR_IO` (1), bad arguments use `SYNTEXT_ERR_INVALID_ARGUMENT`
 | 304 | `SYNTEXT_CONTEXT_ERR_UNSUPPORTED_VERSION` | Store written by an incompatible version |
 | 305 | `SYNTEXT_CONTEXT_ERR_WINDOW_EXCEEDED` | System prompt and question alone exceed the window |
 | 306 | `SYNTEXT_CONTEXT_ERR_CANCELLED` | Sync cancelled from its progress callback |
+| 307 | `SYNTEXT_CONTEXT_ERR_EMBEDDER` | The embedding callback failed or returned non-finite values |
 
 ### Example
 
@@ -1186,7 +1322,8 @@ int main(void) {
     puts(report); /* {"generation": 1, "scanned": ..., "added": ..., ...} */
     syntext_string_free(report);
 
-    syntext_context_engine *engine = syntext_context_engine_new(store, NULL, NULL, NULL, &err);
+    syntext_context_engine *engine =
+        syntext_context_engine_new(store, NULL, NULL, NULL, NULL, &err);
     if (!engine) {
         syntext_context_store_free(store);
         return fail("engine", err);
@@ -1247,6 +1384,21 @@ let system = basePrompt + "\n\n" + SyntextContextEngine.evidencePolicy   // cons
 Evidence always goes in the last user message, after the history, so the
 system prompt and the kept history form a stable prefix. The prefix changes
 only when the oldest history is trimmed.
+
+### Embeddings on a local encoder
+
+- **Never in the request path.** Run `embed` after a sync, in the
+  background, at low priority. A small CPU encoder (bge-small, 384
+  dimensions) manages about 70 passages a second on 4 cores; the first run
+  over a 100,000-passage tree takes about 25 minutes, later runs only see
+  changed text.
+- **Prose first, by default.** Questions and documentation word things
+  differently; code is reached well by identifiers and exact matches. With
+  `max_passages`, give each idle period a budget and let runs accumulate.
+- **Query cost.** Each question costs one query embedding (about 10-30 ms
+  on CPU for a short question) plus the scan.
+- **Changing models.** A new embedder id re-embeds everything; the old
+  model's vectors are deleted on its first run (`prune_other_models`).
 
 ### Choosing windows and budgets
 
@@ -1339,12 +1491,52 @@ candidate and computes exact features.
 
 **Alternatives considered.**
 
-- Dense embeddings: strong for paraphrase, but a second resident model next
-  to the LLM on consumer hardware, slow to rebuild, and weak on identifiers.
-  They are planned as an optional extra signal, not a replacement (see
-  [Roadmap](#roadmap)).
+- Dense embeddings as the primary index: strong for paraphrase, but a
+  second resident model next to the LLM on consumer hardware, slow to
+  rebuild, and weak on identifiers. They are an optional signal instead
+  (next decision).
 - Trigram indexing, as syntext does: built for exact substring search, not
   relevance ranking. Syntext is used for exactly that role.
+
+### Embeddings as an optional, host-supplied signal
+
+**Decision.** Semantic similarity is one more candidate source and
+reranker signal, computed with the host's model through `Embedder`. Vectors
+are stored as checksummed 8-bit sidecars beside each segment, keyed by the
+hash of the exact text embedded, filled by a separate resumable job, and
+scanned exactly at query time.
+
+**Rationale.**
+
+- **The host already has a model.** An inference app ships or downloads
+  models; a second runtime inside this crate would duplicate it and fight
+  it for memory.
+- **Text-keyed vectors make freshness cheap.** Syncs and compaction rewrite
+  segments constantly; keying vectors by content means the model only ever
+  sees new text, and a crash or a damaged sidecar costs re-embedding, never
+  correctness.
+- **8-bit vectors and an exact scan.** Quantization keeps 384-dimension
+  vectors at under 400 bytes per passage with cosine error under 0.02, and
+  an exact scan over 100,000 of them takes milliseconds: no approximate
+  index, no recall loss, no tuning.
+- **Measured, not assumed.** On the evaluation sets, bge-small raised
+  paraphrased questions from 42% to 100% of answers in the prompt, code
+  questions from 88% to 92% (96% at 8K), and HotpotQA from 88% to 95%
+  (distractor) and 76% to 85% (pooled); no set dropped (see
+  [Evaluation](#evaluation)). Embedding the question adds about 10 to 20 ms
+  with the model in a Python subprocess on CPU.
+
+**Alternatives considered.**
+
+- Vectors inside the segment file: every new model, or every embedding run,
+  would rewrite immutable segments.
+- An approximate nearest-neighbour index (HNSW and the like): pays off near
+  a million passages, costs memory, build time, and recall below that.
+- Reciprocal-rank fusion of separate rankings: robust to uncalibrated
+  scores, but it discards the score gaps the relevance floor and packing
+  rely on. The engine fuses at the candidate stage (the nearest passages
+  always enter the pool, and the three nearest skip the floor) and weighs
+  similarity with the other signals.
 
 ### Canonical entities and an optional graph
 
@@ -1533,14 +1725,18 @@ to end through `assemble` at 4K and 8K windows. A question counts only when
 formats, and how to add questions are in
 [context/eval/README.md](../context/eval/README.md).
 
-| Set | What it measures | 4K | 8K |
-|---|---|---|---|
-| `multihop` | two- and three-hop chains among lexical decoys | 100% | 100% |
-| `paraphrase` | questions sharing no words with their answer | 42% | 42% |
-| `code` | this repository's code and docs, with a syntext index | 88% | 88% |
-| `recall` | facts from early in a 68-turn conversation | 100% | 100% |
-| HotpotQA distractor (external, 200 dev questions) | real multi-hop questions | 88% | 88% |
-| HotpotQA pooled (2,000 paragraphs) | the same against all paragraphs at once | 76% | 76% |
+Lexical is the engine alone; bge-small adds semantic retrieval with
+bge-small-en-v1.5 on CPU (see [Embeddings on a local
+encoder](#embeddings-on-a-local-encoder)).
+
+| Set | What it measures | Lexical 4K | Lexical 8K | bge-small 4K | bge-small 8K |
+|---|---|---|---|---|---|
+| `multihop` | two- and three-hop chains among lexical decoys | 100% | 100% | 100% | 100% |
+| `paraphrase` | questions sharing no words with their answer | 42% | 42% | 100% | 100% |
+| `code` | this repository's code and docs, with a syntext index | 88% | 88% | 92% | 96% |
+| `recall` | facts from early in a 68-turn conversation | 100% | 100% | 100% | 100% |
+| HotpotQA distractor (external, 200 dev questions) | real multi-hop questions | 88% | 88% | 95% | 95% |
+| HotpotQA pooled (2,000 paragraphs) | the same against all paragraphs at once | 76% | 76% | 85% | 85% |
 
 ```sh
 cargo run -p syntext-context --release --example eval -- --failures
@@ -1554,10 +1750,12 @@ regression gate fails when a set drops below its floor.
 
 ### Limitations
 
-- **No semantic signal.** A question that shares no words, identifiers, or
-  entities with its answer misses it: 42% of the `paraphrase` evaluation
-  set. For example, "buy" does not match "bought", because the stemmer does
-  not handle irregular forms.
+- **Semantic matching needs the host's model.** Without an `Embedder`, a
+  question that shares no words, identifiers, or entities with its answer
+  misses it: only 42% of the `paraphrase` evaluation set is answered
+  lexically ("buy" does not even match "bought"). With one, embedding a
+  large tree takes minutes on CPU, and passages not yet embedded rank
+  lexically.
 - **Heuristic extraction.** Prose entity and relation extraction is
   heuristic and tuned for English. Definition detection is line-based per
   language, not parsed.
@@ -1572,19 +1770,10 @@ regression gate fails when a set drops below its floor.
 
 ### Roadmap
 
-- **Optional embeddings, as one more signal.** The plan:
-  - An `Embedder` trait the host implements with whatever small model it
-    already runs.
-  - An optional int8 vector section in segments, keyed by passage text
-    hash, so unchanged passages are never re-embedded. The embedder's
-    identity is recorded in the manifest, and a different one means a
-    re-embed.
-  - Brute-force similarity, which is fast enough at these corpus sizes.
-  - Reciprocal-rank fusion with the lexical candidates, and a semantic
-    signal in the reranker.
-
-  Optional sections are already supported by the segment format, so stores
-  without vectors keep working.
+- **Agent tools and a corpus outline**, so the model can search again when
+  the first packet falls short, and can ask what a corpus contains.
+- **An optional reranking model** over the top 20 candidates, through the
+  same host-supplied pattern as `Embedder`.
 - **Parsed definitions.** Tree-sitter definition detection for the languages
   syntext's symbol index already supports.
 - **Sentence-boundary condensation for unwrapped prose**, with explicit

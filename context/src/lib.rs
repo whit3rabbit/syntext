@@ -25,6 +25,7 @@
 
 pub(crate) mod analysis;
 pub mod compile;
+pub mod embed;
 pub mod engine;
 pub mod error;
 #[cfg(feature = "ffi")]
@@ -50,6 +51,7 @@ pub use compile::{
     decode_text, CompileOptions, DirectorySource, SkipReason, SourceDoc, SyncProgress, SyncReport,
     COMPILER_VERSION,
 };
+pub use embed::{EmbedOptions, EmbedProgress, EmbedReport, Embedder, FnEmbedder};
 pub use engine::{
     ChatRequest, ChatTurn, ContextEngine, EngineBuilder, EvidencePacket, PrepareRequest,
 };

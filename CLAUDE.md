@@ -443,11 +443,12 @@ context/                      # syntext-context: context engine for small-window
   src/graph/                  # canonical entities (fold_key), aliases, typed edges from code and prose
   src/compile/                # SourceDoc -> CompiledDoc; sync.rs: directory / path sync over syntext's walk + change catalogue
   src/store/                  # .ctxs segments, manifest commit point, staged batched writes, journal, compaction; publish.rs: snapshot publication
-  src/retrieve/               # BM25 candidates, graph beam walk, syntext exact bridge, reranker, chains.rs: evidence-chain lifting
+  src/retrieve/               # BM25 candidates, graph beam walk, syntext exact bridge, semantic.rs: exact vector scan, reranker, chains.rs: evidence-chain lifting
   src/pack/                   # token budget, span merge caps, condensation, widening, exact fit
   src/render/                 # evidence blocks in a user message, system-prompt policy, sanitization
   src/memory.rs               # scoped conversation memory over the journal
   src/receipt.rs              # provenance receipts + source drift checks
+  src/embed/                  # Embedder trait, resumable embed job, .vec sidecars (8-bit, text-hash keyed), compaction carry-over
   src/engine/                 # ContextEngine facade: prepare (packet) / assemble (whole prompt)
   src/ffi/                    # C ABI (ffi feature): store / engine / memory handles, JSON in and out, codes 300+
   eval/                       # evaluation: harness/ (shared via #[path]), sets/*.json, generators, README
@@ -468,6 +469,7 @@ Design and alternatives: [`docs/CONTEXT.md`](docs/CONTEXT.md). Invariants to kee
 - **Segments are untrusted input.** The reader validates every cross-reference at open; accessors must not panic on segment contents. The crate is `#![forbid(unsafe_code)]` without the `ffi` feature; with it, only `context/src/ffi/` may use `unsafe`.
 - **Recording a turn never waits on a write.** A writable store takes its locks in a fixed order, `memory` -> `segments` -> `published` (`context/src/store/mod.rs`). `append_turn` only `try_lock`s `segments` for its periodic flush and defers it when a sync or compaction holds it; the turn is already durable in the journal.
 - **One Rust staticlib, two C headers.** The C ABI (`context/src/ffi/`) is compiled into the same static library as syntext's (`build-xcframework.sh` builds `syntext-context --features ffi`) and reuses syntext's error type and string helpers (`syntext::ffi`, `pub` + `#[doc(hidden)]`). `syntext_context.h` is hand-written: change it with every `extern "C"` signature or JSON shape change. Context error codes (300+) are append-only. An app with its own Rust staticlib links the engine into that library instead (`extern crate syntext_context;`), see `docs/CONTEXT.md`.
+- **Vectors are a fail-open cache keyed by content.** `seg-*.<model>.vec` sidecars (`context/src/embed/table.rs`) hold one 8-bit row per passage, keyed by the hash of the exact text embedded (`embed::passage_text`: breadcrumb + symbol + body). Change that text recipe and every vector re-embeds. A missing or damaged sidecar only means fewer vectors; never make one fatal. Compaction must keep carrying vectors (`embed::job::collect` before the commit, `carry_vectors` after), or every compaction re-embeds the store. The model never runs during sync or compaction.
 - **Measure ranking changes, don't judge them.** Any change to analysis, segmentation, graph extraction, retrieval, or packing runs `cargo run -p syntext-context --release --example eval` before and after (and HotpotQA via `context/eval/fetch_hotpot.py` for multi-hop changes; `multihop` is synthetic and its wording shaped the relation classes, so it overstates). Record moved numbers in `context/eval/README.md`. `tests/eval.rs` floors fail CI on regressions; lower one only with the reason in the commit. Repository corpora exclude `context/eval/` (the set files contain the questions).
 - **`prepare` and `assemble` share memory semantics.** Both grant the conversation's scope and exclude the turns already verbatim in the prompt (`PrepareRequest::memory(&memory, kept_turns)`; `assemble` passes its own kept count). Keep them going through `prepare` so the two paths cannot drift.
 

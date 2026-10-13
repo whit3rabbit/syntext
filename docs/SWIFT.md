@@ -87,6 +87,10 @@ let turn = try await engine.assembleAsync(
 try chat.recordExchange(question: question, answer: answer)
 ```
 
+For semantic retrieval, wrap the app's embedding model in a
+`SyntextContextEmbedder`, run `store.embedAsync(embedder)` after syncs, and
+pass `embedder:` when creating the engine (see [docs/CONTEXT.md](CONTEXT.md)).
+
 `SyntextContext` is a separate product so apps using only `Syntext` are
 unaffected by it. Its C symbols ship in the xcframework from the release that
 introduces the product; before that, build the xcframework locally (below).

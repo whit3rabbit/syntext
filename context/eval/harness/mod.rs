@@ -11,12 +11,14 @@
 #![allow(dead_code)]
 
 mod corpus;
+pub mod embedder;
 pub mod hotpot;
 pub mod report;
 mod score;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -113,7 +115,7 @@ pub struct Support {
 }
 
 /// Settings for one run.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RunOptions {
     /// Model windows to assemble prompts for.
     pub windows: Vec<usize>,
@@ -123,6 +125,8 @@ pub struct RunOptions {
     pub repo_root: PathBuf,
     /// System prompt used for every question.
     pub system: String,
+    /// Semantic retrieval: every store is embedded before its questions.
+    pub embedder: Option<Arc<dyn syntext_context::Embedder>>,
 }
 
 impl Default for RunOptions {
@@ -132,6 +136,7 @@ impl Default for RunOptions {
             external: BTreeMap::new(),
             repo_root: repo_root(),
             system: "You are a careful assistant. Answer from the evidence.".to_string(),
+            embedder: None,
         }
     }
 }

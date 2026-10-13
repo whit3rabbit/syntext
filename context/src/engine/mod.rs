@@ -27,6 +27,7 @@ use std::time::Instant;
 pub use request::{ChatRequest, ChatTurn, EvidencePacket, PrepareRequest};
 
 use crate::compile::CompileOptions;
+use crate::embed::Embedder;
 use crate::error::{ContextError, Result};
 use crate::pack::{pack, Budget, PackOptions, MESSAGE_OVERHEAD};
 use crate::receipt::{EvidenceRef, Receipt, RECEIPT_VERSION};
@@ -40,6 +41,7 @@ use crate::types::Role;
 pub struct EngineBuilder {
     store: Arc<ContextStore>,
     syntext: Option<SyntextSource>,
+    embedder: Option<Arc<dyn Embedder>>,
     counter: Arc<dyn TokenCounter>,
     retrieve: RetrieveOptions,
     pack: PackOptions,
@@ -51,6 +53,14 @@ impl EngineBuilder {
     /// Add exact-match evidence from a syntext index.
     pub fn syntext(mut self, source: SyntextSource) -> Self {
         self.syntext = Some(source);
+        self
+    }
+
+    /// Add semantic retrieval with the host's embedding model. Passages
+    /// are compared once [`ContextStore::embed`] has given them vectors
+    /// with the same embedder.
+    pub fn embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
+        self.embedder = Some(embedder);
         self
     }
 
@@ -90,6 +100,7 @@ impl EngineBuilder {
         ContextEngine {
             store: self.store,
             syntext: self.syntext,
+            embedder: self.embedder,
             counter: self.counter,
             retrieve: self.retrieve,
             pack: self.pack,
@@ -104,6 +115,7 @@ impl EngineBuilder {
 pub struct ContextEngine {
     store: Arc<ContextStore>,
     syntext: Option<SyntextSource>,
+    embedder: Option<Arc<dyn Embedder>>,
     counter: Arc<dyn TokenCounter>,
     retrieve: RetrieveOptions,
     pack: PackOptions,
@@ -118,6 +130,7 @@ impl ContextEngine {
         EngineBuilder {
             store,
             syntext: None,
+            embedder: None,
             counter: Arc::new(HeuristicCounter::new()),
             retrieve: RetrieveOptions::default(),
             pack: PackOptions::default(),
@@ -138,13 +151,24 @@ impl ContextEngine {
 
     /// Ranked passages for `question`, without packing.
     pub fn retrieve(&self, question: &str, opts: &RetrieveOptions) -> Result<Retrieved> {
+        let snap = self.store.snapshot();
+        let semantic = self.embedder.as_deref().map(|e| {
+            let tables = self.store.vectors.tables(self.store.dir(), &snap, e.id());
+            (e, tables)
+        });
         retrieve(
-            &self.store.snapshot(),
+            &snap,
             self.syntext.as_ref(),
+            semantic,
             &self.compile,
             question,
             opts,
         )
+    }
+
+    /// The embedder used for semantic retrieval, if any.
+    pub fn embedder(&self) -> Option<&Arc<dyn Embedder>> {
+        self.embedder.as_ref()
     }
 
     /// Retrieve and pack evidence for `req.question` within its budget.
@@ -191,6 +215,7 @@ impl ContextEngine {
             timings,
             tokenizer: self.counter.name().to_string(),
             model: self.model.clone(),
+            embedder: self.embedder.as_ref().map(|e| e.id().to_string()),
         };
         Ok(EvidencePacket {
             blocks: packed.blocks,

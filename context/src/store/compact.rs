@@ -143,7 +143,12 @@ impl ContextStore {
                 staged.push(doc)?;
             }
         }
+        // Vectors of the dropped segments, kept in memory across the commit
+        // (which deletes their sidecars) and written for the new segments.
+        let carried = crate::embed::job::collect(self.dir(), &snap, &drop);
+        let before: Vec<String> = snap.segments.iter().map(|s| s.name.clone()).collect();
         let ingest = staged.commit(Vec::new(), None, &drop)?;
+        self.carry_vectors(&carried, &before, &self.snapshot());
         if !ingest.skipped.is_empty() {
             log::warn!(
                 "compaction dropped {} documents rejected by current compile options",

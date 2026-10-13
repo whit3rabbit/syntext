@@ -100,6 +100,25 @@ use syntext_context::PrepareRequest;
 let packet = engine.prepare(&PrepareRequest::new(question, 2400).memory(&memory, kept_turns))?;
 ```
 
+## Semantic retrieval
+
+Bring your own embedding model: implement `Embedder` (or wrap a closure in
+`FnEmbedder`), embed in the background after syncs, and attach it to the
+engine. Vectors are stored as 8-bit sidecars keyed by the exact text
+embedded, so syncs and compaction never send unchanged text to the model
+again.
+
+```rust
+use syntext_context::EmbedOptions;
+
+let report = store.embed(encoder.as_ref(), &EmbedOptions::default())?; // resumable
+let engine = ContextEngine::builder(Arc::clone(&store)).embedder(encoder).build();
+```
+
+With bge-small-en-v1.5, paraphrased questions in the evaluation set went
+from 42% to 100% of answers reaching the prompt, code questions from 88% to
+92%, and HotpotQA from 88% to 95%; no set dropped.
+
 ## Swift and C
 
 With the `ffi` feature the crate exports a C ABI
@@ -214,10 +233,11 @@ of `open_read_only` readers, which pick up new generations with `reload()`.
 
 ## Limitations
 
-- Retrieval is lexical, structural, exact-match, and graph based. There are no
-  embeddings, so a question that shares no words, identifiers, or entities with
-  its answer will miss it (42% of the `paraphrase` evaluation set is found;
-  see [context/eval/README.md](eval/README.md)).
+- Without an embedder, retrieval is lexical, structural, exact-match, and
+  graph based, so a question that shares no words, identifiers, or entities
+  with its answer will miss it (42% of the `paraphrase` evaluation set is
+  found; see [context/eval/README.md](eval/README.md)). With one, the first
+  embedding of a large tree takes minutes on a CPU encoder.
 - Prose entity and relation extraction is heuristic and tuned for English.
 - Definition detection is line-based per language (no parser), and the
   ranking weights are hand-tuned.

@@ -68,7 +68,7 @@ fn open_store(dir: &Path) -> *mut syntext_context_store {
 
 fn engine(store: *const syntext_context_store) -> *mut syntext_context_engine {
     let mut err = null_mut();
-    let e = syntext_context_engine_new(store, null(), None, null_mut(), &mut err);
+    let e = syntext_context_engine_new(store, null(), None, null_mut(), null(), &mut err);
     assert!(!e.is_null(), "{:?}", take_error(err));
     e
 }
@@ -254,6 +254,7 @@ fn assemble_with_memory_and_a_host_token_counter() {
         c(r#"{"tokenizer": "words", "model": "test-model"}"#).as_ptr(),
         Some(count_words),
         null_mut(),
+        null(),
         &mut err,
     );
     assert!(!engine.is_null(), "{:?}", take_error(err));
@@ -380,6 +381,7 @@ fn a_host_can_keep_the_policy_in_a_constant_system_prompt() {
         c(r#"{"append_policy": false}"#).as_ptr(),
         None,
         null_mut(),
+        null(),
         &mut err,
     );
     assert!(!engine.is_null(), "{:?}", take_error(err));
@@ -420,6 +422,7 @@ fn placement_and_order_options_reach_the_engine() {
         c(r#"{"placement": "separate_message", "order": "document"}"#).as_ptr(),
         None,
         null_mut(),
+        null(),
         &mut err,
     );
     assert!(!engine.is_null(), "{:?}", take_error(err));
@@ -453,6 +456,7 @@ fn placement_and_order_options_reach_the_engine() {
         c(r#"{"placement": "system"}"#).as_ptr(),
         None,
         null_mut(),
+        null(),
         &mut err,
     );
     assert!(
@@ -461,6 +465,121 @@ fn placement_and_order_options_reach_the_engine() {
     );
     let (code, _) = take_error(err).expect("error handle");
     assert_eq!(code, SYNTEXT_ERR_INVALID_ARGUMENT);
+    syntext_context_engine_free(engine);
+    syntext_context_store_free(store);
+}
+
+/// A toy model: "money" and "refunds" share a dimension, other words hash.
+unsafe extern "C" fn embed_words(
+    userdata: *mut c_void,
+    texts: *const *const c_char,
+    lens: *const usize,
+    count: usize,
+    _is_query: bool,
+    out: *mut f32,
+) -> bool {
+    if !userdata.is_null() {
+        return false; // the "failing model" variant
+    }
+    let dims = 16;
+    for i in 0..count {
+        let bytes = std::slice::from_raw_parts(*texts.add(i) as *const u8, *lens.add(i));
+        let text = std::str::from_utf8(bytes).unwrap().to_lowercase();
+        let row = std::slice::from_raw_parts_mut(out.add(i * dims), dims);
+        row.fill(0.0);
+        row[dims - 1] = 0.01;
+        for w in text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 2)
+        {
+            let d = if w == "money" || w.starts_with("refund") {
+                0
+            } else {
+                1 + w.bytes().map(usize::from).sum::<usize>() % (dims - 2)
+            };
+            row[d] += 1.0;
+        }
+    }
+    true
+}
+
+#[test]
+fn a_host_embedding_callback_powers_semantic_retrieval() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path());
+    let docs = c(
+        r#"[{"id": "refunds", "text": "Refunds are issued within 45 days."},
+                     {"id": "menu", "text": "The cafeteria menu changes every Monday."}]"#,
+    );
+    let mut err = null_mut();
+    json(
+        syntext_context_store_upsert(store, docs.as_ptr(), &mut err),
+        err,
+    );
+
+    let mut err = null_mut();
+    let bad = syntext_context_embedder_new(
+        c("toy").as_ptr(),
+        0,
+        Some(embed_words),
+        null_mut(),
+        &mut err,
+    );
+    assert!(bad.is_null());
+    assert_eq!(take_error(err).unwrap().0, SYNTEXT_ERR_INVALID_ARGUMENT);
+    let mut err = null_mut();
+    let bad = syntext_context_embedder_new(c("toy").as_ptr(), 16, None, null_mut(), &mut err);
+    assert!(bad.is_null());
+    assert_eq!(take_error(err).unwrap().0, SYNTEXT_ERR_INVALID_ARGUMENT);
+
+    let mut err = null_mut();
+    let embedder = syntext_context_embedder_new(
+        c("toy-v1").as_ptr(),
+        16,
+        Some(embed_words),
+        null_mut(),
+        &mut err,
+    );
+    assert!(!embedder.is_null(), "{:?}", take_error(err));
+    let mut err = null_mut();
+    let report = json(
+        syntext_context_store_embed(store, embedder, null(), None, null_mut(), &mut err),
+        err,
+    );
+    assert_eq!(report["model"], "toy-v1");
+    assert_eq!(report["embedded"], 2);
+    assert_eq!(report["remaining"], 0);
+
+    let mut err = null_mut();
+    let engine = syntext_context_engine_new(store, null(), None, null_mut(), embedder, &mut err);
+    assert!(!engine.is_null(), "{:?}", take_error(err));
+    // The engine keeps its own reference to the embedder.
+    syntext_context_embedder_free(embedder);
+    let req = c(r#"{"question": "How do I get my money back?", "evidence_tokens": 300}"#);
+    let mut err = null_mut();
+    let packet = json(
+        syntext_context_prepare(engine, null(), req.as_ptr(), &mut err),
+        err,
+    );
+    assert!(packet["evidence_text"]
+        .as_str()
+        .unwrap()
+        .contains("Refunds are issued"));
+    assert_eq!(packet["receipt"]["embedder"], "toy-v1");
+
+    // A failing model is an error with its own code, not a crash.
+    let mut err = null_mut();
+    let failing = syntext_context_embedder_new(
+        c("toy-v2").as_ptr(),
+        16,
+        Some(embed_words),
+        std::ptr::dangling_mut::<c_void>(),
+        &mut err,
+    );
+    let mut err = null_mut();
+    let out = syntext_context_store_embed(store, failing, null(), None, null_mut(), &mut err);
+    expect_error(out, err, SYNTEXT_CONTEXT_ERR_EMBEDDER);
+    syntext_context_embedder_free(failing);
     syntext_context_engine_free(engine);
     syntext_context_store_free(store);
 }

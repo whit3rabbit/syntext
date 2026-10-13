@@ -18,7 +18,7 @@
 
 mod backing;
 mod compact;
-mod files;
+pub(crate) mod files;
 mod format;
 mod journal;
 mod live;
@@ -47,6 +47,7 @@ pub(crate) use snapshot::{DocLoc, PassageLoc};
 pub use snapshot::{DocSummary, StoreSnapshot};
 
 use crate::compile::CompileOptions;
+use crate::embed::registry::VectorCache;
 use crate::error::{ContextError, Result};
 use journal::Journal;
 use manifest::Manifest;
@@ -82,6 +83,8 @@ pub struct ContextStore {
     compile: CompileOptions,
     snapshot: ArcSwap<StoreSnapshot>,
     writable: Option<Writable>,
+    /// Vector sidecars loaded for semantic retrieval.
+    pub(crate) vectors: VectorCache,
 }
 
 /// Lock `m`, recovering the data of a poisoned lock: every critical section
@@ -161,6 +164,7 @@ impl ContextStore {
             compile,
             snapshot: ArcSwap::from_pointee(snapshot),
             writable: None,
+            vectors: VectorCache::default(),
         })
     }
 
@@ -197,6 +201,7 @@ impl ContextStore {
                 }),
                 published: Mutex::new(published),
             }),
+            vectors: VectorCache::default(),
         })
     }
 
@@ -253,6 +258,11 @@ impl ContextStore {
         self.compile
     }
 
+    /// Whether writes are fsynced ([`StoreOptions::sync`]).
+    pub(crate) fn sync_writes(&self) -> bool {
+        self.options.sync
+    }
+
     fn writable(&self) -> Result<&Writable> {
         self.writable.as_ref().ok_or(ContextError::ReadOnly)
     }
@@ -264,6 +274,8 @@ impl ContextStore {
         if self.writable.is_some() {
             return Ok(false);
         }
+        // Another process may have embedded passages since: reread vectors.
+        self.vectors.clear();
         let cur = self.snapshot();
         let (next, _) = Self::load_read_only(&self.dir, &self.options, Some(&cur))?;
         let changed = next.generation != cur.generation || next.live_through != cur.live_through;

@@ -31,6 +31,8 @@ pub(crate) struct View<'a> {
 pub(crate) struct Prelim {
     pub lexical: f32,
     pub graph: f32,
+    /// Vector similarity, normalized within the question's neighbourhood.
+    pub semantic: f32,
     pub exact: bool,
     pub exact_lines: Vec<u32>,
     pub chain: Option<Chain>,
@@ -138,6 +140,7 @@ pub(crate) fn features(
         symbol: symbol_match(v.symbol, q),
         exact: if prelim.exact { 1.0 } else { 0.0 },
         graph: prelim.graph.clamp(0.0, 1.0),
+        semantic: prelim.semantic.clamp(0.0, 1.0),
         structure: structure_prior(intent, v.kind),
         recency: if v.doc_kind == DocKind::Turn {
             (-((max_seq.saturating_sub(v.seq)) as f32) / 40.0).exp()
@@ -167,9 +170,11 @@ pub(crate) fn features(
 }
 
 /// Weighted sum of normalized signals; zero when nothing ties the passage
-/// to the question (no term, phrase, exact match, or graph link).
+/// to the question (no term, phrase, exact match, graph link, or vector
+/// similarity).
 pub(crate) fn combine(s: &Signals, w: &RankWeights, intent: QueryIntent) -> f32 {
-    if s.coverage == 0.0 && s.exact == 0.0 && s.graph == 0.0 && s.phrase == 0.0 {
+    if s.coverage == 0.0 && s.exact == 0.0 && s.graph == 0.0 && s.phrase == 0.0 && s.semantic == 0.0
+    {
         return 0.0;
     }
     let recency_weight = if intent == QueryIntent::Recall {
@@ -195,6 +200,7 @@ pub(crate) fn combine(s: &Signals, w: &RankWeights, intent: QueryIntent) -> f32 
         + w.graph * s.graph
         + structure_weight * s.structure
         + recency_weight * s.recency
+        + w.semantic * s.semantic
 }
 
 /// Stems that make a question about tests ("tests", "testing", "specs",

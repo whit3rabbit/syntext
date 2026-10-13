@@ -16,28 +16,36 @@ import Syntext
 public final class SyntextContextEngine: @unchecked Sendable {
     private let handle: OpaquePointer?
     private let counter: Unmanaged<CounterBox>?
+    /// Kept alive while the engine can call it.
+    private let embedder: SyntextContextEmbedder?
 
     /// Create an engine over `store`. Pass `tokenCounter` to count tokens
     /// with the model's own tokenizer (strongly recommended: without it a
     /// conservative estimate is used). It may be called from any thread.
+    /// Pass `embedder` for semantic retrieval over the vectors
+    /// `store.embed(_:)` stored with the same embedder.
     public init(
         store: SyntextContextStore,
         options: SyntextContextEngineOptions = .init(),
-        tokenCounter: (@Sendable (String) -> Int)? = nil
+        tokenCounter: (@Sendable (String) -> Int)? = nil,
+        embedder: SyntextContextEmbedder? = nil
     ) throws {
         let cOptions = try CZString(encodeJSON(options))
         let box = tokenCounter.map { Unmanaged.passRetained(CounterBox($0)) }
         do {
-            handle = try ffiCall { err in
-                syntext_context_engine_new(
-                    store.handle, cOptions?.ptr, box == nil ? nil : countTrampoline,
-                    box?.toOpaque(), err)
+            handle = try withExtendedLifetime(embedder) {
+                try ffiCall { err in
+                    syntext_context_engine_new(
+                        store.handle, cOptions?.ptr, box == nil ? nil : countTrampoline,
+                        box?.toOpaque(), embedder?.handle, err)
+                }
             }
         } catch {
             box?.release()
             throw error
         }
         counter = box
+        self.embedder = embedder
     }
 
     deinit {

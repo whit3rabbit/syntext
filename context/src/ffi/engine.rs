@@ -11,6 +11,7 @@ use syntext::ffi::{catch, ffi_ptr, owned_json, req_str, syntext_error};
 use super::dto::{
     AssembleDto, EngineOptionsDto, PacketDto, PassageDto, PrepareDto, SearchDto, TurnDto,
 };
+use super::embed::{borrow_embedder, syntext_context_embedder};
 use super::store::{opt_json, req_json};
 use super::{
     borrow_engine, borrow_memory, borrow_store, ffi_error, syntext_context_count_fn,
@@ -31,20 +32,26 @@ use crate::types::Scope;
 ///
 /// `count` (nullable) counts tokens with the model's tokenizer; without it
 /// a conservative estimate is used. `count_userdata` is passed to `count`
-/// and must stay valid until the engine is freed. Release with
-/// `syntext_context_engine_free`.
+/// and must stay valid until the engine is freed. `embedder` (nullable)
+/// adds semantic retrieval over vectors stored by
+/// `syntext_context_store_embed` with the same embedder; the engine keeps
+/// its own reference to it. Release with `syntext_context_engine_free`.
 #[no_mangle]
 pub extern "C" fn syntext_context_engine_new(
     store: *const syntext_context_store,
     options_json: *const c_char,
     count: syntext_context_count_fn,
     count_userdata: *mut c_void,
+    embedder: *const syntext_context_embedder,
     err_out: *mut *mut syntext_error,
 ) -> *mut syntext_context_engine {
     ffi_ptr(err_out, || unsafe {
         let store = borrow_store(store)?;
         let opts: EngineOptionsDto = opt_json(options_json, "options")?;
         let mut builder = ContextEngine::builder(Arc::clone(store));
+        if let Some(e) = borrow_embedder(embedder) {
+            builder = builder.embedder(Arc::clone(e));
+        }
         if let Some(f) = count {
             builder = builder.token_counter(Arc::new(CallbackCounter {
                 count: f,

@@ -17,7 +17,8 @@
 //! passage must also cover a question term the earlier passage does not,
 //! and never through a bare co-mention: otherwise it is noise that happens
 //! to share a name. Lifts whose last relation the question asks about go
-//! first.
+//! first, and among those, passages stating the relation beat passages
+//! that merely mention an entity on the path.
 
 use std::collections::HashSet;
 
@@ -41,6 +42,9 @@ struct Lift {
     fresh: bool,
     /// Its relation is one the question asks about.
     asked: bool,
+    /// It states the relation or defines the entity reached, rather than
+    /// mentioning an entity on the path.
+    evidence: bool,
 }
 
 /// Raise the scores of passages that continue a relevant graph path.
@@ -54,8 +58,8 @@ pub(crate) fn lift_chains(passages: &mut [RankedPassage], asks: &QuestionRelatio
         // Evidence for a hop needs no words of its own only on a path the
         // question asks about; otherwise a common name (`len`, `is_empty`)
         // would carry every homonym along.
-        let evidence = matches!(chain.link.as_str(), "states" | "defines")
-            && q_steps.iter().any(|s| asks.matches(&s.relation));
+        let states = matches!(chain.link.as_str(), "states" | "defines");
+        let evidence = states && q_steps.iter().any(|s| asks.matches(&s.relation));
         let mut best = 0.0f32;
         for (ai, a) in passages.iter().enumerate() {
             let Some(hops) = hops_from(a, q_steps).filter(|_| ai != qi) else {
@@ -85,17 +89,19 @@ pub(crate) fn lift_chains(passages: &mut [RankedPassage], asks: &QuestionRelatio
                 score: best,
                 fresh,
                 asked,
+                evidence: states,
             });
         }
     }
     lifts.sort_by(|a, b| {
-        (b.fresh, b.asked)
-            .cmp(&(a.fresh, a.asked))
+        (b.fresh, b.asked, b.evidence)
+            .cmp(&(a.fresh, a.asked, a.evidence))
             .then(b.score.total_cmp(&a.score))
             .then(a.index.cmp(&b.index))
     });
     for lift in lifts.into_iter().take(MAX_LIFTS) {
         passages[lift.index].score = lift.score;
+        passages[lift.index].floor_exempt = true;
     }
 }
 

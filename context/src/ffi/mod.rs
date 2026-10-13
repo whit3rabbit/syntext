@@ -32,6 +32,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod dto;
+mod embed;
 mod engine;
 mod store;
 
@@ -39,6 +40,7 @@ use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_char;
 use std::sync::{Arc, OnceLock};
 
+pub use embed::*;
 pub use engine::*;
 pub use store::*;
 use syntext::ffi::{FfiError, SYNTEXT_ERR_INVALID_ARGUMENT, SYNTEXT_ERR_IO};
@@ -67,6 +69,8 @@ pub const SYNTEXT_CONTEXT_ERR_UNSUPPORTED_VERSION: u32 = 304;
 pub const SYNTEXT_CONTEXT_ERR_WINDOW_EXCEEDED: u32 = 305;
 /// A sync was cancelled from its progress callback; nothing was published.
 pub const SYNTEXT_CONTEXT_ERR_CANCELLED: u32 = 306;
+/// The host's embedding callback failed or returned malformed vectors.
+pub const SYNTEXT_CONTEXT_ERR_EMBEDDER: u32 = 307;
 
 /// The ABI error for a context error.
 pub(crate) fn ffi_error(e: ContextError) -> FfiError {
@@ -80,6 +84,7 @@ pub(crate) fn ffi_error(e: ContextError) -> FfiError {
         ContextError::InvalidInput(_) => SYNTEXT_ERR_INVALID_ARGUMENT,
         ContextError::WindowExceeded { .. } => SYNTEXT_CONTEXT_ERR_WINDOW_EXCEEDED,
         ContextError::Cancelled => SYNTEXT_CONTEXT_ERR_CANCELLED,
+        ContextError::Embedder(_) => SYNTEXT_CONTEXT_ERR_EMBEDDER,
         ContextError::Index(_) => {
             let ContextError::Index(e) = e else {
                 unreachable!("matched above")
