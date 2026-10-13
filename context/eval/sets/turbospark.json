@@ -1,0 +1,142 @@
+{
+ "name": "turbospark",
+ "description": "Questions about the TurboSpark app's Rust and Swift code. External: run with --corpus turbospark=<checkout>; nothing from that repository is stored here.",
+ "corpus": {
+  "kind": "external",
+  "name": "turbospark",
+  "label": "ts",
+  "syntext": true
+ },
+ "questions": [
+  {
+   "id": "ts-01",
+   "question": "Where is fit_conversation_window defined?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "ts:crates/window-fit/src/fit.rs",
+     "contains": "pub fn fit_conversation_window<T, M>("
+    }
+   ]
+  },
+  {
+   "id": "ts-02",
+   "question": "How does the engine trim a conversation so it fits the context window?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:crates/window-fit/src/fit.rs",
+     "contains": "pub fn fit_conversation_window<T, M>("
+    }
+   ]
+  },
+  {
+   "id": "ts-03",
+   "question": "Where is the chat template applied to messages?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:crates/tokenizer/src/chat_template/mod.rs",
+     "contains": "pub fn apply_chat_template(&self, messages: &[Message])"
+    }
+   ]
+  },
+  {
+   "id": "ts-04",
+   "question": "Which C function counts the tokens of a text?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:crates/ffi/src/api/tokenizer.rs",
+     "contains": "pub unsafe extern \"C\" fn ts_tokenizer_count_text_tokens("
+    }
+   ]
+  },
+  {
+   "id": "ts-05",
+   "question": "How does the app compute text embeddings through the C API?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:crates/ffi/src/api/embedding.rs",
+     "contains": "pub unsafe extern \"C\" fn ts_embedding_encode_json("
+    }
+   ]
+  },
+  {
+   "id": "ts-06",
+   "question": "Where is ts_session_open implemented?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "ts:crates/ffi/src/api/session.rs",
+     "contains": "pub unsafe extern \"C\" fn ts_session_open("
+    }
+   ]
+  },
+  {
+   "id": "ts-07",
+   "question": "Where is the append-only history projection built for a chat?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:swift/TurboSparkApp/Sources/TurboSparkApp/State/AppModel+History.swift",
+     "contains": "func buildAppendOnlyHistoryProjection("
+    }
+   ]
+  },
+  {
+   "id": "ts-08",
+   "question": "How are lexical and embedding memory results fused?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:swift/TurboSparkApp/Sources/TurboSparkApp/State/MemoryLedger.swift",
+     "contains": "scores[claim.id, default: 0] += 1.0 / Double(60 + rank + 1)"
+    }
+   ]
+  },
+  {
+   "id": "ts-09",
+   "question": "Why does the Swift library build hide the Rust personality symbol?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:scripts/swift-lib.sh",
+     "contains": "nmedit -R"
+    }
+   ]
+  },
+  {
+   "id": "ts-10",
+   "question": "Which syntext version does the Swift app pin?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "ts:swift/TurboSparkApp/Package.swift",
+     "contains": ".package(url: \"https://github.com/whit3rabbit/syntext\", exact: \"2.5.0\")"
+    }
+   ]
+  }
+ ]
+}

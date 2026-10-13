@@ -139,6 +139,8 @@ cargo test -p syntext-context --features ffi  # + its C ABI (context/tests/ffi.r
 cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
 cargo clippy -p syntext-context --all-targets --features ffi --no-deps -- -D warnings
 cargo run -p syntext-context --release --example ask -- . "question" --window 4096 --syntext
+cargo run -p syntext-context --release --example eval -- --failures  # context eval sets, 4K + 8K
+cargo test -p syntext-context --test eval      # context eval regression gate (per-set floors)
 ```
 
 `cargo test` and `cargo clippy` at the repo root cover only the root `syntext`
@@ -448,7 +450,9 @@ context/                      # syntext-context: context engine for small-window
   src/receipt.rs              # provenance receipts + source drift checks
   src/engine/                 # ContextEngine facade: prepare (packet) / assemble (whole prompt)
   src/ffi/                    # C ABI (ffi feature): store / engine / memory handles, JSON in and out, codes 300+
+  eval/                       # evaluation: harness/ (shared via #[path]), sets/*.json, generators, README
   examples/ask.rs             # sync a directory and print the prompt for a question
+  examples/eval.rs            # run the eval sets (and optional HotpotQA / external corpora), print a report
   tests/                      # end_to_end, budget_props (proptest), memory_recovery, ffi (--features ffi)
 ```
 
@@ -464,6 +468,7 @@ Design and alternatives: [`docs/CONTEXT.md`](docs/CONTEXT.md). Invariants to kee
 - **Segments are untrusted input.** The reader validates every cross-reference at open; accessors must not panic on segment contents. The crate is `#![forbid(unsafe_code)]` without the `ffi` feature; with it, only `context/src/ffi/` may use `unsafe`.
 - **Recording a turn never waits on a write.** A writable store takes its locks in a fixed order, `memory` -> `segments` -> `published` (`context/src/store/mod.rs`). `append_turn` only `try_lock`s `segments` for its periodic flush and defers it when a sync or compaction holds it; the turn is already durable in the journal.
 - **One Rust staticlib, two C headers.** The C ABI (`context/src/ffi/`) is compiled into the same static library as syntext's (`build-xcframework.sh` builds `syntext-context --features ffi`) and reuses syntext's error type and string helpers (`syntext::ffi`, `pub` + `#[doc(hidden)]`). `syntext_context.h` is hand-written: change it with every `extern "C"` signature or JSON shape change. Context error codes (300+) are append-only. An app with its own Rust staticlib links the engine into that library instead (`extern crate syntext_context;`), see `docs/CONTEXT.md`.
+- **Measure ranking changes, don't judge them.** Any change to analysis, segmentation, graph extraction, retrieval, or packing runs `cargo run -p syntext-context --release --example eval` before and after (and HotpotQA via `context/eval/fetch_hotpot.py` for multi-hop changes; `multihop` is synthetic and its wording shaped the relation classes, so it overstates). Record moved numbers in `context/eval/README.md`. `tests/eval.rs` floors fail CI on regressions; lower one only with the reason in the commit. Repository corpora exclude `context/eval/` (the set files contain the questions).
 - **`prepare` and `assemble` share memory semantics.** Both grant the conversation's scope and exclude the turns already verbatim in the prompt (`PrepareRequest::memory(&memory, kept_turns)`; `assemble` passes its own kept count). Keep them going through `prepare` so the two paths cannot drift.
 
 ## Deferred Work

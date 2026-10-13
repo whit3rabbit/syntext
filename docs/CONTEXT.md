@@ -28,7 +28,8 @@ tour, see the crate README, [context/README.md](../context/README.md);
 7. [Integrating with an inference loop](#integrating-with-an-inference-loop)
 8. [Design decisions](#design-decisions)
 9. [Measured](#measured)
-10. [Limitations and roadmap](#limitations-and-roadmap)
+10. [Evaluation](#evaluation)
+11. [Limitations and roadmap](#limitations-and-roadmap)
 
 ## What it does
 
@@ -1524,13 +1525,39 @@ Release build, 4-core Linux container, default options, `HeuristicCounter`:
   4K window returns the definition in `src/query/mod.rs` first, followed by
   its callers.
 
+## Evaluation
+
+`context/eval/` holds question sets with known supporting evidence, run end
+to end through `assemble` at 4K and 8K windows. A question counts only when
+**every** passage its answer depends on reaches the prompt. Details, set
+formats, and how to add questions are in
+[context/eval/README.md](../context/eval/README.md).
+
+| Set | What it measures | 4K | 8K |
+|---|---|---|---|
+| `multihop` | two- and three-hop chains among lexical decoys | 100% | 100% |
+| `paraphrase` | questions sharing no words with their answer | 42% | 42% |
+| `code` | this repository's code and docs, with a syntext index | 88% | 88% |
+| `recall` | facts from early in a 68-turn conversation | 100% | 100% |
+| HotpotQA distractor (external, 200 dev questions) | real multi-hop questions | 88% | 88% |
+| HotpotQA pooled (2,000 paragraphs) | the same against all paragraphs at once | 76% | 76% |
+
+```sh
+cargo run -p syntext-context --release --example eval -- --failures
+cargo test -p syntext-context --test eval   # regression gate: per-set floors
+```
+
+Ranking changes are measured against these sets before they land. The
+regression gate fails when a set drops below its floor.
+
 ## Limitations and roadmap
 
 ### Limitations
 
 - **No semantic signal.** A question that shares no words, identifiers, or
-  entities with its answer misses it. For example, "buy" does not match
-  "bought", because the stemmer does not handle irregular forms.
+  entities with its answer misses it: 42% of the `paraphrase` evaluation
+  set. For example, "buy" does not match "bought", because the stemmer does
+  not handle irregular forms.
 - **Heuristic extraction.** Prose entity and relation extraction is
   heuristic and tuned for English. Definition detection is line-based per
   language, not parsed.
@@ -1558,9 +1585,6 @@ Release build, 4-core Linux container, default options, `HeuristicCounter`:
 
   Optional sections are already supported by the segment format, so stores
   without vectors keep working.
-- **An evaluation harness.** Questions with known answers over pinned
-  corpora, scored on whether the answer's evidence reaches the packet at 4K
-  and 8K windows. Ranking changes would then be measured instead of judged.
 - **Parsed definitions.** Tree-sitter definition detection for the languages
   syntext's symbol index already supports.
 - **Sentence-boundary condensation for unwrapped prose**, with explicit

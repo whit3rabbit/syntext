@@ -216,7 +216,8 @@ of `open_read_only` readers, which pick up new generations with `reload()`.
 
 - Retrieval is lexical, structural, exact-match, and graph based. There are no
   embeddings, so a question that shares no words, identifiers, or entities with
-  its answer will miss it.
+  its answer will miss it (42% of the `paraphrase` evaluation set is found;
+  see [context/eval/README.md](eval/README.md)).
 - Prose entity and relation extraction is heuristic and tuned for English.
 - Definition detection is line-based per language (no parser), and the
   ranking weights are hand-tuned.
@@ -227,6 +228,7 @@ of `open_read_only` readers, which pick up new generations with `reload()`.
 ## Development
 
 ```sh
+cargo run -p syntext-context --release --example eval -- --failures   # evaluation sets (context/eval/)
 cargo test -p syntext-context
 cargo test -p syntext-context --features ffi
 cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
