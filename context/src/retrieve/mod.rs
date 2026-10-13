@@ -16,6 +16,7 @@ mod graph_walk;
 mod pipeline;
 mod query;
 mod rerank;
+mod semantic;
 mod syntext_source;
 
 use std::ops::Range;
@@ -53,6 +54,10 @@ pub struct RankWeights {
     pub structure: f32,
     /// Newer conversation turns (tripled for recall questions).
     pub recency: f32,
+    /// Similarity of the passage's vector to the question's (halved for
+    /// questions naming identifiers, which exact matching serves better).
+    #[serde(default)]
+    pub semantic: f32,
 }
 
 impl Default for RankWeights {
@@ -68,6 +73,7 @@ impl Default for RankWeights {
             graph: 0.18,
             structure: 0.06,
             recency: 0.04,
+            semantic: 0.35,
         }
     }
 }
@@ -96,6 +102,9 @@ pub struct RetrieveOptions {
     pub exclude: Vec<DocKey>,
     /// Override the detected intent.
     pub intent: Option<QueryIntent>,
+    /// Passages nearest the question by vector added as candidates, when
+    /// the engine has an embedder.
+    pub semantic_candidates: usize,
 }
 
 impl Default for RetrieveOptions {
@@ -111,6 +120,7 @@ impl Default for RetrieveOptions {
             scopes: ScopeFilter::default(),
             exclude: Vec::new(),
             intent: None,
+            semantic_candidates: 50,
         }
     }
 }
@@ -138,6 +148,9 @@ pub struct Signals {
     pub structure: f32,
     /// Conversation recency.
     pub recency: f32,
+    /// Vector similarity to the question, within its neighbourhood.
+    #[serde(default)]
+    pub semantic: f32,
 }
 
 /// Wall-clock time spent per stage, in microseconds.
@@ -151,6 +164,9 @@ pub struct StageTimings {
     pub graph_us: u64,
     /// Exact search through syntext.
     pub exact_us: u64,
+    /// Embedding the question and scanning vectors.
+    #[serde(default)]
+    pub semantic_us: u64,
     /// Reranking.
     pub rerank_us: u64,
     /// Evidence packing (set by `prepare`).
@@ -219,6 +235,11 @@ pub struct RankedPassage {
     /// stale or did not hold the file.
     pub live: bool,
     pub(crate) access: DocAccess,
+    /// Raised as the next hop of a relevant evidence chain, or among the
+    /// passages nearest the question by vector: packed even below the
+    /// relevance floor, whose single score scale cannot weigh one kind of
+    /// evidence against another.
+    pub(crate) floor_exempt: bool,
     pub(crate) index_in_doc: usize,
     pub(crate) anchor: (u32, u32),
     pub(crate) seq: u64,

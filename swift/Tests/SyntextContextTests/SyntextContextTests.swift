@@ -133,6 +133,47 @@ final class SyntextContextTests: XCTestCase {
         XCTAssertEqual(packet.lowestTrust, .memory)
     }
 
+    func testEmbeddingsFindAParaphrase() throws {
+        let store = try openStore()
+        try store.upsert([
+            SyntextContextDocument(id: "refunds", text: "Refunds are issued within 45 days of purchase."),
+            SyntextContextDocument(id: "menu", text: "The cafeteria menu changes every Monday."),
+        ])
+        // A toy model: "money" and "refunds" share a dimension; every other
+        // word gets one of 62 others from a stable hash (not `hashValue`,
+        // which Swift seeds per process), so unrelated words rarely meet.
+        let embedder = try SyntextContextEmbedder(id: "toy-v1", dimensions: 64) { texts, _ in
+            texts.map { text in
+                var v = [Float](repeating: 0, count: 64)
+                v[63] = 0.01
+                for word in text.lowercased().split(whereSeparator: { !$0.isLetter }) where word.count > 2 {
+                    let w = String(word)
+                    let h = w.unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value }
+                    let d = (w == "money" || w.hasPrefix("refund")) ? 0 : 1 + Int(h % 62)
+                    v[d] += 1
+                }
+                return v
+            }
+        }
+        var batches = 0
+        let report = try store.embed(embedder, batch: 1) { _ in
+            batches += 1
+            return true
+        }
+        XCTAssertEqual(report.embedded, 2)
+        XCTAssertEqual(report.remaining, 0)
+        XCTAssertEqual(batches, 2)
+
+        let engine = try SyntextContextEngine(store: store, embedder: embedder)
+        let packet = try engine.prepare(question: "How do I get my money back?", evidenceTokens: 300)
+        XCTAssertTrue(packet.evidenceText.contains("Refunds are issued"))
+
+        let failing = try SyntextContextEmbedder(id: "broken", dimensions: 64) { _, _ in [] }
+        XCTAssertThrowsError(try store.embed(failing)) { error in
+            XCTAssertTrue((error as? SyntextError)?.isEmbedderFailure == true, "\(error)")
+        }
+    }
+
     func testOversizedQuestionIsAnError() throws {
         let store = try openStore()
         let engine = try SyntextContextEngine(store: store)

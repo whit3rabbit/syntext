@@ -35,12 +35,14 @@ enum {
     SYNTEXT_CONTEXT_ERR_READ_ONLY           = 303, /* write through a read-only handle */
     SYNTEXT_CONTEXT_ERR_UNSUPPORTED_VERSION = 304, /* store written by an incompatible version */
     SYNTEXT_CONTEXT_ERR_WINDOW_EXCEEDED     = 305, /* system prompt + question alone exceed the window */
-    SYNTEXT_CONTEXT_ERR_CANCELLED           = 306  /* sync cancelled from its progress callback */
+    SYNTEXT_CONTEXT_ERR_CANCELLED           = 306, /* sync cancelled from its progress callback */
+    SYNTEXT_CONTEXT_ERR_EMBEDDER            = 307  /* the host embedding callback failed or returned bad vectors */
 };
 
 typedef struct syntext_context_store  syntext_context_store;  /* opaque */
 typedef struct syntext_context_engine syntext_context_engine; /* opaque */
 typedef struct syntext_context_memory syntext_context_memory; /* opaque */
+typedef struct syntext_context_embedder syntext_context_embedder; /* opaque */
 
 /* Sync progress, called after each chunk of observed paths on the syncing
  * thread. Return true to continue, false to cancel (the sync then fails with
@@ -52,6 +54,15 @@ typedef bool (*syntext_context_progress_fn)(void *userdata, uint64_t observed,
  * model's tokenizer. May be called from any thread, concurrently. */
 typedef uint64_t (*syntext_context_count_fn)(void *userdata, const char *text,
                                              size_t len);
+
+/* Embedding: write count*dims floats to out, one vector per text, for the
+ * count texts (texts[i] is lens[i] UTF-8 bytes, not NUL-terminated);
+ * is_query is true for a question. Return true on success. May be called
+ * from any thread, concurrently. */
+typedef bool (*syntext_context_embed_fn)(void *userdata,
+                                         const char *const *texts,
+                                         const size_t *lens, size_t count,
+                                         bool is_query, float *out);
 
 /* Context engine version (static; never freed). */
 const char *syntext_context_version(void);
@@ -107,6 +118,28 @@ int32_t syntext_context_store_reload(const syntext_context_store *store,
                                      bool *changed_out,
                                      syntext_error **err_out);
 
+/* ── Embeddings (semantic retrieval) ─────────────────────────── */
+/* Wrap a host embedding model. id names the model and every setting that
+ * changes its vectors (vectors are compared only within one id); dims is
+ * the vector length (1-4096). userdata must stay valid until this handle
+ * and every engine created with it are freed. */
+syntext_context_embedder *syntext_context_embedder_new(
+    const char *id, size_t dims, syntext_context_embed_fn embed,
+    void *userdata, syntext_error **err_out);
+void syntext_context_embedder_free(syntext_context_embedder *embedder);
+/* Give live passages vectors, prose first, reusing the vector of any text
+ * embedded before (sync and compaction never re-embed unchanged text).
+ * Resumable: a budget, a cancel, or an error keeps what was embedded.
+ * options_json (nullable): {"batch"?, "max_passages"?,
+ * "prune_other_models"?}. progress (nullable) gets (userdata, done, total,
+ * 0) after each batch; false stops early ("cancelled": true). Returns
+ * {"model", "embedded", "reused", "covered", "remaining", "cancelled"}. */
+char *syntext_context_store_embed(const syntext_context_store *store,
+                                  const syntext_context_embedder *embedder,
+                                  const char *options_json,
+                                  syntext_context_progress_fn progress,
+                                  void *userdata, syntext_error **err_out);
+
 /* ── Engines ────────────────────────────────────────────────── */
 /* options_json (nullable): {"model"?, "tokenizer"?, "syntext"?: {"index_dir",
  * "repo_root", "label", "scope"?, "trust"?}, "hops"?, "max_results"?,
@@ -114,11 +147,13 @@ int32_t syntext_context_store_reload(const syntext_context_store *store,
  * "order": "ranked"|"document", "placement": "with_question"|"separate_message",
  * "append_policy"? (default true)}.
  * count (nullable) counts tokens with the model's tokenizer; count_userdata
- * must stay valid until the engine is freed. */
+ * must stay valid until the engine is freed. embedder (nullable) adds
+ * semantic retrieval over vectors stored with the same embedder; the engine
+ * keeps its own reference. */
 syntext_context_engine *syntext_context_engine_new(
     const syntext_context_store *store, const char *options_json,
     syntext_context_count_fn count, void *count_userdata,
-    syntext_error **err_out);
+    const syntext_context_embedder *embedder, syntext_error **err_out);
 void syntext_context_engine_free(syntext_context_engine *engine);
 
 /* Evidence within an explicit budget, for hosts that build the prompt

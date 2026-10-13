@@ -221,7 +221,11 @@ pub(crate) fn pack(
     let span_cap = (budget as f32 * opts.max_span_share.clamp(0.0, 1.0)) as usize;
     let mut spans: Vec<Span<'_>> = Vec::new();
     for p in passages {
-        if p.score < floor {
+        // A lifted chain hop, or one of the nearest passages by vector, is
+        // evidence of a kind the floor's single score scale cannot weigh:
+        // it would drop the end of a chain, or a paraphrased answer,
+        // whenever other passages echo the question's words more closely.
+        if p.score < floor && !p.floor_exempt {
             exclude(p, ExclusionReason::BelowFloor);
             continue;
         }

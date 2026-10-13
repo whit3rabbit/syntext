@@ -13,21 +13,32 @@ use super::chains::lift_chains;
 use super::graph_walk::{walk, WalkOptions};
 use super::query::{analyze_query, QueryIntent, QuestionRelations};
 use super::rerank::{asks_about_tests, combine, features, path_prior, Prelim, View};
+use super::semantic::{QuerySims, SimScale};
 use super::syntext_source::{ExactResults, LiveHit, SyntextSource};
 use super::{QueryReport, RankedPassage, RetrieveOptions, Retrieved, Signals, StageTimings};
 use crate::compile::CompileOptions;
+use crate::embed::registry::Tables;
+use crate::embed::Embedder;
 use crate::error::Result;
 use crate::store::{PassageLoc, StoreSnapshot};
 use crate::types::{DocKind, PassageKind};
+
+/// Passages nearest the question by vector that skip the relevance floor.
+const NEAREST_EXEMPT: usize = 3;
 
 fn micros(t: Instant) -> u64 {
     t.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
-/// Retrieve ranked passages for `question` from `snap` (and `syntext`).
+/// The host's embedder and the vectors stored for it.
+pub(crate) type Semantic<'a> = Option<(&'a dyn Embedder, Tables)>;
+
+/// Retrieve ranked passages for `question` from `snap` (and `syntext`, and
+/// stored vectors when `semantic` is given).
 pub(crate) fn retrieve(
     snap: &Arc<StoreSnapshot>,
     syntext: Option<&SyntextSource>,
+    semantic: Semantic<'_>,
     compile: &CompileOptions,
     question: &str,
     opts: &RetrieveOptions,
@@ -70,6 +81,18 @@ pub(crate) fn retrieve(
     timings.exact_us = micros(t);
 
     let t = Instant::now();
+    let sims = match &semantic {
+        Some((embedder, tables)) => QuerySims::new(snap, *embedder, tables, question)?,
+        None => None,
+    };
+    let nearest = sims
+        .as_ref()
+        .map(|s| s.nearest(snap, &vis, opts.semantic_candidates))
+        .unwrap_or_default();
+    let scale = SimScale::new(&nearest);
+    timings.semantic_us = micros(t);
+
+    let t = Instant::now();
     let max_lex = lex
         .values()
         .copied()
@@ -89,8 +112,17 @@ pub(crate) fn retrieve(
         p.exact = true;
         p.exact_lines = lines;
     }
+    for (loc, _) in &nearest {
+        pool.entry(*loc).or_default();
+    }
+    if let Some(s) = &sims {
+        for (loc, p) in pool.iter_mut() {
+            p.semantic = s.sim(*loc).map_or(0.0, |x| scale.normalize(x));
+        }
+    }
     let mut entries: Vec<(PassageLoc, Prelim)> = pool.into_iter().collect();
-    let prelim_score = |p: &Prelim| p.lexical + p.graph + if p.exact { 1.0 } else { 0.0 };
+    let prelim_score =
+        |p: &Prelim| p.lexical + p.graph + p.semantic + if p.exact { 1.0 } else { 0.0 };
     entries.sort_by(|a, b| {
         prelim_score(&b.1)
             .total_cmp(&prelim_score(&a.1))
@@ -101,8 +133,17 @@ pub(crate) fn retrieve(
     let live_keys: HashSet<&str> = exact.live.iter().map(|h| h.doc.key.as_str()).collect();
     let mut candidates: Vec<(RankedPassage, Prelim)> =
         Vec::with_capacity(entries.len() + exact.live.len());
+    // The few passages nearest the question by vector reach packing
+    // whatever their weighted score: a lexical decoy that also sounds
+    // alike can otherwise outscore a paraphrased answer past the floor.
+    let near: Vec<PassageLoc> = nearest
+        .iter()
+        .take(NEAREST_EXEMPT)
+        .map(|(l, _)| *l)
+        .collect();
     for (loc, prelim) in entries {
-        let passage = stored_passage(snap, loc)?;
+        let mut passage = stored_passage(snap, loc)?;
+        passage.floor_exempt = near.contains(&loc);
         // A stale stored copy loses to the live file syntext just verified.
         if !live_keys.contains(passage.doc_key.as_str()) {
             candidates.push((passage, prelim));
@@ -149,10 +190,15 @@ pub(crate) fn retrieve(
         .fold(0.0f32, f32::max)
         .max(f32::MIN_POSITIVE);
     let wants_tests = asks_about_tests(&q);
+    let mut weights = opts.weights;
+    if !q.identifiers.is_empty() {
+        // An identifier is matched exactly; similarity is a weaker cue.
+        weights.semantic *= 0.5;
+    }
     for (p, raw) in &mut scored {
         p.signals.bm25 = *raw / max_bm25;
         p.score =
-            combine(&p.signals, &opts.weights, intent) * path_prior(p.path.as_deref(), wants_tests);
+            combine(&p.signals, &weights, intent) * path_prior(p.path.as_deref(), wants_tests);
     }
     let mut passages: Vec<RankedPassage> = scored
         .into_iter()
@@ -229,6 +275,7 @@ fn stored_passage(snap: &Arc<StoreSnapshot>, loc: PassageLoc) -> Result<RankedPa
         chain: None,
         source_hash: summary.source_hash,
         live: false,
+        floor_exempt: false,
         access: DocAccess::Stored {
             snap: Arc::clone(snap),
             seg: loc.seg,
@@ -266,6 +313,7 @@ fn live_passage(hit: &LiveHit) -> (RankedPassage, Prelim) {
         chain: None,
         source_hash: doc.source_hash.clone(),
         live: true,
+        floor_exempt: false,
         access: DocAccess::Live(Arc::clone(doc)),
         index_in_doc: hit.passage,
         anchor: (p.anchor_offset, p.anchor_len),

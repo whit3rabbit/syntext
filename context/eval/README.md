@@ -38,27 +38,35 @@ cargo test -p syntext-context --test eval                         # the regressi
 ## Results
 
 Release build, 4-core Linux container, default options, built-in
-`HeuristicCounter`:
+`HeuristicCounter`. "Lexical" is the engine without an embedder; "bge-small"
+adds semantic retrieval with
+[bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) through
+`embed_server.py` on CPU (`--embed`).
 
-| Set | 4K | 8K |
-|---|---|---|
-| multihop | 36 / 36 (100%) | 36 / 36 (100%) |
-| paraphrase | 10 / 24 (42%) | 10 / 24 (42%) |
-| code | 23 / 26 (88%) | 23 / 26 (88%) |
-| recall | 10 / 10 (100%) | 10 / 10 (100%) |
-| turbospark | 6 / 10 (60%) | 7 / 10 (70%) |
-| HotpotQA distractor, first 200 dev questions | 176 / 200 (88%) | 176 / 200 (88%) |
-| HotpotQA pooled, 2,000 paragraphs | 153 / 200 (76%) | 152 / 200 (76%) |
+| Set | Lexical 4K | Lexical 8K | bge-small 4K | bge-small 8K |
+|---|---|---|---|---|
+| multihop | 36 / 36 (100%) | 36 / 36 (100%) | 36 / 36 (100%) | 36 / 36 (100%) |
+| paraphrase | 10 / 24 (42%) | 10 / 24 (42%) | 24 / 24 (100%) | 24 / 24 (100%) |
+| code | 23 / 26 (88%) | 23 / 26 (88%) | 24 / 26 (92%) | 25 / 26 (96%) |
+| recall | 10 / 10 (100%) | 10 / 10 (100%) | 10 / 10 (100%) | 10 / 10 (100%) |
+| turbospark | 6 / 10 (60%) | 7 / 10 (70%) | not run | not run |
+| HotpotQA distractor, first 200 dev questions | 176 / 200 (88%) | 176 / 200 (88%) | 190 / 200 (95%) | 190 / 200 (95%) |
+| HotpotQA pooled, 2,000 paragraphs | 153 / 200 (76%) | 152 / 200 (76%) | 170 / 200 (85%) | 170 / 200 (85%) |
 
 Before the multi-hop chain fixes this set prompted (commit 1b4e30a), the
-same runs gave 20 / 36 (56%) on `multihop`, 172 / 200 (86%) on HotpotQA
-distractor, and 153 / 200 (76%) pooled. The relation classes were tuned on
-`multihop`'s wording, so that set overstates the gain; HotpotQA is the
-independent check.
+same lexical runs gave 20 / 36 (56%) on `multihop`, 172 / 200 (86%) on
+HotpotQA distractor, and 153 / 200 (76%) pooled. The relation classes were
+tuned on `multihop`'s wording, so that set overstates the gain; HotpotQA is
+the independent check.
 
 `paraphrase` is the lexical engine's known weak spot: a question sharing no
 words, identifiers, or entities with its answer finds nothing. Embeddings
-are the planned fix, measured against this set.
+close it and also lift `code` and HotpotQA; no set dropped. They cost time:
+with the model in a Python subprocess on CPU, embedding each question adds
+about 10 to 20 ms (p50 1.3 to 12.9 ms on `multihop`, 11 to 32 ms on `code`), and
+embedding this repository (about 400 files) once took about 13 minutes. The
+two `code` questions still missed at 4K ask about a mechanism in words its
+code does not use; the support is not among the retrieved passages at all.
 
 ## Adding questions
 

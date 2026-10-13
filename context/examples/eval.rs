@@ -3,8 +3,12 @@
 //! ```sh
 //! cargo run -p syntext-context --release --example eval -- \
 //!     [SET ...] [--windows 4096,8192] [--corpus NAME=DIR] \
-//!     [--hotpot FILE] [--hotpot-limit 60] [--failures] [--json FILE]
+//!     [--hotpot FILE] [--hotpot-limit 60] [--embed "COMMAND"] \
+//!     [--failures] [--json FILE]
 //! ```
+//!
+//! `--embed` runs every set with semantic retrieval, using an embedding
+//! process such as `python3 context/eval/embed_server.py --model-dir DIR`.
 //!
 //! Sets live in `context/eval/sets/`; see `context/eval/README.md`.
 
@@ -15,6 +19,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use harness::{report, EvalSet, RunOptions, SetOutcome};
+use syntext_context::Embedder;
 
 struct Args {
     sets: Vec<String>,
@@ -55,6 +60,12 @@ fn parse_args() -> Result<Args, String> {
             "--hotpot-limit" => {
                 let v = value("--hotpot-limit")?;
                 args.hotpot_limit = v.parse().map_err(|_| format!("bad --hotpot-limit {v}"))?;
+            }
+            "--embed" => {
+                let cmd = value("--embed")?;
+                let e = harness::embedder::CommandEmbedder::spawn(&cmd)?;
+                eprintln!("embedder: {} ({} dims)", e.id(), e.dims());
+                args.opts.embedder = Some(std::sync::Arc::new(e));
             }
             "--failures" => args.failures = true,
             "--json" => args.json = Some(PathBuf::from(value("--json")?)),

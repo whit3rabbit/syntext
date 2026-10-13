@@ -82,6 +82,7 @@ fn ask(store: &ContextStore, question: &str, opts: &RetrieveOptions) -> Retrieve
     retrieve(
         &store.snapshot(),
         None,
+        None,
         &CompileOptions::default(),
         question,
         opts,
@@ -293,6 +294,7 @@ fn syntext_bridge_prefers_live_content_over_a_stale_store() {
     let r = retrieve(
         &store.snapshot(),
         Some(&bridge),
+        None,
         &CompileOptions::default(),
         "where is route_query",
         &RetrieveOptions::default(),
@@ -312,6 +314,7 @@ fn syntext_bridge_prefers_live_content_over_a_stale_store() {
     let r = retrieve(
         &store.snapshot(),
         Some(&bridge),
+        None,
         &CompileOptions::default(),
         "where is route_query",
         &RetrieveOptions::default(),

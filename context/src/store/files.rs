@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::Path;
 
 use super::manifest::{is_segment_file_name, sync_dir, Manifest};
+use crate::embed::table::sidecar_segment;
 use crate::error::{ContextError, Result};
 
 pub(crate) const LOCK_FILE: &str = "write.lock";
@@ -59,8 +60,8 @@ pub(crate) fn acquire_lock(dir: &Path) -> Result<File> {
     Err(ContextError::Locked(dir.to_path_buf()))
 }
 
-/// Remove segment files the manifest no longer references and temp files
-/// left by crashed writers. Only called while holding the writer lock, so
+/// Remove segment files the manifest no longer references, the vector
+/// sidecars of those segments, and temp files left by crashed writers. Only called while holding the writer lock, so
 /// no other process can be mid-write. Best effort: a file still open
 /// elsewhere on Windows cannot be deleted and is retried next time.
 pub(crate) fn gc(dir: &Path, manifest: &Manifest) {
@@ -72,7 +73,9 @@ pub(crate) fn gc(dir: &Path, manifest: &Manifest) {
         let name = name.to_string_lossy();
         let orphan_segment =
             is_segment_file_name(&name) && !manifest.segments.iter().any(|s| s.file == name);
-        if orphan_segment || name.ends_with(".tmp") {
+        let orphan_vectors = sidecar_segment(&name)
+            .is_some_and(|seg| !manifest.segments.iter().any(|s| s.file == seg));
+        if orphan_segment || orphan_vectors || name.ends_with(".tmp") {
             if let Err(e) = std::fs::remove_file(entry.path()) {
                 log::debug!("context store gc: could not remove {name}: {e}");
             }

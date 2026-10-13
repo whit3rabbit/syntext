@@ -127,6 +127,9 @@ pub struct Receipt {
     pub tokenizer: String,
     /// Model the packet was prepared for.
     pub model: Option<String>,
+    /// Embedder whose vectors ranked the evidence, if any.
+    #[serde(default)]
+    pub embedder: Option<String>,
 }
 
 /// Whether a cited source still matches what the model saw.

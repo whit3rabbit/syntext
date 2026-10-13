@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use syntext_context::{
     syntext, ChatRequest, ContextEngine, ContextStore, ConversationMemory, DirectorySource,
-    MemoryMode, Role, Scope, SourceDoc, StoreOptions, SyntextSource,
+    EmbedOptions, MemoryMode, Role, Scope, SourceDoc, StoreOptions, SyntextSource,
 };
 
 use super::score;
@@ -77,12 +77,21 @@ pub(super) fn run(set: &EvalSet, opts: &RunOptions) -> Result<SetOutcome, String
                 };
                 m.record(role, &t.content).map_err(|e| e.to_string())?;
             }
+            // Into durable segments, as a long conversation would be: turns
+            // still in the live journal are never embedded.
+            store.flush_memory().map_err(|e| e.to_string())?;
             memory = Some(m);
         }
     }
     let mut builder = ContextEngine::builder(Arc::clone(&store));
     if let Some((index, label)) = index {
         builder = builder.syntext(SyntextSource::new(index, &label).map_err(|e| e.to_string())?);
+    }
+    if let Some(e) = &opts.embedder {
+        store
+            .embed(e.as_ref(), &EmbedOptions::default())
+            .map_err(|e| format!("{}: embedding: {e}", set.name))?;
+        builder = builder.embedder(Arc::clone(e));
     }
     let engine = builder.build();
 

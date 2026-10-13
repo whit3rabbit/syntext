@@ -43,6 +43,8 @@ pub enum ContextError {
     /// The caller cancelled the operation (for example from a sync
     /// progress callback). Nothing was published.
     Cancelled,
+    /// The host's embedder failed or returned malformed vectors.
+    Embedder(String),
 }
 
 impl ContextError {
@@ -90,6 +92,7 @@ impl std::fmt::Display for ContextError {
                 "prompt needs {needed} tokens even without history or evidence, but only {limit} fit the window"
             ),
             ContextError::Cancelled => write!(f, "operation cancelled"),
+            ContextError::Embedder(msg) => write!(f, "embedder: {msg}"),
         }
     }
 }
