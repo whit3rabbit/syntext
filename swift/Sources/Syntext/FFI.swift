@@ -1,12 +1,14 @@
 // Thin, safe wrappers over the raw C ABI (CSyntext). All pointer/lifetime
 // handling lives here; the public API layers never touch raw pointers.
+// `package` access shares these with the SyntextContext target without
+// making them public API.
 
 import Foundation
 import CSyntext
 
 /// Runs `body` with a fresh error out-parameter and materializes any error
 /// the C side stored into a thrown `SyntextError`, freeing the handle.
-func ffiCall<T>(_ body: (UnsafeMutablePointer<OpaquePointer?>) throws -> T) throws -> T {
+package func ffiCall<T>(_ body: (UnsafeMutablePointer<OpaquePointer?>) throws -> T) throws -> T {
     var err: OpaquePointer? = nil
     let result = try body(&err)
     if let e = err {
@@ -19,7 +21,7 @@ func ffiCall<T>(_ body: (UnsafeMutablePointer<OpaquePointer?>) throws -> T) thro
 }
 
 /// Reads an owned JSON string returned by the C ABI and frees it.
-func takeString(_ p: UnsafeMutablePointer<CChar>?) -> String {
+package func takeString(_ p: UnsafeMutablePointer<CChar>?) -> String {
     guard let p else { return "" }
     defer { syntext_string_free(p) }
     return String(cString: p)
@@ -28,11 +30,11 @@ func takeString(_ p: UnsafeMutablePointer<CChar>?) -> String {
 /// An owned NUL-terminated C string. `nil` instance argument means NULL.
 /// Deallocation happens in `deinit`, so the pointer stays valid for the whole
 /// enclosing FFI call without nested `withCString` pyramids.
-final class CZString {
+package final class CZString {
     private let buffer: UnsafeMutablePointer<CChar>
     private let isAllocated: Bool
 
-    init?(_ s: String?) {
+    package init?(_ s: String?) {
         guard let s else { return nil }
         let units = Array(s.utf8CString) // includes the terminating NUL
         // The Rust side reads this back with `CStr::from_ptr`, which stops at
@@ -50,7 +52,7 @@ final class CZString {
     }
 
     /// NULL when constructed from a nil string, else the C string pointer.
-    var ptr: UnsafePointer<CChar>? { UnsafePointer(buffer) }
+    package var ptr: UnsafePointer<CChar>? { UnsafePointer(buffer) }
 
     deinit {
         if isAllocated {
@@ -60,14 +62,14 @@ final class CZString {
 }
 
 /// Shared snake_case JSON coder pair (Rust DTOs are snake_case on the wire).
-enum SyntextJSON {
-    static let decoder: JSONDecoder = {
+package enum SyntextJSON {
+    package static let decoder: JSONDecoder = {
         let d = JSONDecoder()
         d.keyDecodingStrategy = .convertFromSnakeCase
         return d
     }()
 
-    static let encoder: JSONEncoder = {
+    package static let encoder: JSONEncoder = {
         let e = JSONEncoder()
         e.keyEncodingStrategy = .convertToSnakeCase
         return e

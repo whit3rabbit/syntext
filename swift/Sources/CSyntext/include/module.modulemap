@@ -1,4 +1,5 @@
 module CSyntext {
     header "syntext.h"
+    header "syntext_context.h"
     export *
 }

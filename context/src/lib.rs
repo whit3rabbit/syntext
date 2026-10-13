@@ -15,13 +15,20 @@
 //!
 //! Only the selected evidence enters the prompt, and it enters as untrusted
 //! reference data in a user message, never in the system role.
-#![forbid(unsafe_code)]
+//!
+//! With the `ffi` feature, [`ffi`] adds a C ABI (used by the Swift package)
+//! on top of syntext's own; it is the only module allowed `unsafe`.
+#![cfg_attr(not(feature = "ffi"), forbid(unsafe_code))]
+#![cfg_attr(feature = "ffi", deny(unsafe_code))]
 #![warn(missing_docs)]
 
 pub(crate) mod analysis;
 pub mod compile;
 pub mod engine;
 pub mod error;
+#[cfg(feature = "ffi")]
+#[allow(unsafe_code)]
+pub mod ffi;
 pub mod graph;
 pub mod memory;
 pub mod pack;

@@ -17,6 +17,12 @@ publish = false
 name = "syntext_context"
 path = "src/lib.rs"
 
+[features]
+# C ABI for Swift and other foreign hosts. Enables syntext's own C ABI too:
+# both are compiled into one static library, so an app links one Rust
+# library (see swift/Scripts/build-xcframework.sh).
+ffi = ["syntext/ffi"]
+
 [dependencies]
 # Exact-match search, repository walking, binary detection, and BLAKE3 change
 # tracking come from syntext itself. `native` brings the filesystem pieces
@@ -45,3 +51,8 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+
+[[test]]
+name = "ffi"
+path = "tests/ffi.rs"
+required-features = ["ffi"]

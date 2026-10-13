@@ -20,6 +20,8 @@ let package = Package(
     platforms: [.macOS(.v12)],
     products: [
         .library(name: "Syntext", targets: ["Syntext"]),
+        // The context engine (docs/CONTEXT.md); see swift/Package.swift.
+        .library(name: "SyntextContext", targets: ["SyntextContext"]),
     ],
     targets: [
         ffiTarget,
@@ -32,9 +34,17 @@ let package = Package(
             name: "Syntext",
             dependencies: ["CSyntext", "SyntextFFI"],
             path: "swift/Sources/Syntext"),
+        .target(
+            name: "SyntextContext",
+            dependencies: ["Syntext", "CSyntext", "SyntextFFI"],
+            path: "swift/Sources/SyntextContext"),
         .testTarget(
             name: "SyntextTests",
             dependencies: ["Syntext"],
             path: "swift/Tests/SyntextTests"),
+        .testTarget(
+            name: "SyntextContextTests",
+            dependencies: ["SyntextContext"],
+            path: "swift/Tests/SyntextContextTests"),
     ]
 )

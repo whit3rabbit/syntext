@@ -132,6 +132,11 @@ impl ContextEngine {
         &self.store
     }
 
+    /// Retrieval options the engine was built with.
+    pub fn retrieve_options(&self) -> &RetrieveOptions {
+        &self.retrieve
+    }
+
     /// Ranked passages for `question`, without packing.
     pub fn retrieve(&self, question: &str, opts: &RetrieveOptions) -> Result<Retrieved> {
         retrieve(

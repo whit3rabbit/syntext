@@ -72,9 +72,14 @@ jobs:
       - name: cargo test -p syntext-context
         run: cargo test -p syntext-context
 
+      - name: cargo test -p syntext-context --features ffi
+        run: cargo test -p syntext-context --features ffi
+
       - name: cargo clippy -p syntext-context
         # --no-deps: lint this crate, not `syntext` built without its `cli` feature.
-        run: cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
+        run: |
+          cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
+          cargo clippy -p syntext-context --all-targets --features ffi --no-deps -- -D warnings
 
   test-symbols:
     name: Test (symbols feature)

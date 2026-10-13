@@ -108,19 +108,28 @@ pub(crate) const DEFAULT_LIMITS: crate::index::freshness::UpdateLimits =
     };
 
 // ── Error payload ───────────────────────────────────────────
+// The error payload, panic firewall, and argument helpers below are `pub`
+// (and hidden from docs) so C ABIs layered on this one in sibling crates,
+// such as the context engine, share `syntext_error` and the same string
+// and ownership rules: a host sees one convention. They are not a stable
+// Rust API; they change with the C ABI.
+
 /// Error payload crossing the FFI boundary.
-pub(crate) struct FfiError {
+#[doc(hidden)]
+pub struct FfiError {
     code: u32,
     /// Stored NUL-terminated so `syntext_error_message` can lend a `char*`.
     message: CString,
 }
 
 impl FfiError {
-    pub(crate) fn invalid_arg(msg: impl Into<String>) -> Self {
+    /// An invalid-argument error (`SYNTEXT_ERR_INVALID_ARGUMENT`).
+    pub fn invalid_arg(msg: impl Into<String>) -> Self {
         Self::new(SYNTEXT_ERR_INVALID_ARGUMENT, msg)
     }
 
-    fn new(code: u32, msg: impl Into<String>) -> Self {
+    /// An error with an explicit ABI code.
+    pub fn new(code: u32, msg: impl Into<String>) -> Self {
         FfiError {
             code,
             // Display impls never emit interior NUL in practice; fall back to
@@ -171,13 +180,15 @@ impl From<IndexError> for FfiError {
 /// messages still print to stderr via the default hook; we deliberately do
 /// NOT install a global `set_hook` (a process-global side effect the host
 /// application owns).
-pub(crate) fn catch<T>(f: impl FnOnce() -> Result<T, FfiError>) -> Result<T, FfiError> {
+#[doc(hidden)]
+pub fn catch<T>(f: impl FnOnce() -> Result<T, FfiError>) -> Result<T, FfiError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
         .unwrap_or_else(|payload| Err(FfiError::panic(payload)))
 }
 
 /// Wrap a pointer-returning FFI body: NULL on error, `*err_out` set.
-pub(crate) fn ffi_ptr<T>(
+#[doc(hidden)]
+pub fn ffi_ptr<T>(
     err_out: *mut *mut syntext_error,
     f: impl FnOnce() -> Result<*mut T, FfiError>,
 ) -> *mut T {
@@ -191,7 +202,8 @@ pub(crate) fn ffi_ptr<T>(
 }
 
 /// Wrap an `int32_t`-returning FFI body: `SYNTEXT_OK` or the error code.
-pub(crate) fn ffi_status(
+#[doc(hidden)]
+pub fn ffi_status(
     err_out: *mut *mut syntext_error,
     f: impl FnOnce() -> Result<(), FfiError>,
 ) -> i32 {
@@ -206,7 +218,8 @@ pub(crate) fn ffi_status(
 }
 
 /// Store `e` into `*err_out` as a fresh owned error handle.
-pub(crate) fn set_err(err_out: *mut *mut syntext_error, e: FfiError) {
+#[doc(hidden)]
+pub fn set_err(err_out: *mut *mut syntext_error, e: FfiError) {
     if !err_out.is_null() {
         // err_out is an out-parameter the caller allocated for this call.
         unsafe { *err_out = Box::into_raw(Box::new(e)) as *mut syntext_error };
@@ -219,7 +232,8 @@ pub(crate) fn set_err(err_out: *mut *mut syntext_error, e: FfiError) {
 /// # Safety
 /// `ptr` must be NULL or point to a valid NUL-terminated C string that stays
 /// valid for the duration of this call.
-pub(crate) unsafe fn cstr<'a>(ptr: *const c_char) -> Result<Option<&'a str>, FfiError> {
+#[doc(hidden)]
+pub unsafe fn cstr<'a>(ptr: *const c_char) -> Result<Option<&'a str>, FfiError> {
     if ptr.is_null() {
         return Ok(None);
     }
@@ -233,7 +247,8 @@ pub(crate) unsafe fn cstr<'a>(ptr: *const c_char) -> Result<Option<&'a str>, Ffi
 ///
 /// # Safety
 /// Same contract as [`cstr`], minus NULL.
-pub(crate) unsafe fn req_str<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, FfiError> {
+#[doc(hidden)]
+pub unsafe fn req_str<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, FfiError> {
     cstr(ptr)?.ok_or_else(|| FfiError::invalid_arg(format!("{what} must not be NULL")))
 }
 
@@ -259,7 +274,8 @@ pub(crate) unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> Result<&'a [u8], F
 }
 
 /// Serialize `v` to an owned NUL-terminated JSON string.
-pub(crate) fn owned_json<T: serde::Serialize>(v: &T) -> Result<*mut c_char, FfiError> {
+#[doc(hidden)]
+pub fn owned_json<T: serde::Serialize>(v: &T) -> Result<*mut c_char, FfiError> {
     let s = serde_json::to_string(v).map_err(|e| {
         FfiError::new(
             SYNTEXT_ERR_UNKNOWN,
@@ -274,7 +290,8 @@ pub(crate) fn owned_json<T: serde::Serialize>(v: &T) -> Result<*mut c_char, FfiE
 }
 
 /// Parse a nullable JSON argument; NULL means `T::default()`.
-pub(crate) fn parse_opt_json<T: Default + serde::de::DeserializeOwned>(
+#[doc(hidden)]
+pub fn parse_opt_json<T: Default + serde::de::DeserializeOwned>(
     ptr: *const c_char,
     what: &str,
 ) -> Result<T, FfiError> {
