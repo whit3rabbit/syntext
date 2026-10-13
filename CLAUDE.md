@@ -62,6 +62,7 @@ The crate supports the following Cargo feature flags:
 * `wasm`: WASM target support. Enables `wasm-bindgen` API, fully in-memory index, and disables all native filesystem and threading dependencies.
 * `ffi`: C ABI for foreign-language bindings (Swift via xcframework). Enables `native` plus `src/ffi/` entry points and the mutable in-memory `MemIndex` (`src/index/mem_index.rs`). See [docs/SWIFT.md](docs/SWIFT.md).
 * `symbols`: Tree-sitter symbol extraction and SQLite local cache storage support.
+* `syntext-context` (the `context/` workspace member) has its own `ffi` feature: the context engine's C ABI, which turns on syntext's `ffi` too, so one static library exports both.
 
 ## Implementation Order
 
@@ -300,8 +301,8 @@ If all weights are 65535, the script ran with no corpus. Check HF auth and datas
 
 All PRs must pass before merge:
 
-1. `cargo test` -- no failures
-2. `cargo clippy` -- no warnings
+1. `cargo test` -- no failures (and `cargo test -p syntext-context --features ffi` for changes under `context/` or to syntext APIs it uses; CI runs both)
+2. `cargo clippy` -- no warnings (the context crate: `cargo clippy -p syntext-context --all-targets --features ffi --no-deps -- -D warnings`)
 3. No source file > 400 lines (test files exempt)
    - Inline `#[cfg(test)] mod tests` counts toward the total. Over 400 mostly from tests: extract to a sibling via `#[cfg(test)] #[path = "X_tests.rs"] mod tests;` (pattern: `overlay_tests.rs`, `freshness_tests.rs`). Over 400 from real code: split into a child module — a `mod` under `index`/`cli` can call the parent type's private methods (Rust descendant privacy), so no `pub` widening; add `pub(super)` only when a helper a parent/sibling calls moves into the child (e.g. `update.rs`, `path_resolve.rs`).
 4. New public APIs have doc comments
@@ -456,7 +457,7 @@ context/                      # syntext-context: context engine for small-window
   examples/ask.rs             # sync a directory and print the prompt for a question
   examples/eval.rs            # run the eval sets (and optional HotpotQA / external corpora), print a report
   examples/mcp.rs             # the agent tools as a stdio Model Context Protocol server
-  tests/                      # end_to_end, budget_props (proptest), memory_recovery, agent_tools, embeddings, ffi (--features ffi)
+  tests/                      # end_to_end, budget_props (proptest), memory_recovery, agent_tools, embeddings, eval (per-set floors), ffi (--features ffi)
 ```
 
 ## Context engine (`context/`)

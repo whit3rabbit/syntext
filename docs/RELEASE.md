@@ -8,7 +8,7 @@ This document details the step-by-step procedure for releasing a new version of 
 
 Perform these steps on your local machine before committing or tagging:
 
-- [ ] **Bump Crate Version**: Update the `version` field in [Cargo.toml](../Cargo.toml).
+- [ ] **Bump Crate Version**: Update the `version` field in [Cargo.toml](../Cargo.toml). [context/Cargo.toml](../context/Cargo.toml) requires `syntext` by path with a caret version (`version = "2.5.0"`), so a major version bump must update that requirement too.
 - [ ] **Regenerate Lockfile**: Run `cargo check` or `cargo build` to ensure [Cargo.lock](../Cargo.lock) is updated with the new version.
 - [ ] **Update Changelog**:
   - Open [CHANGELOG.md](../CHANGELOG.md).
@@ -17,6 +17,7 @@ Perform these steps on your local machine before committing or tagging:
 - [ ] **Run Quality Gate**:
   - Run `cargo test --features cli,symbols,ffi,oracle` to ensure all unit and integration tests pass cleanly. (`wasm` is checked separately below; it is mutually exclusive with `ffi`/`native`, so a literal `--all-features` never compiles.)
   - Run `cargo clippy --all-targets --features cli,symbols,ffi,oracle -- -D warnings` to ensure zero warnings.
+  - Run `cargo test -p syntext-context --features ffi` and `cargo clippy -p syntext-context --all-targets --features ffi --no-deps -- -D warnings`. The commands above build only the root `syntext` package, not the context engine in `context/`.
   - Run `cargo check --target wasm32-unknown-unknown --features wasm --no-default-features` to verify the wasm build still type-checks.
   - Run `cargo fmt --check` to ensure formatting is correct.
   - Ensure no source code file (excluding test suites) exceeds 400 lines (check `AGENTS.md` rules for module splitting guidelines).
@@ -58,10 +59,10 @@ Once preparation is complete and verified:
 
 - [ ] **Monitor GitHub Actions**: Go to GitHub Actions and monitor the **Release** workflow. It will:
   - Build binaries for Linux (amd64, arm64), macOS (arm64, x86_64), Windows (amd64), and WASM (bundler).
-  - Build the `SyntextFFI.xcframework` zip (Swift package binary target) from the `ffi` feature.
+  - Build the `SyntextFFI.xcframework` zip (Swift package binary target) from `syntext-context` with its `ffi` feature, so one library exports both `syntext.h` and `syntext_context.h` (the `Syntext` and `SyntextContext` products).
   - Package and generate SHA256 checksums.
   - Create/publish a GitHub Release, using `scripts/extract_release_notes.py` to auto-populate the release description from `CHANGELOG.md`.
-  - Publish the crate to [crates.io](https://crates.io/crates/syntext).
+  - Publish the `syntext` crate to [crates.io](https://crates.io/crates/syntext). `syntext-context` is `publish = false`, and the published package leaves out `context/`.
   - Automatically update the Homebrew cask in `whit3rabbit/homebrew-tap`.
   - Automatically pin `swift/Package.swift` to the new xcframework zip (url + checksum) and push a `swift-vX.Y.Z` tag. If this push is blocked (branch protection on `main` rejecting the workflow token), pin manually: `shasum -a 256 <zip>` and edit the `url:`/`checksum:` literals in `swift/Package.swift`.
 - [ ] **Bump Installer Defaults**: Once the GitHub Release has successfully published:
