@@ -439,7 +439,7 @@ context/                      # syntext-context: context engine for small-window
   README.md                   # usage, guarantees, measured numbers
   src/lib.rs                  # public API re-exports
   src/analysis/               # code-aware terms: identifier subwords + compounds, Porter stemmer, stopwords
-  src/structure/              # structural passages: Markdown sections/blocks, code items, size normalization
+  src/structure/              # structural passages: Markdown sections/blocks, code items, size normalization; outline() + code_outline.rs: every heading or definition
   src/graph/                  # canonical entities (fold_key), aliases, typed edges from code and prose
   src/compile/                # SourceDoc -> CompiledDoc; sync.rs: directory / path sync over syntext's walk + change catalogue
   src/store/                  # .ctxs segments, manifest commit point, staged batched writes, journal, compaction; publish.rs: snapshot publication
@@ -450,11 +450,13 @@ context/                      # syntext-context: context engine for small-window
   src/receipt.rs              # provenance receipts + source drift checks
   src/embed/                  # Embedder trait, resumable embed job, .vec sidecars (8-bit, text-hash keyed), compaction carry-over
   src/engine/                 # ContextEngine facade: prepare (packet) / assemble (whole prompt)
+  src/tools/                  # agent tools: definitions (OpenAI / MCP), lenient args, context_search / context_read / context_outline
   src/ffi/                    # C ABI (ffi feature): store / engine / memory handles, JSON in and out, codes 300+
   eval/                       # evaluation: harness/ (shared via #[path]), sets/*.json, generators, README
   examples/ask.rs             # sync a directory and print the prompt for a question
   examples/eval.rs            # run the eval sets (and optional HotpotQA / external corpora), print a report
-  tests/                      # end_to_end, budget_props (proptest), memory_recovery, ffi (--features ffi)
+  examples/mcp.rs             # the agent tools as a stdio Model Context Protocol server
+  tests/                      # end_to_end, budget_props (proptest), memory_recovery, agent_tools, embeddings, ffi (--features ffi)
 ```
 
 ## Context engine (`context/`)
@@ -471,6 +473,7 @@ Design and alternatives: [`docs/CONTEXT.md`](docs/CONTEXT.md). Invariants to kee
 - **One Rust staticlib, two C headers.** The C ABI (`context/src/ffi/`) is compiled into the same static library as syntext's (`build-xcframework.sh` builds `syntext-context --features ffi`) and reuses syntext's error type and string helpers (`syntext::ffi`, `pub` + `#[doc(hidden)]`). `syntext_context.h` is hand-written: change it with every `extern "C"` signature or JSON shape change. Context error codes (300+) are append-only. An app with its own Rust staticlib links the engine into that library instead (`extern crate syntext_context;`), see `docs/CONTEXT.md`.
 - **Vectors are a fail-open cache keyed by content.** `seg-*.<model>.vec` sidecars (`context/src/embed/table.rs`) hold one 8-bit row per passage, keyed by the hash of the exact text embedded (`embed::passage_text`: breadcrumb + symbol + body). Change that text recipe and every vector re-embeds. A missing or damaged sidecar only means fewer vectors; never make one fatal. Compaction must keep carrying vectors (`embed::job::collect` before the commit, `carry_vectors` after), or every compaction re-embeds the store. The model never runs during sync or compaction.
 - **Measure ranking changes, don't judge them.** Any change to analysis, segmentation, graph extraction, retrieval, or packing runs `cargo run -p syntext-context --release --example eval` before and after (and HotpotQA via `context/eval/fetch_hotpot.py` for multi-hop changes; `multihop` is synthetic and its wording shaped the relation classes, so it overstates). Record moved numbers in `context/eval/README.md`. `tests/eval.rs` floors fail CI on regressions; lower one only with the reason in the commit. Repository corpora exclude `context/eval/` (the set files contain the questions).
+- **Tool authority belongs to the app.** `ToolOptions` (scopes, `result_tokens`, `max_results`) is set by the host; the model's arguments only say what to look for and can never widen scopes. A source outside the granted scopes must read exactly like a missing one (`tools/source.rs::visible` filters before resolution). Every result fits `result_tokens` (`call_tool` replaces an oversized reply with a short error), and every name a result echoes is sanitized: document text, headings, and paths are untrusted.
 - **`prepare` and `assemble` share memory semantics.** Both grant the conversation's scope and exclude the turns already verbatim in the prompt (`PrepareRequest::memory(&memory, kept_turns)`; `assemble` passes its own kept count). Keep them going through `prepare` so the two paths cannot drift.
 
 ## Deferred Work

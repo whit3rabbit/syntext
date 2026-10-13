@@ -40,6 +40,7 @@ pub mod retrieve;
 pub mod store;
 pub mod structure;
 pub mod tokens;
+pub mod tools;
 pub mod types;
 
 /// The syntext crate this engine is built on. Open the index for a
@@ -76,6 +77,10 @@ pub use store::{
 };
 pub use structure::{Lang, SegmentOptions};
 pub use tokens::{FnCounter, HeuristicCounter, TokenCounter};
+pub use tools::{
+    tool_definitions, Shown, ToolDefinition, ToolOptions, ToolResult, MIN_RESULT_TOKENS,
+    OUTLINE_TOOL, READ_TOOL, SEARCH_TOOL,
+};
 pub use types::{
     DocKey, DocKind, PassageKind, Role, Scope, ScopeFilter, SymbolKind, Trust, MAX_DOC_KEY_BYTES,
     MAX_SCOPE_BYTES,

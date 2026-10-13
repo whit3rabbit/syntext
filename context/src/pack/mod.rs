@@ -198,12 +198,15 @@ const MAX_EXCLUDED: usize = 16;
 /// of weak neighbours must not outrank a single strong passage.
 const MERGE_BONUS_CAP: f32 = 1.2;
 
+/// Pack `passages` into at most `budget` tokens of rendered evidence, with
+/// citation ids numbered from `E<first_id>`.
 pub(crate) fn pack(
     passages: &[RankedPassage],
     budget: usize,
     counter: &dyn TokenCounter,
     opts: &PackOptions,
     render: &RenderOptions,
+    first_id: usize,
 ) -> Result<Packed> {
     let mut excluded = Vec::new();
     let mut exclude = |p: &RankedPassage, reason| {
@@ -348,7 +351,7 @@ pub(crate) fn pack(
         EvidenceOrder::Document => document_order(accepted),
     };
     for (i, b) in blocks.iter_mut().enumerate() {
-        b.id = format!("E{}", i + 1);
+        b.id = format!("E{}", first_id + i);
     }
     let mut evidence_text = render_evidence(&blocks, render);
     let mut tokens = counter.count(&evidence_text);
@@ -358,7 +361,7 @@ pub(crate) fn pack(
             .unwrap_or(blocks.len() - 1);
         blocks.remove(weakest);
         for (i, b) in blocks.iter_mut().enumerate() {
-            b.id = format!("E{}", i + 1);
+            b.id = format!("E{}", first_id + i);
         }
         evidence_text = render_evidence(&blocks, render);
         tokens = counter.count(&evidence_text);

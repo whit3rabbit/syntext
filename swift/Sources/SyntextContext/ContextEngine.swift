@@ -14,7 +14,7 @@ import Syntext
 /// (the Rust engine is `Send + Sync`); calls block, so use the `async`
 /// variants or call off the main thread.
 public final class SyntextContextEngine: @unchecked Sendable {
-    private let handle: OpaquePointer?
+    let handle: OpaquePointer?
     private let counter: Unmanaged<CounterBox>?
     /// Kept alive while the engine can call it.
     private let embedder: SyntextContextEmbedder?

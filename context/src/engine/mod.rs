@@ -171,6 +171,18 @@ impl ContextEngine {
         self.embedder.as_ref()
     }
 
+    pub(crate) fn counter(&self) -> &dyn TokenCounter {
+        &*self.counter
+    }
+
+    pub(crate) fn pack_options(&self) -> &PackOptions {
+        &self.pack
+    }
+
+    pub(crate) fn render_options(&self) -> &RenderOptions {
+        &self.render
+    }
+
     /// Retrieve and pack evidence for `req.question` within its budget.
     pub fn prepare(&self, req: &PrepareRequest<'_>) -> Result<EvidencePacket> {
         let start = Instant::now();
@@ -193,6 +205,7 @@ impl ContextEngine {
             &*self.counter,
             &self.pack,
             &self.render,
+            1,
         )?;
         let mut timings = retrieved.timings;
         timings.pack_us = t.elapsed().as_micros() as u64;

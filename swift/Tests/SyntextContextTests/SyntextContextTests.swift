@@ -79,6 +79,49 @@ final class SyntextContextTests: XCTestCase {
         XCTAssertEqual(found.first?.symbol, "should_retry")
     }
 
+    func testAgentToolsSearchAgainReadAndOutline() throws {
+        let repo = try makeRepo([
+            "docs/billing.md": "# Billing\n\n## Retries\n\nFailed charges are retried three times.\n\n## Invoices\n\nInvoices go out monthly.\n",
+            "docs/refunds.md": "# Refund policy\n\nRefunds take 45 days.\n",
+            "src/retry.rs": "/// Retry a failed charge.\npub fn should_retry(attempt: u32) -> bool {\n    attempt < 3\n}\n",
+        ])
+        let store = try openStore()
+        try store.sync(SyntextDirectorySource(label: "repo", root: repo.path))
+        let engine = try SyntextContextEngine(store: store)
+
+        let defs = try SyntextContextEngine.toolDefinitionsJSON()
+        let parsed = try JSONSerialization.jsonObject(with: Data(defs.utf8)) as? [[String: Any]]
+        let names = parsed?.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+        XCTAssertEqual(names, ["context_search", "context_read", "context_outline"])
+        XCTAssertTrue(try SyntextContextEngine.toolDefinitionsJSON(format: .mcp).contains("inputSchema"))
+
+        let packet = try engine.prepare(question: "Are failed charges retried?", evidenceTokens: 400)
+        var options = SyntextToolOptions()
+        options.record(packet)
+        XCTAssertEqual(options.firstId, packet.blocks.count + 1)
+
+        let found = try engine.callTool(
+            name: "context_search", arguments: #"{"query": "refunds"}"#, options: options)
+        XCTAssertFalse(found.isError)
+        XCTAssertEqual(found.blocks.first?.id, "E\(options.firstId)")
+        XCTAssertTrue(found.content.contains("Refunds take 45 days"))
+        options.record(found)
+        XCTAssertEqual(options.firstId, found.nextId)
+
+        let outline = try engine.callTool(
+            name: "context_outline", arguments: #"{"source": "docs/billing.md"}"#, options: options)
+        XCTAssertTrue(outline.content.contains("  Invoices (lines 7-9)"), outline.content)
+        let read = try engine.callTool(
+            name: "context_read", arguments: #"{"source": "src/retry.rs", "start_line": 2}"#,
+            options: options)
+        XCTAssertEqual(read.blocks.first?.lines, [2, 4])
+
+        let wrong = try engine.callTool(name: "context_read", arguments: "{}", options: options)
+        XCTAssertTrue(wrong.isError)
+        XCTAssertThrowsError(try engine.callTool(
+            name: "context_search", arguments: "{}", options: SyntextToolOptions(resultTokens: 8)))
+    }
+
     func testCancelledSyncPublishesNothing() throws {
         var files: [String: String] = [:]
         for i in 0..<5 { files["n\(i).md"] = "note \(i)\n" }

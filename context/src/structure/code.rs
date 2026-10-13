@@ -15,6 +15,10 @@ use super::lines::Lines;
 use super::{defs, Layout, PassageSpan, SegmentOptions, Symbol};
 use crate::types::{PassageKind, SymbolKind};
 
+#[path = "code_outline.rs"]
+mod outline;
+pub(super) use outline::definitions;
+
 /// How many nested container levels are split before falling back to
 /// line-based splitting.
 const MAX_SPLIT_DEPTH: usize = 4;
