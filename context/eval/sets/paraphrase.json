@@ -1,0 +1,503 @@
+{
+ "name": "paraphrase",
+ "description": "Questions worded without the answer's vocabulary, over short policy documents and lexical decoys that share the questions' surface words.",
+ "corpus": {
+  "kind": "notes",
+  "docs": [
+   {
+    "id": "refunds",
+    "title": "Refund policy",
+    "text": "# Refund policy\n\nRefunds are issued within 45 days of purchase to the original payment method. After 45 days, purchases can only be exchanged for store credit.\n"
+   },
+   {
+    "id": "account-recovery",
+    "title": "Account recovery",
+    "text": "# Account recovery\n\nTo reset a forgotten password, open Settings, choose Security, and select Reset password. A reset link is emailed to the address on file and expires after one hour.\n"
+   },
+   {
+    "id": "delivery",
+    "title": "Delivery times",
+    "text": "# Delivery times\n\nStandard orders ship within two business days and usually arrive in three to five days. Express delivery arrives the next business day for an extra fee.\n"
+   },
+   {
+    "id": "paid-leave",
+    "title": "Paid leave",
+    "text": "# Paid leave\n\nFull-time employees accrue 1.5 days of paid leave per month, up to 30 days. Unused leave carries over into the first quarter of the next year.\n"
+   },
+   {
+    "id": "retention",
+    "title": "Data retention",
+    "text": "# Data retention\n\nApplication logs are deleted after 30 days. Database backups are kept for 90 days and then destroyed.\n"
+   },
+   {
+    "id": "menu-labels",
+    "title": "Cafeteria menu labels",
+    "text": "# Cafeteria menu labels\n\nDishes containing peanuts, tree nuts, or shellfish are marked with a red triangle on the menu board.\n"
+   },
+   {
+    "id": "expenses",
+    "title": "Expense reimbursement",
+    "text": "# Expense reimbursement\n\nSubmit receipts in the finance portal within 30 days. Reimbursements are paid with the next payroll run.\n"
+   },
+   {
+    "id": "visitor-parking",
+    "title": "Visitor parking",
+    "text": "# Visitor parking\n\nVisitors park on level 2 of the garage and get their ticket validated at reception.\n"
+   },
+   {
+    "id": "incidents",
+    "title": "Incident response",
+    "text": "# Incident response\n\nIf production is down, page the on-call engineer through the alerting tool and open an incident channel.\n"
+   },
+   {
+    "id": "hardware",
+    "title": "Hardware refresh",
+    "text": "# Hardware refresh\n\nCompany laptops are replaced every three years. Request a replacement early if yours fails the diagnostics check.\n"
+   },
+   {
+    "id": "remote",
+    "title": "Working from home",
+    "text": "# Working from home\n\nStaff may work remotely up to three days a week with their manager's approval.\n"
+   },
+   {
+    "id": "badges",
+    "title": "Lost badges",
+    "text": "# Lost badges\n\nReport a lost access card to security immediately; it is deactivated within ten minutes and a replacement is printed at the front desk.\n"
+   },
+   {
+    "id": "reviews",
+    "title": "Pull request reviews",
+    "text": "# Pull request reviews\n\nEvery pull request needs approval from one code owner before merge, and CI must be green.\n"
+   },
+   {
+    "id": "first-week",
+    "title": "First week",
+    "text": "# First week\n\nNew hires receive their equipment on day one and meet their mentor on day two.\n"
+   },
+   {
+    "id": "printing",
+    "title": "Printing",
+    "text": "# Printing\n\nThe color printer on floor 3 requires your badge to release jobs.\n"
+   },
+   {
+    "id": "travel",
+    "title": "Business travel",
+    "text": "# Business travel\n\nFlights and hotels must be booked through the travel desk at least 14 days ahead.\n"
+   },
+   {
+    "id": "illness",
+    "title": "Illness",
+    "text": "# Illness\n\nIf you are unwell, tell your manager before 10am; a doctor's note is required after three consecutive days.\n"
+   },
+   {
+    "id": "animals",
+    "title": "Animals at the office",
+    "text": "# Animals at the office\n\nDogs are welcome on Fridays if they are house-trained and stay in the designated area.\n"
+   },
+   {
+    "id": "two-step",
+    "title": "Two-step verification",
+    "text": "# Two-step verification\n\nEnable two-step verification with an authenticator app; text-message codes are no longer accepted.\n"
+   },
+   {
+    "id": "disputes",
+    "title": "Billing disputes",
+    "text": "# Billing disputes\n\nIf an invoice looks wrong, reply to the billing email within 60 days and a specialist will review the charges.\n"
+   },
+   {
+    "id": "transfers",
+    "title": "Money transfers",
+    "text": "# Money transfers\n\nYou can send money back and forth between linked accounts, up to 2,000 dollars per day.\n"
+   },
+   {
+    "id": "sign-in-redesign",
+    "title": "Sign-in page redesign",
+    "text": "# Sign-in page redesign\n\nThe sign-in page now remembers your username on trusted devices, so you can sign in faster.\n"
+   },
+   {
+    "id": "package-manager",
+    "title": "Package manager",
+    "text": "# Package manager\n\nThe build uses a lockfile so every package version is pinned; a package update shows up in the diff.\n"
+   },
+   {
+    "id": "time-tracking",
+    "title": "Time tracking",
+    "text": "# Time tracking\n\nLog the time you spend on each project in the time tracker by Friday each month.\n"
+   },
+   {
+    "id": "records-training",
+    "title": "Records management training",
+    "text": "# Records management training\n\nAll staff must complete the records management course once a year; old records training certificates are stored in the portal.\n"
+   },
+   {
+    "id": "guest-wifi",
+    "title": "Guest Wi-Fi",
+    "text": "# Guest Wi-Fi\n\nA guest can join the network named Lobby with the password printed at reception.\n"
+   },
+   {
+    "id": "site-analytics",
+    "title": "Website analytics",
+    "text": "# Website analytics\n\nThe website traffic dashboard stopped updating last week; contact the analytics team for the raw numbers.\n"
+   },
+   {
+    "id": "housing",
+    "title": "Housing assistance",
+    "text": "# Housing assistance\n\nThe relocation team shares apartment listings for new hires moving to the city.\n"
+   },
+   {
+    "id": "doors",
+    "title": "Lobby doors",
+    "text": "# Lobby doors\n\nThe automatic doors in the lobby are serviced every spring and open on their own.\n"
+   },
+   {
+    "id": "model-club",
+    "title": "Model plane club",
+    "text": "# Model plane club\n\nThe model plane club meets on Thursdays to build a new plane kit.\n"
+   },
+   {
+    "id": "medical-plan",
+    "title": "Medical plan",
+    "text": "# Medical plan\n\nThe medical plan covers two dental cleanings a year and a yearly eye exam.\n"
+   },
+   {
+    "id": "shelter",
+    "title": "Shelter volunteering",
+    "text": "# Shelter volunteering\n\nVolunteers collect donations at the animal shelter, where a puppy adoption day runs each spring.\n"
+   },
+   {
+    "id": "sms-alerts",
+    "title": "SMS alerts",
+    "text": "# SMS alerts\n\nSubscribe to SMS alerts to hear about building closures and severe weather.\n"
+   },
+   {
+    "id": "ev-charging",
+    "title": "Electric vehicles",
+    "text": "# Electric vehicles\n\nElectric car charging stations on level 1 are free for employees who leave their car there.\n"
+   },
+   {
+    "id": "conference-rooms",
+    "title": "Conference rooms",
+    "text": "# Conference rooms\n\nReserve a conference room through the calendar; the big room needs a ticket to facilities.\n"
+   },
+   {
+    "id": "old-computers",
+    "title": "Recycling electronics",
+    "text": "# Recycling electronics\n\nDrop old computer accessories, cables, and keyboards in the recycling bin by the loading dock.\n"
+   }
+  ]
+ },
+ "questions": [
+  {
+   "id": "pp-01",
+   "question": "How do I get my money back?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:refunds",
+     "contains": "Refunds are issued within 45 days of purchase"
+    }
+   ]
+  },
+  {
+   "id": "pp-02",
+   "question": "Is it too late to return something I bought two months ago?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:refunds",
+     "contains": "After 45 days, purchases can only be exchanged for store credit"
+    }
+   ]
+  },
+  {
+   "id": "pp-03",
+   "question": "I can't remember how to sign in. What should I do?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:account-recovery",
+     "contains": "To reset a forgotten password"
+    }
+   ]
+  },
+  {
+   "id": "pp-04",
+   "question": "How long until my package shows up?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:delivery",
+     "contains": "Standard orders ship within two business days"
+    }
+   ]
+  },
+  {
+   "id": "pp-05",
+   "question": "How much time off do I earn each month?",
+   "tags": [
+    "partial"
+   ],
+   "supports": [
+    {
+     "doc": "note:paid-leave",
+     "contains": "accrue 1.5 days of paid leave per month"
+    }
+   ]
+  },
+  {
+   "id": "pp-06",
+   "question": "Can I keep vacation days I didn't take?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:paid-leave",
+     "contains": "Unused leave carries over"
+    }
+   ]
+  },
+  {
+   "id": "pp-07",
+   "question": "How long is old information stored before it is erased?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:retention",
+     "contains": "Application logs are deleted after 30 days"
+    }
+   ]
+  },
+  {
+   "id": "pp-08",
+   "question": "How can I tell which meals might trigger my nut allergy?",
+   "tags": [
+    "partial"
+   ],
+   "supports": [
+    {
+     "doc": "note:menu-labels",
+     "contains": "marked with a red triangle"
+    }
+   ]
+  },
+  {
+   "id": "pp-09",
+   "question": "When will I be paid back for a work trip I paid for myself?",
+   "tags": [
+    "partial"
+   ],
+   "supports": [
+    {
+     "doc": "note:expenses",
+     "contains": "Reimbursements are paid with the next payroll run"
+    }
+   ]
+  },
+  {
+   "id": "pp-10",
+   "question": "Where should a guest leave their car?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:visitor-parking",
+     "contains": "Visitors park on level 2 of the garage"
+    }
+   ]
+  },
+  {
+   "id": "pp-11",
+   "question": "The website stopped working. Who do I contact?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:incidents",
+     "contains": "page the on-call engineer"
+    }
+   ]
+  },
+  {
+   "id": "pp-12",
+   "question": "My computer is getting old. When do I get a new one?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:hardware",
+     "contains": "Company laptops are replaced every three years"
+    }
+   ]
+  },
+  {
+   "id": "pp-13",
+   "question": "Can I do my job from my apartment?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:remote",
+     "contains": "Staff may work remotely up to three days a week"
+    }
+   ]
+  },
+  {
+   "id": "pp-14",
+   "question": "I misplaced the card that opens the doors. What now?",
+   "tags": [
+    "partial"
+   ],
+   "supports": [
+    {
+     "doc": "note:badges",
+     "contains": "Report a lost access card to security immediately"
+    }
+   ]
+  },
+  {
+   "id": "pp-15",
+   "question": "What do I need before my change can land?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:reviews",
+     "contains": "Every pull request needs approval from one code owner"
+    }
+   ]
+  },
+  {
+   "id": "pp-16",
+   "question": "When will a newcomer be introduced to their buddy?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:first-week",
+     "contains": "meet their mentor on day two"
+    }
+   ]
+  },
+  {
+   "id": "pp-17",
+   "question": "How do I get my document out of the color printer?",
+   "tags": [
+    "partial"
+   ],
+   "supports": [
+    {
+     "doc": "note:printing",
+     "contains": "requires your badge to release jobs"
+    }
+   ]
+  },
+  {
+   "id": "pp-18",
+   "question": "Where should I reserve a plane ticket for a conference?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:travel",
+     "contains": "must be booked through the travel desk"
+    }
+   ]
+  },
+  {
+   "id": "pp-19",
+   "question": "Do I need a medical certificate if I'm out sick for a week?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:illness",
+     "contains": "a doctor's note is required after three consecutive days"
+    }
+   ]
+  },
+  {
+   "id": "pp-20",
+   "question": "Can I bring my puppy to work?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:animals",
+     "contains": "Dogs are welcome on Fridays"
+    }
+   ]
+  },
+  {
+   "id": "pp-21",
+   "question": "Can I still get login codes by SMS?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:two-step",
+     "contains": "text-message codes are no longer accepted"
+    }
+   ]
+  },
+  {
+   "id": "pp-22",
+   "question": "I think I was overcharged. How do I contest it?",
+   "tags": [
+    "no-overlap"
+   ],
+   "supports": [
+    {
+     "doc": "note:disputes",
+     "contains": "If an invoice looks wrong, reply to the billing email within 60 days"
+    }
+   ]
+  },
+  {
+   "id": "pp-23",
+   "question": "What happens if the refund window has passed?",
+   "tags": [
+    "partial"
+   ],
+   "supports": [
+    {
+     "doc": "note:refunds",
+     "contains": "After 45 days, purchases can only be exchanged for store credit"
+    }
+   ]
+  },
+  {
+   "id": "pp-24",
+   "question": "How do I reset my password?",
+   "tags": [
+    "partial"
+   ],
+   "supports": [
+    {
+     "doc": "note:account-recovery",
+     "contains": "To reset a forgotten password"
+    }
+   ]
+  }
+ ]
+}

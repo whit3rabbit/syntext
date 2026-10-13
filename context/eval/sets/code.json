@@ -1,0 +1,349 @@
+{
+ "name": "code",
+ "description": "Questions about this repository's own code and docs, with and without identifiers. The corpus is the checked-out tree, with a syntext index attached for exact matches.",
+ "corpus": {
+  "kind": "repository",
+  "label": "repo",
+  "syntext": true
+ },
+ "questions": [
+  {
+   "id": "code-01",
+   "question": "Where is route_query defined?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/query/mod.rs",
+     "contains": "pub fn route_query(pattern: &str"
+    }
+   ]
+  },
+  {
+   "id": "code-02",
+   "question": "How does the query router choose between a literal search, an indexed regex, and a full scan?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/query/mod.rs",
+     "contains": "pub fn route_query(pattern: &str"
+    }
+   ]
+  },
+  {
+   "id": "code-03",
+   "question": "How long does a search wait for an index lock held by another process?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/cli/open_retry.rs",
+     "contains": "const LOCK_RETRY_BACKOFF_MS"
+    }
+   ]
+  },
+  {
+   "id": "code-04",
+   "question": "Which function detects changed files using git status?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/freshness.rs",
+     "contains": "pub fn detect_changed_files("
+    }
+   ]
+  },
+  {
+   "id": "code-05",
+   "question": "At what size does a posting list switch to a Roaring bitmap?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/posting/mod.rs",
+     "contains": "pub const ROARING_THRESHOLD: usize = 8192"
+    }
+   ]
+  },
+  {
+   "id": "code-06",
+   "question": "Which bytes force a token boundary in the tokenizer?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/tokenizer/mod.rs",
+     "contains": "fn is_forced_boundary(byte: u8) -> bool"
+    }
+   ]
+  },
+  {
+   "id": "code-07",
+   "question": "How does st decide whether standard input should be searched?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/cli/stdin_search.rs",
+     "contains": "fn fd_is_searchable("
+    }
+   ]
+  },
+  {
+   "id": "code-08",
+   "question": "Why does flushing uncommitted working-tree drift keep the base commit?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/flush.rs",
+     "contains": "KeepHead"
+    }
+   ]
+  },
+  {
+   "id": "code-09",
+   "question": "Where is the delete set computed for incremental updates?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/pending.rs",
+     "contains": "pub fn compute_delete_set("
+    }
+   ]
+  },
+  {
+   "id": "code-10",
+   "question": "Why is the depth check load-bearing when pruning nested git checkouts from the walk?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/walk.rs",
+     "contains": "depth() > 0"
+    }
+   ]
+  },
+  {
+   "id": "code-11",
+   "question": "What does parse_status_z do with records ending in a slash?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/porcelain.rs",
+     "contains": "pub(super) fn parse_status_z(bytes: &[u8])"
+    }
+   ]
+  },
+  {
+   "id": "code-12",
+   "question": "When does rebuild_if_stale fall back to a full rebuild?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/update.rs",
+     "contains": "pub fn rebuild_if_stale(&self)"
+    }
+   ]
+  },
+  {
+   "id": "code-13",
+   "question": "How is a failed flock call classified as a lock conflict?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/helpers.rs",
+     "contains": "fn classify_try_lock("
+    }
+   ]
+  },
+  {
+   "id": "code-14",
+   "question": "Where is the evidence policy text defined?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/render/mod.rs",
+     "contains": "pub const EVIDENCE_POLICY: &str"
+    }
+   ]
+  },
+  {
+   "id": "code-15",
+   "question": "How much relevance does a passage inherit per hop along an evidence chain?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/retrieve/chains.rs",
+     "contains": "const CARRY_PER_HOP: f32 = 0.85"
+    }
+   ]
+  },
+  {
+   "id": "code-16",
+   "question": "How is a passage condensed when it does not fit the evidence budget?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/pack/condense.rs",
+     "contains": "pub(crate) fn condense("
+    }
+   ]
+  },
+  {
+   "id": "code-17",
+   "question": "What is the default batch size for context store writes?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/store/options.rs",
+     "contains": "batch_bytes: 32 * 1024 * 1024"
+    }
+   ]
+  },
+  {
+   "id": "code-18",
+   "question": "How does the context store publish a new snapshot after a write?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/store/publish.rs",
+     "contains": "pub(super) fn publish(&self, w: &Writable"
+    }
+   ]
+  },
+  {
+   "id": "code-19",
+   "question": "How are canonical entity keys computed?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/analysis/mod.rs",
+     "contains": "pub(crate) fn fold_key(text: &str) -> String"
+    }
+   ]
+  },
+  {
+   "id": "code-20",
+   "question": "How much of the window does Budget::for_window reserve for the answer?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/pack/budget.rs",
+     "contains": "pub fn for_window(window: usize) -> Self"
+    }
+   ]
+  },
+  {
+   "id": "code-21",
+   "question": "How does the C ABI keep Rust panics from crossing into foreign code?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/ffi/mod.rs",
+     "contains": "std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))"
+    }
+   ]
+  },
+  {
+   "id": "code-22",
+   "question": "Where are chat-template control tokens neutralized inside evidence?",
+   "tags": [
+    "concept"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/render/sanitize.rs",
+     "contains": "const ZWSP: char = '\\u{200B}'"
+    }
+   ]
+  },
+  {
+   "id": "code-23",
+   "question": "Where is append_turn implemented?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "repo:context/src/store/live.rs",
+     "contains": "pub fn append_turn("
+    }
+   ]
+  },
+  {
+   "id": "code-24",
+   "question": "Where is calibrate_threshold defined?",
+   "tags": [
+    "identifier"
+   ],
+   "supports": [
+    {
+     "doc": "repo:src/index/calibrate.rs",
+     "contains": "pub(super) fn calibrate_threshold("
+    }
+   ]
+  },
+  {
+   "id": "code-25",
+   "question": "Why does the index not use probabilistic phrase masks?",
+   "tags": [
+    "docs"
+   ],
+   "supports": [
+    {
+     "doc": "repo:docs/ARCHITECTURE.md",
+     "contains": "8-bit masks saturate after ~12 occurrences"
+    }
+   ]
+  },
+  {
+   "id": "code-26",
+   "question": "What overlay threshold triggers a full reindex?",
+   "tags": [
+    "docs"
+   ],
+   "supports": [
+    {
+     "doc": "repo:docs/ARCHITECTURE.md",
+     "contains": "Full reindex triggers at 30% overlay threshold"
+    }
+   ]
+  }
+ ]
+}

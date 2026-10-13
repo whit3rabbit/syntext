@@ -1,0 +1,413 @@
+{
+ "name": "recall",
+ "description": "A long conversation with facts at different depths; early turns no longer fit as verbatim history and must come back from memory.",
+ "corpus": {
+  "kind": "conversation",
+  "turns": [
+   {
+    "role": "user",
+    "content": "My staging server is at 10.0.4.12, in case you need it later."
+   },
+   {
+    "role": "assistant",
+    "content": "Got it, I'll use 10.0.4.12 when we talk about staging."
+   },
+   {
+    "role": "user",
+    "content": "Heads up: the launch deadline moved to March 14."
+   },
+   {
+    "role": "assistant",
+    "content": "Thanks, noted that the launch is now March 14."
+   },
+   {
+    "role": "user",
+    "content": "What's the difference between a process and a thread?"
+   },
+   {
+    "role": "assistant",
+    "content": "A process has its own address space, file descriptors, and resources, while threads share the address space of the process that created them. Threads are cheaper to create and switch between, but a bug in one thread can corrupt memory the others rely on. Processes are isolated, so a crash in one does not take down the rest."
+   },
+   {
+    "role": "user",
+    "content": "How does HTTP caching work?"
+   },
+   {
+    "role": "assistant",
+    "content": "Responses carry headers such as Cache-Control and ETag. A client or proxy can reuse a cached response until it expires, and then revalidate it with a conditional request. If the server answers 304 Not Modified, the cached body is reused without transferring it again."
+   },
+   {
+    "role": "user",
+    "content": "We decided to use Postgres 16 for the analytics service."
+   },
+   {
+    "role": "assistant",
+    "content": "Postgres 16 is a solid choice for analytics workloads."
+   },
+   {
+    "role": "user",
+    "content": "Can you explain what a mutex is?"
+   },
+   {
+    "role": "assistant",
+    "content": "A mutex is a lock that lets only one thread at a time enter a critical section. A thread acquires it before touching shared state and releases it afterwards; other threads trying to acquire it wait. Holding a mutex for long periods or acquiring several in different orders leads to contention and deadlocks."
+   },
+   {
+    "role": "user",
+    "content": "For context, my manager is Dana Ortiz."
+   },
+   {
+    "role": "assistant",
+    "content": "Understood."
+   },
+   {
+    "role": "user",
+    "content": "What is a good way to structure logs?"
+   },
+   {
+    "role": "assistant",
+    "content": "Emit structured logs as key-value pairs or JSON so they can be filtered and aggregated. Include a timestamp, a level, a request or trace identifier, and the component name. Keep messages stable so dashboards and alerts do not break when wording changes."
+   },
+   {
+    "role": "user",
+    "content": "How do database indexes speed up queries?"
+   },
+   {
+    "role": "assistant",
+    "content": "An index is a sorted structure, usually a B-tree, that maps column values to row locations. Instead of scanning every row, the database walks the tree to the matching keys. Indexes cost extra writes and storage, so add them for columns that are filtered or joined often."
+   },
+   {
+    "role": "user",
+    "content": "The API rate limit for partners is 600 requests per minute."
+   },
+   {
+    "role": "assistant",
+    "content": "Okay, partners get 600 requests per minute."
+   },
+   {
+    "role": "user",
+    "content": "What does idempotent mean for an API?"
+   },
+   {
+    "role": "assistant",
+    "content": "An idempotent operation has the same effect whether it runs once or many times. PUT and DELETE are expected to be idempotent, while POST usually is not. Idempotency keys let clients retry requests safely after timeouts without creating duplicates."
+   },
+   {
+    "role": "user",
+    "content": "How should I handle retries for network calls?"
+   },
+   {
+    "role": "assistant",
+    "content": "Retry only errors that are likely transient, such as timeouts and 503 responses. Use exponential backoff with jitter so clients do not retry in lockstep, cap the number of attempts, and make sure the operation is idempotent before retrying it."
+   },
+   {
+    "role": "user",
+    "content": "Our on-call rotation changes every Tuesday at 9am."
+   },
+   {
+    "role": "assistant",
+    "content": "Noted, rotations switch every Tuesday at 9am."
+   },
+   {
+    "role": "user",
+    "content": "What is the CAP theorem about?"
+   },
+   {
+    "role": "assistant",
+    "content": "It says a distributed data store cannot guarantee consistency, availability, and partition tolerance all at once. Since network partitions happen, systems choose between staying consistent and refusing some requests, or staying available and serving possibly stale data during a partition."
+   },
+   {
+    "role": "user",
+    "content": "How do feature flags help releases?"
+   },
+   {
+    "role": "assistant",
+    "content": "Feature flags separate deploying code from enabling behavior. You can ship code dark, turn it on for a small group, watch metrics, and roll back by flipping the flag instead of redeploying. Old flags should be removed once a feature is fully launched."
+   },
+   {
+    "role": "user",
+    "content": "The customer, Harbor Freight Lines, wants weekly reports."
+   },
+   {
+    "role": "assistant",
+    "content": "Weekly reports for Harbor Freight Lines, got it."
+   },
+   {
+    "role": "user",
+    "content": "What is a reasonable code review checklist?"
+   },
+   {
+    "role": "assistant",
+    "content": "Check that the change does what it claims, has tests for the new behavior, handles errors, and does not leak secrets or personal data. Look for naming and structure that the next reader will understand, and keep the review focused on the diff."
+   },
+   {
+    "role": "user",
+    "content": "How do containers differ from virtual machines?"
+   },
+   {
+    "role": "assistant",
+    "content": "Containers share the host kernel and isolate processes with namespaces and cgroups, so they start quickly and use little memory. Virtual machines emulate hardware and run a full guest kernel, which gives stronger isolation at the cost of size and startup time."
+   },
+   {
+    "role": "user",
+    "content": "What makes a good alert?"
+   },
+   {
+    "role": "assistant",
+    "content": "A good alert is actionable, points at user-visible symptoms rather than causes, and includes a link to a runbook. Alerts that fire often without needing action train people to ignore them, so tune thresholds and delete noisy alerts."
+   },
+   {
+    "role": "user",
+    "content": "Please give me code samples in Python from now on."
+   },
+   {
+    "role": "assistant",
+    "content": "Will do, code samples in Python."
+   },
+   {
+    "role": "user",
+    "content": "How does garbage collection work in general?"
+   },
+   {
+    "role": "assistant",
+    "content": "A garbage collector finds objects that are no longer reachable from roots such as stacks and globals, and reclaims their memory. Tracing collectors mark reachable objects and sweep the rest, while generational collectors focus on young objects because most die quickly."
+   },
+   {
+    "role": "user",
+    "content": "What is the difference between unit and integration tests?"
+   },
+   {
+    "role": "assistant",
+    "content": "Unit tests exercise one small piece in isolation and run fast. Integration tests check that several components work together, often with real databases or services, and catch wiring mistakes that unit tests miss. A healthy suite has many unit tests and fewer integration tests."
+   },
+   {
+    "role": "user",
+    "content": "Why use a message queue?"
+   },
+   {
+    "role": "assistant",
+    "content": "A queue decouples producers from consumers, smooths out bursts of traffic, and lets work be retried when a consumer fails. It adds operational overhead and makes ordering and exactly-once delivery harder to reason about."
+   },
+   {
+    "role": "user",
+    "content": "How long should we cache the feature flags?"
+   },
+   {
+    "role": "assistant",
+    "content": "I suggest caching the feature flags for 5 minutes, then refreshing in the background."
+   },
+   {
+    "role": "user",
+    "content": "How should secrets be stored?"
+   },
+   {
+    "role": "assistant",
+    "content": "Keep secrets out of source control. Use a secrets manager or the platform's encrypted store, grant access by role, rotate credentials regularly, and audit who reads them. Environment variables are acceptable at runtime but should not be logged."
+   },
+   {
+    "role": "user",
+    "content": "What is a canary deployment?"
+   },
+   {
+    "role": "assistant",
+    "content": "A canary deployment sends a small share of traffic to the new version first. If error rates and latency stay healthy, traffic shifts gradually; if not, the rollout stops and traffic returns to the old version."
+   },
+   {
+    "role": "user",
+    "content": "How do I estimate a project more accurately?"
+   },
+   {
+    "role": "assistant",
+    "content": "Break the work into small tasks, estimate each, and add explicit buffers for integration and review. Compare estimates with past actuals, and re-estimate when the scope changes instead of keeping the original date."
+   },
+   {
+    "role": "user",
+    "content": "What does eventual consistency mean in practice?"
+   },
+   {
+    "role": "assistant",
+    "content": "Replicas may briefly disagree after a write, but if writes stop they converge to the same value. Applications must tolerate reading stale data, for example by showing a pending state or reading from the leader for critical paths."
+   },
+   {
+    "role": "user",
+    "content": "How do I keep a pull request easy to review?"
+   },
+   {
+    "role": "assistant",
+    "content": "Keep it small and focused on one change, explain the why in the description, separate refactors from behavior changes, and point reviewers at the risky parts. Large mechanical changes are easier to review when generated by a script that is included."
+   },
+   {
+    "role": "user",
+    "content": "What is backpressure?"
+   },
+   {
+    "role": "assistant",
+    "content": "Backpressure is a way for a slow consumer to signal producers to slow down, instead of letting queues grow without bound. Bounded buffers, flow-control windows, and blocking writes are common mechanisms."
+   },
+   {
+    "role": "user",
+    "content": "What should a runbook contain?"
+   },
+   {
+    "role": "assistant",
+    "content": "A runbook lists symptoms, the dashboards to check, step-by-step mitigations, how to escalate, and how to verify recovery. It should be short enough to follow under pressure and updated after every incident it was used in."
+   },
+   {
+    "role": "user",
+    "content": "The budget for the database migration is 40,000 euros."
+   },
+   {
+    "role": "assistant",
+    "content": "A 40,000 euro budget leaves room for a staging rehearsal."
+   },
+   {
+    "role": "user",
+    "content": "How do I choose between REST and gRPC?"
+   },
+   {
+    "role": "assistant",
+    "content": "REST with JSON is easy to debug and works everywhere, including browsers. gRPC gives typed contracts, streaming, and efficient binary encoding, which suits internal service-to-service traffic. Many systems use REST at the edge and gRPC inside."
+   },
+   {
+    "role": "user",
+    "content": "What is technical debt?"
+   },
+   {
+    "role": "assistant",
+    "content": "Technical debt is the future cost of shortcuts taken now, such as missing tests or tangled modules. Some debt is a reasonable trade-off; it becomes a problem when nobody tracks it and every change gets slower."
+   }
+  ]
+ },
+ "questions": [
+  {
+   "id": "rc-01",
+   "question": "What address did I give you for the staging server?",
+   "tags": [
+    "early"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "10.0.4.12"
+    }
+   ]
+  },
+  {
+   "id": "rc-02",
+   "question": "When is the launch deadline now?",
+   "tags": [
+    "early"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "March 14"
+    }
+   ]
+  },
+  {
+   "id": "rc-03",
+   "question": "Which database did we pick for the analytics service?",
+   "tags": [
+    "early"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "Postgres 16"
+    }
+   ]
+  },
+  {
+   "id": "rc-04",
+   "question": "Who did I say my manager is?",
+   "tags": [
+    "early"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "Dana Ortiz"
+    }
+   ]
+  },
+  {
+   "id": "rc-05",
+   "question": "What rate limit applies to partner API requests?",
+   "tags": [
+    "early"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "600 requests per minute"
+    }
+   ]
+  },
+  {
+   "id": "rc-06",
+   "question": "When does the on-call rotation change?",
+   "tags": [
+    "middle"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "every Tuesday at 9am"
+    }
+   ]
+  },
+  {
+   "id": "rc-07",
+   "question": "Which customer wants weekly reports?",
+   "tags": [
+    "middle"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "Harbor Freight Lines"
+    }
+   ]
+  },
+  {
+   "id": "rc-08",
+   "question": "Which language did I ask for in code samples?",
+   "tags": [
+    "middle"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "code samples in Python"
+    }
+   ]
+  },
+  {
+   "id": "rc-09",
+   "question": "How long did you suggest caching the feature flags?",
+   "tags": [
+    "late"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "caching the feature flags for 5 minutes"
+    }
+   ]
+  },
+  {
+   "id": "rc-10",
+   "question": "What is the budget for the database migration?",
+   "tags": [
+    "recent"
+   ],
+   "supports": [
+    {
+     "doc": "turn:",
+     "contains": "40,000 euros"
+    }
+   ]
+  }
+ ]
+}
