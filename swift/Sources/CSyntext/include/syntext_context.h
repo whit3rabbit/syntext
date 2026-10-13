@@ -184,6 +184,22 @@ char *syntext_context_search(const syntext_context_engine *engine,
                              const char *request_json,
                              syntext_error **err_out);
 
+/* ── Agent tools ────────────────────────────────────────────── */
+
+/* The tool definitions (context_search, context_read, context_outline) as a
+ * JSON array. format (nullable): "openai" (default) or "mcp". */
+char *syntext_context_tool_definitions(const char *format, syntext_error **err_out);
+/* Run a tool call the model made. request: {"name", "arguments" (the
+ * model's JSON string, or an object), "scopes"?, "result_tokens"? (>= 64,
+ * default 1024), "max_results"?, "first_id"?, "shown"?: [{"doc_key",
+ * "lines": [first, last]}]}. Scopes and limits come from the app, never
+ * from the model. Returns {"tool", "content", "tokens", "is_error",
+ * "blocks", "lowest_trust", "next_id"}; a malformed call returns is_error
+ * with a message for the model rather than failing. */
+char *syntext_context_tool_call(const syntext_context_engine *engine,
+                                const char *request_json,
+                                syntext_error **err_out);
+
 /* ── Conversation memory ────────────────────────────────────── */
 /* Open a conversation and reload its turns. mode_json: {"project": "<id>"},
  * {"app": "<id>"}, or "off". */

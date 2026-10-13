@@ -58,6 +58,7 @@ fn evidence_never_exceeds_the_budget() {
             &counter,
             &PackOptions::default(),
             &RenderOptions::default(),
+            1,
         )
         .unwrap();
         assert!(
@@ -98,6 +99,7 @@ fn tight_budgets_condense_instead_of_dropping() {
         &counter,
         &PackOptions::default(),
         &RenderOptions::default(),
+        1,
     )
     .unwrap();
     let b = &packed.blocks[0];
@@ -120,7 +122,15 @@ fn adjacent_passages_merge_and_spare_budget_expands() {
         per_doc_cap: 1,
         ..PackOptions::default()
     };
-    let packed = pack(&passages, 3000, &counter, &opts, &RenderOptions::default()).unwrap();
+    let packed = pack(
+        &passages,
+        3000,
+        &counter,
+        &opts,
+        &RenderOptions::default(),
+        1,
+    )
+    .unwrap();
     assert_eq!(packed.blocks.len(), 1, "one block per document");
     let b = &packed.blocks[0];
     assert!(
@@ -136,6 +146,7 @@ fn adjacent_passages_merge_and_spare_budget_expands() {
             ..opts
         },
         &RenderOptions::default(),
+        1,
     )
     .unwrap();
     assert!(narrow.tokens <= packed.tokens);
@@ -169,6 +180,7 @@ fn hostile_evidence_is_neutralized_in_the_prompt() {
         &HeuristicCounter::new(),
         &PackOptions::default(),
         &RenderOptions::default(),
+        1,
     )
     .unwrap();
     let text = &packed.evidence_text;
@@ -205,6 +217,7 @@ fn relevance_floor_drops_weak_tail() {
         &HeuristicCounter::new(),
         &opts,
         &RenderOptions::default(),
+        1,
     )
     .unwrap();
     assert_eq!(packed.blocks.len(), 1);
@@ -232,6 +245,7 @@ fn document_order_groups_blocks() {
         &HeuristicCounter::new(),
         &opts,
         &RenderOptions::default(),
+        1,
     )
     .unwrap();
     let keys: Vec<&str> = packed.blocks.iter().map(|b| b.doc_key.as_str()).collect();
@@ -279,6 +293,7 @@ fn a_run_of_adjacent_matches_cannot_crowd_out_other_evidence() {
         &counter,
         &opts,
         &RenderOptions::default(),
+        1,
     )
     .unwrap();
     assert!(

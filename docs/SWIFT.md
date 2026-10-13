@@ -91,6 +91,12 @@ For semantic retrieval, wrap the app's embedding model in a
 `SyntextContextEmbedder`, run `store.embedAsync(embedder)` after syncs, and
 pass `embedder:` when creating the engine (see [docs/CONTEXT.md](CONTEXT.md)).
 
+To let the model search again, read on in a file, or outline the project,
+merge `SyntextContextEngine.toolDefinitionsJSON()` into the app's tool list
+and answer each call with `engine.callTool(name:arguments:options:)`,
+keeping one `SyntextToolOptions` per turn (`record(packet)`,
+`record(result)`) so citation ids stay unique.
+
 `SyntextContext` is a separate product so apps using only `Syntext` are
 unaffected by it. Its C symbols ship in the xcframework from the release that
 introduces the product; before that, build the xcframework locally (below).

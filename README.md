@@ -298,6 +298,16 @@ source versions the model saw.
 cargo run -p syntext-context --release --example ask -- . "Where is route_query defined?" --window 4096 --syntext
 ```
 
+With the host's own embedding model plugged in, it also finds passages that
+share no words with the question. Three read-only agent tools
+(`context_search`, `context_read`, `context_outline`) let the model look again
+after the first packet. They come in OpenAI or MCP form, and
+`context/examples/mcp.rs` serves them over stdio. An evaluation set in
+`context/eval/` measures every ranking change. At a 4K window with bge-small
+embeddings, the prompt held every supporting passage for 100% of multi-hop and
+paraphrased questions, 92% of code questions, and 95% of HotpotQA distractor
+questions.
+
 It is usable from Rust, from Swift (the `SyntextContext` product of the Swift
 package), and through a C ABI. See [docs/CONTEXT.md](docs/CONTEXT.md) for how
 it works, integration guides, and the design.

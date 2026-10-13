@@ -70,6 +70,11 @@ What a host gets:
 - **Receipts.** Every packet records which bytes of which source version the
   model saw, with scores and graph paths. It can later report which cited
   files have changed.
+- **Tools for an agent.** The model can search again in its own words, read
+  on in a file, and ask what the sources contain (`context_search`,
+  `context_read`, `context_outline`). Results are evidence like the packet:
+  sanitized, within a budget, cited with ids that continue the packet's,
+  and limited to the scopes the app grants.
 
 The engine never claims a larger effective context. Every packet records the
 budget it was given and the tokens it used, so a host can show the user
@@ -110,7 +115,7 @@ postings, then the text of only the few hundred passages it reranks.
 
 | Module | Role |
 |---|---|
-| `context/src/structure/` | Segmentation into passages: Markdown sections and block groups, code items, data, turns; size normalization |
+| `context/src/structure/` | Segmentation into passages: Markdown sections and block groups, code items, data, turns; size normalization; outlines of every heading or definition |
 | `context/src/analysis/` | Terms: identifier subwords plus a compound term, Porter stemmer, stopwords |
 | `context/src/graph/` | Canonical entities (`fold_key`), aliases, typed edges from code and prose |
 | `context/src/compile/` | `SourceDoc` to compiled passages; directory sync over syntext's walk and change catalogue |
@@ -122,6 +127,7 @@ postings, then the text of only the few hundred passages it reranks.
 | `context/src/memory.rs` | Scoped conversation memory over the journal |
 | `context/src/receipt.rs` | Provenance receipts and source drift checks |
 | `context/src/engine/` | `ContextEngine`: `prepare` (an evidence packet) and `assemble` (a whole prompt) |
+| `context/src/tools/` | Agent tools: definitions (OpenAI and MCP forms), lenient argument parsing, search, read, outline |
 | `context/src/ffi/` | C ABI (`ffi` feature) |
 | `swift/Sources/SyntextContext/` | Swift wrapper over the C ABI |
 
@@ -502,6 +508,58 @@ Every packet carries a `Receipt`, as a struct and as JSON. It records:
 `Receipt::check_sources(root, label)` re-hashes the cited files and reports
 each as `Unchanged`, `Changed`, `Missing`, or `NotChecked`.
 
+### Agent tools
+
+The first packet is chosen from the question alone. A model that can call
+tools can look again: for a name it found in the evidence, for the rest of a
+file the packet showed part of, or for what the sources hold at all.
+`tool_definitions()` returns three read-only tools, in the OpenAI function
+form or the Model Context Protocol form, and `ContextEngine::call_tool` runs
+a call the model made:
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `context_search` | `query`, `max_results`? | Ranked passages, packed as `<evidence>` blocks |
+| `context_read` | `source`, `start_line`?, `end_line`? | Whole lines of one source, and where to continue when they stop early |
+| `context_outline` | `source`? | The documents and directories available; the documents in a directory; or a document's sections and definitions with line ranges |
+
+- **The app holds the authority.** Scopes, the result budget, and the cap
+  on results come from `ToolOptions`, which the app fills in. No argument
+  widens them, and a source outside the granted scopes reads as missing:
+  the reply does not reveal that it exists.
+- **Results are evidence.** Text is sanitized as in the packet, inside
+  `<evidence>` or `<outline>` elements, and `lowest_trust` lets the host
+  gate side-effecting tools exactly as for a packet.
+- **Every result fits.** A result never exceeds `result_tokens` (64 at
+  least). Reads stop at a whole line and say where to continue. Listings
+  shrink in steps until they fit: documents with their top-level sections,
+  documents alone, directories with counts, then top-level directories cut
+  off with a count of the rest. A document outline drops its deepest levels
+  first.
+- **Ids continue.** `ToolOptions::record_packet` and `record` carry the
+  citation numbering forward (`E1` to `E3` in the packet, `E4` on in the
+  next result) and mark the ranges the model has seen, so a follow-up
+  search returns something new.
+- **Mistakes go back to the model.** Malformed arguments, an unknown tool,
+  or a source that does not resolve produce a result with `is_error` set and
+  a message the model can act on ("Close names: ..."). Common slips by small
+  models, such as arguments encoded twice or numbers written as strings,
+  are accepted.
+- **Outlines follow the structure, not the passages.** A document outline
+  lists every Markdown heading, or every code definition inside its
+  container (`impl Ledger`, then `method credit`), with line ranges, however
+  the passages were sized for retrieval. A source is named as evidence shows
+  it (a path or title), by the tail of its path, or by its key when a path
+  is ambiguous.
+
+Tools are for what one packet cannot do. In the evaluation harness, one
+follow-up search that repeated the question, or searched the identifiers
+the packet mentioned, recovered none of the questions the full packet
+missed. Splitting a 4K evidence budget between a half-size packet and such
+a follow-up lost 2 to 4 of the 26 `code` questions. A follow-up pays off
+when the model writes the query: a name the evidence used, or a word the
+question lacked.
+
 ## Using it from Rust
 
 ### Add the dependency
@@ -765,21 +823,35 @@ let engine = ContextEngine::builder(Arc::clone(&store))
 text, covered, and still remaining. Run it again after each sync. Unchanged
 passages cost nothing, and only changed text reaches the model.
 
-### Search tool
+### Run the agent tools
 
-To let the model search on its own, expose `retrieve` as a read-only tool:
+Offer the three tools (see [Agent tools](#agent-tools)) with the model's
+own, and run each call it makes:
 
 ```rust
-let mut opts = engine.retrieve_options().clone();
-opts.max_results = 8;
-let found = engine.retrieve("rate limiter configuration", &opts)?;
-for p in &found.passages {
-    println!("{} lines {}-{} score {:.2}", p.doc_key, p.lines.0, p.lines.1, p.score);
-}
+use syntext_context::{tool_definitions, PrepareRequest, Scope, ScopeFilter, ToolOptions};
+
+// In the request to the model, beside the host's other tools.
+let defs: Vec<serde_json::Value> = tool_definitions().iter().map(|d| d.openai()).collect();
+
+let packet = engine.prepare(&PrepareRequest::new("How do I roll back a deploy?", 1500))?;
+let mut tools = ToolOptions {
+    // What this user may read: decided by the app, never by the model.
+    scopes: Some(ScopeFilter::only([Scope::project("acme")?])),
+    result_tokens: 1024,
+    ..ToolOptions::default()
+};
+tools.record_packet(&packet);
+
+// For each call the model makes, with its arguments exactly as written:
+let result = engine.call_tool("context_outline", r#"{"source": "docs/deploy.md"}"#, &tools)?;
+tools.record(&result);
+// `result.content` goes back as the tool's output; `is_error` marks a call
+// the model should fix; `lowest_trust` gates the host's other tools.
 ```
 
-Set `opts.scopes` in the application from what the user may read, never
-from the model's tool arguments.
+For a search tool of your own design, `engine.retrieve(question, &opts)`
+returns the ranked passages before packing.
 
 ### Receipts
 
@@ -873,6 +945,16 @@ existing store keeps the options in its manifest):
 | `tag` | `evidence` |
 | `sanitize` | `SanitizeOptions::default()` |
 
+`ToolOptions` (set by the app for every tool call):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `scopes` | the engine's | Scopes the tools may read |
+| `result_tokens` | 1,024 | Most tokens in one result (64 at least) |
+| `max_results` | 6 | Most blocks one search returns, whatever the model asks |
+| `first_id` | 1 | Number of the first citation id (`record_packet` and `record` advance it) |
+| `shown` | empty | Ranges the model has seen; searches skip passages inside them |
+
 ### Try it
 
 ```sh
@@ -882,6 +964,14 @@ cargo run -p syntext-context --release --example ask -- . "Where is route_query 
 This prints the messages that would be sent to the model and a summary of
 the evidence. `--receipt` prints the full receipt, and `--store <dir>`
 chooses where the store lives.
+
+To try the agent tools from any client that speaks the Model Context
+Protocol, build the stdio server example and register it as a local server
+(`{"command": "target/release/examples/mcp", "args": ["/path/to/project"]}`):
+
+```sh
+cargo build -p syntext-context --release --example mcp
+```
 
 ## Using it from Swift
 
@@ -995,6 +1085,21 @@ let engine = try SyntextContextEngine(store: store, tokenCounter: count, embedde
 `SyntextEmbedReport` (`embedded`, `reused`, `covered`, `remaining`,
 `cancelled`). An embedder that throws, or returns vectors of the wrong
 shape, fails the call with an error for which `isEmbedderFailure` is true.
+
+### Agent tool calls
+
+```swift
+// Merge into the app's own tool list (an array of OpenAI-form definitions).
+let definitions = try SyntextContextEngine.toolDefinitionsJSON()
+
+var tools = SyntextToolOptions(scopes: ["project:acme"], resultTokens: 1024)
+tools.record(packet)   // ids continue after the packet's; its ranges count as seen
+// For each tool call the model makes, with its arguments as written:
+let result = try engine.callTool(name: callName, arguments: callArguments, options: tools)
+tools.record(result)
+// Return `result.content` as the tool's output. `result.isError` marks a
+// call the model should fix; `result.lowestTrust` gates other tools.
+```
 
 ### Bring your own prompt
 
@@ -1179,6 +1284,8 @@ These are the same as `syntext.h`:
 | `syntext_context_prepare(engine, memory, request_json, err)` | Evidence packet JSON |
 | `syntext_context_assemble(engine, memory, request_json, err)` | Chat turn JSON |
 | `syntext_context_search(engine, request_json, err)` | Array of passages |
+| `syntext_context_tool_definitions(format, err)` | Tool definitions; `format` `"openai"` (default when NULL) or `"mcp"` |
+| `syntext_context_tool_call(engine, request_json, err)` | Tool result JSON |
 | `syntext_context_memory_open(store, session, mode_json, err)` | Memory handle, with the session's turns reloaded |
 | `syntext_context_memory_free(memory)` | |
 | `syntext_context_memory_record(memory, role, text, err)` | Status |
@@ -1230,6 +1337,12 @@ Inputs (every field except those named in the description is optional):
 // search request (question required)
 {"question": "...", "max_results": 8, "scopes": null, "exclude": []}
 
+// tool call (name and arguments required). "arguments" is the model's JSON
+// as it wrote it (a string) or an object; everything else is the app's.
+{"name": "context_read", "arguments": "{\"source\": \"src/retry.rs\"}",
+ "scopes": ["default"], "result_tokens": 1024, "max_results": 6, "first_id": 4,
+ "shown": [{"doc_key": "repo:src/retry.rs", "lines": [12, 30]}]}
+
 // memory mode
 {"project": "my-project"} | {"app": "my-app"} | "off"
 ```
@@ -1259,6 +1372,10 @@ Outputs:
  "budget": {"window": 8192, "system": 120, "history": 900, "question": 30,
             "generation": 2048, "margin": 256},
  "history_kept": 4, "history_dropped": 10, "prompt_tokens": 5770}
+
+// tool result (tool_call)
+{"tool": "context_search", "content": "Search results for ...", "tokens": 412,
+ "is_error": false, "blocks": [{...}], "lowest_trust": "workspace", "next_id": 6}
 
 // search passage
 {"doc_key": "...", "source": "...", "breadcrumb": "...", "symbol": null,
@@ -1363,6 +1480,17 @@ user message:
 5. **Keep the receipt.** Store `receipt_json` with the answer. When an old
    answer is displayed, `check_sources` can flag citations whose files
    changed since.
+
+### Tool calls in the loop
+
+Offer the three tools with the host's own. When the model calls one, run it
+with `call_tool`, return `content` as the tool's output (a `tool` message,
+or a user message for chat templates without a tool role), and generate
+again. A 4K window holds one or two results: set `result_tokens` from what
+the window still has, and keep one `ToolOptions` per turn so ids stay unique
+and searches skip what the model has seen. As with evidence, record only
+the question and the final answer: tool results are fetched again when a
+later turn needs them.
 
 ### Keep the prompt prefix stable for KV-cache reuse
 
@@ -1690,6 +1818,35 @@ exactly the same files, which is what makes the exact-match bridge sound.
 Content digests with git's racily-clean rule make a no-op sync cheap enough
 to run before every conversation.
 
+### Read-only tools under the app's scopes
+
+**Decision.** The agent tools are three, read-only, and take only what to
+look for. Scopes, budgets, and caps are the host's (`ToolOptions`); a
+source the scopes hide reads as missing.
+
+**Rationale.**
+
+- **A tool call is model output, and model output follows its input.** A
+  document in the corpus can ask the model to read another app's memory; if
+  an argument could widen the scopes, a retrieved page could. Arguments
+  therefore only narrow.
+- **Read-only needs no confirmation.** Nothing a tool does changes state,
+  so a host can run calls without asking the user.
+- **Three tools are enough to choose among.** Search, read, and outline
+  cover finding, reading on, and orientation. Small models choose worse as
+  the list grows.
+- **Results look like the packet.** The same `<evidence>` blocks and ids
+  mean citations work the same whether evidence came first or later, and
+  the same sanitization applies.
+
+**Alternatives considered.**
+
+- A `scope` argument, or tools that list scopes: the injection path above.
+- Raw JSON results (passages with scores): more tokens, and an invitation to
+  treat the result as data to process rather than evidence to cite.
+- Many fine-grained tools (`grep`, `list_dir`, `read_file`): more choices
+  for a small model, and more paths around the budget.
+
 ### One C ABI, one library
 
 **Decision.** The context engine's C ABI is compiled into the same static
@@ -1766,12 +1923,17 @@ regression gate fails when a set drops below its floor.
   the receipt records it as a budget exclusion.
 - **One writer per store.** Read-only handles in other processes pick up new
   generations with `reload()`.
+- **Tools read the store.** `context_read` and `context_outline` read text
+  as of the last sync; only `context_search` with a syntext index sees live
+  files. Keep the store synced as the user edits.
+- **Follow-up searches need the model's words.** A follow-up that repeats
+  the question finds nothing the packet missed (measured in
+  [Agent tools](#agent-tools)); the value of the tools rests on the model
+  asking for something new.
 - **macOS only for Swift.** iOS slices are not built yet.
 
 ### Roadmap
 
-- **Agent tools and a corpus outline**, so the model can search again when
-  the first packet falls short, and can ask what a corpus contains.
 - **An optional reranking model** over the top 20 candidates, through the
   same host-supplied pattern as `Embedder`.
 - **Parsed definitions.** Tree-sitter definition detection for the languages

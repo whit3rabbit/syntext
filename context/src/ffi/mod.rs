@@ -35,6 +35,7 @@ mod dto;
 mod embed;
 mod engine;
 mod store;
+mod tools;
 
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_char;
@@ -44,6 +45,7 @@ pub use embed::*;
 pub use engine::*;
 pub use store::*;
 use syntext::ffi::{FfiError, SYNTEXT_ERR_INVALID_ARGUMENT, SYNTEXT_ERR_IO};
+pub use tools::*;
 
 use crate::error::ContextError;
 use crate::memory::ConversationMemory;

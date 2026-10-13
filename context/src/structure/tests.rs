@@ -207,5 +207,64 @@ proptest! {
         let lang = [Lang::Rust, Lang::Python, Lang::Markdown, Lang::Text, Lang::JavaScript, Lang::Yaml][lang_idx];
         let layout = segment(&text, lang, DocKind::File, "p", &opts(max, max / 4));
         check_invariants(&text, &layout, max.max(128));
+        let n = Lines::new(&text).len() as u32;
+        for item in outline(&text, lang) {
+            prop_assert!(1 <= item.lines.0 && item.lines.0 <= item.lines.1 && item.lines.1 <= n, "{item:?} of {n}");
+        }
     }
+}
+
+fn outlined(text: &str, lang: Lang) -> Vec<(usize, String, (u32, u32))> {
+    outline(text, lang)
+        .into_iter()
+        .map(|i| (i.depth, i.name, i.lines))
+        .collect()
+}
+
+#[test]
+fn outlines_list_every_definition_whatever_the_passage_sizes() {
+    let rust = "/// Totals.\npub struct Ledger {\n    total: u64,\n}\n\nimpl Default for Ledger {\n    fn default() -> Self {\n        Ledger { total: 0 }\n    }\n}\n\nimpl Ledger {\n    /// Add.\n    pub fn credit(&mut self, n: u64) {\n        self.total += n;\n    }\n\n    pub fn debit(&mut self, n: u64) {\n        self.total -= n;\n    }\n}\n\npub const A: u32 = 1;\npub const B: u32 = 2;\n";
+    assert_eq!(
+        outlined(rust, Lang::Rust),
+        [
+            (0, "struct Ledger".to_string(), (1, 4)),
+            (0, "impl Default for Ledger".to_string(), (6, 10)),
+            (1, "method default".to_string(), (7, 10)),
+            (0, "impl Ledger".to_string(), (12, 21)),
+            (1, "method credit".to_string(), (13, 16)),
+            (1, "method debit".to_string(), (18, 21)),
+            (0, "constant A".to_string(), (23, 23)),
+            (0, "constant B".to_string(), (24, 24)),
+        ]
+    );
+    let python = "class Queue:\n    def push(self, x):\n        self.items.append(x)\n\n    def pop(self):\n        return self.items.pop()\n\n\ndef helper():\n    return Queue()\n";
+    let names: Vec<(usize, String)> = outlined(python, Lang::Python)
+        .into_iter()
+        .map(|(d, n, _)| (d, n))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            (0, "class Queue".to_string()),
+            (1, "method push".to_string()),
+            (1, "method pop".to_string()),
+            (0, "function helper".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn markdown_outlines_nest_headings_with_their_line_ranges() {
+    let md = "# Guide\n\nIntro.\n\n## Setup\n\n### macOS\n\nbrew install x\n\n## Use\n\nRun it.\n";
+    assert_eq!(
+        outlined(md, Lang::Markdown),
+        [
+            (0, "Guide".to_string(), (1, 13)),
+            (1, "Setup".to_string(), (5, 10)),
+            (2, "macOS".to_string(), (7, 10)),
+            (1, "Use".to_string(), (11, 13)),
+        ]
+    );
+    assert!(outline("plain words\n", Lang::Text).is_empty());
+    assert!(outline("", Lang::Rust).is_empty());
 }

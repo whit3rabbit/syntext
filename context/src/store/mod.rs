@@ -43,7 +43,7 @@ pub use compact::CompactReport;
 pub use journal::Turn;
 pub(crate) use live::turn_key;
 pub use options::{IngestReport, StoreOptions, StoreStats};
-pub(crate) use snapshot::{DocLoc, PassageLoc};
+pub(crate) use snapshot::{hex, DocLoc, PassageLoc};
 pub use snapshot::{DocSummary, StoreSnapshot};
 
 use crate::compile::CompileOptions;

@@ -119,6 +119,28 @@ With bge-small-en-v1.5, paraphrased questions in the evaluation set went
 from 42% to 100% of answers reaching the prompt, code questions from 88% to
 92%, and HotpotQA from 88% to 95%; no set dropped.
 
+## Agent tools
+
+Three read-only tools let the model look again after the first packet:
+`context_search` (search in its own words), `context_read` (whole lines of
+a source, with where to continue), and `context_outline` (the documents
+available, or a document's sections and definitions with line ranges).
+Results are sanitized evidence within a token budget, numbered after the
+citations already given; scopes come from the app, never from the model.
+
+```rust
+use syntext_context::{tool_definitions, ToolOptions};
+
+let defs: Vec<_> = tool_definitions().iter().map(|d| d.openai()).collect(); // offer to the model
+let mut tools = ToolOptions::default();
+tools.record_packet(&packet);
+let result = engine.call_tool(&call.name, &call.arguments, &tools)?; // each call the model makes
+tools.record(&result);
+```
+
+`examples/mcp.rs` serves the same tools to any Model Context Protocol
+client over stdio.
+
 ## Swift and C
 
 With the `ffi` feature the crate exports a C ABI
@@ -157,6 +179,9 @@ window 4096: prompt ~3022 tokens, evidence 2869/2902 tokens in 6 blocks, intent 
 
 Add `--receipt` for the full JSON receipt, `--store <dir>` to choose where
 the store lives (default: a directory under the system temp dir).
+
+`cargo run -p syntext-context --release --example mcp -- <dir>` serves the
+agent tools for a directory as a stdio Model Context Protocol server.
 
 ## What it does differently
 
@@ -244,6 +269,9 @@ of `open_read_only` readers, which pick up new generations with `reload()`.
 - A single line longer than the remaining budget (an unwrapped paragraph,
   minified code) cannot be condensed and is left out, recorded in the receipt
   as a budget exclusion.
+- The agent tools help only when the model searches for something new: a
+  follow-up that repeats the question found nothing the packet missed.
+  `context_read` and `context_outline` read the store as of the last sync.
 
 ## Development
 

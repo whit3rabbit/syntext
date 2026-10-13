@@ -583,3 +583,85 @@ fn a_host_embedding_callback_powers_semantic_retrieval() {
     syntext_context_engine_free(engine);
     syntext_context_store_free(store);
 }
+
+#[test]
+fn agent_tools_through_the_c_abi() {
+    let repo = tempfile::tempdir().unwrap();
+    write(repo.path(), "src/retry.rs", "/// Retry a failed charge.\npub fn should_retry(attempt: u32) -> bool {\n    attempt < 3\n}\n");
+    write(repo.path(), "docs/billing.md", "# Billing\n\n## Retries\n\nFailed charges are retried three times.\n\n## Refunds\n\nRefunds take 45 days.\n");
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path());
+    let mut err = null_mut();
+    let src = source_json(repo.path());
+    json(
+        syntext_context_store_sync(store, src.as_ptr(), None, null_mut(), &mut err),
+        err,
+    );
+    let engine = engine(store);
+    let call = |request: &str| {
+        let req = c(request);
+        let mut err = null_mut();
+        json(
+            syntext_context_tool_call(engine, req.as_ptr(), &mut err),
+            err,
+        )
+    };
+
+    let mut err = null_mut();
+    let openai = json(syntext_context_tool_definitions(null(), &mut err), err);
+    assert_eq!(openai[0]["function"]["name"], "context_search");
+    let mut err = null_mut();
+    let mcp = json(
+        syntext_context_tool_definitions(c("mcp").as_ptr(), &mut err),
+        err,
+    );
+    assert_eq!(mcp[2]["name"], "context_outline");
+    assert!(mcp[1]["inputSchema"]["properties"]["start_line"].is_object());
+    let mut err = null_mut();
+    let bad = syntext_context_tool_definitions(c("xml").as_ptr(), &mut err);
+    expect_error(bad, err, SYNTEXT_ERR_INVALID_ARGUMENT);
+
+    // Arguments exactly as the model wrote them; ids continue after E3.
+    let found = call(
+        r#"{"name": "context_search", "arguments": "{\"query\": \"refunds\"}", "first_id": 4}"#,
+    );
+    assert_eq!(found["is_error"], false);
+    assert_eq!(found["blocks"][0]["id"], "E4");
+    assert!(found["content"]
+        .as_str()
+        .unwrap()
+        .contains("Refunds take 45 days"));
+    let n = found["blocks"].as_array().unwrap().len();
+    assert_eq!(found["next_id"], 4 + n);
+    assert_eq!(found["lowest_trust"], "workspace");
+
+    let outline =
+        call(r#"{"name": "context_outline", "arguments": {"source": "docs/billing.md"}}"#);
+    let text = outline["content"].as_str().unwrap();
+    assert!(text.contains("  Retries (lines 3-6)"), "{text}");
+
+    let read = call(
+        r#"{"name": "context_read", "arguments": {"source": "src/retry.rs", "start_line": 2, "end_line": 2}}"#,
+    );
+    assert_eq!(read["blocks"][0]["lines"], serde_json::json!([2, 2]));
+
+    // The model's mistakes come back as results; the scopes are the app's.
+    let hidden = call(
+        r#"{"name": "context_read", "arguments": {"source": "docs/billing.md"}, "scopes": ["app:other"]}"#,
+    );
+    assert_eq!(hidden["is_error"], true);
+    let garbled = call(r#"{"name": "context_read", "arguments": "not json"}"#);
+    assert_eq!(garbled["is_error"], true);
+
+    // The host's mistakes are errors.
+    let req = c(r#"{"name": "context_search", "arguments": {}, "result_tokens": 10}"#);
+    let mut err = null_mut();
+    let small = syntext_context_tool_call(engine, req.as_ptr(), &mut err);
+    expect_error(small, err, SYNTEXT_ERR_INVALID_ARGUMENT);
+    let mut err = null_mut();
+    let none = syntext_context_tool_call(null(), req.as_ptr(), &mut err);
+    expect_error(none, err, SYNTEXT_ERR_INVALID_ARGUMENT);
+
+    syntext_context_engine_free(engine);
+    syntext_context_store_free(store);
+}

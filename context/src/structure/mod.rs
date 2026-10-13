@@ -132,6 +132,51 @@ impl PassageSpan {
     }
 }
 
+/// A named section or definition, for outlines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutlineItem {
+    /// Heading text, or `<kind> <name>` for a definition (`impl Index`).
+    pub name: String,
+    /// Nesting level, 0 at the top.
+    pub depth: usize,
+    /// 1-based first and last line.
+    pub lines: (u32, u32),
+}
+
+/// Every Markdown section, or every code definition, of `text` in document
+/// order, whatever the passage sizes. Empty for other languages.
+pub(crate) fn outline(text: &str, lang: Lang) -> Vec<OutlineItem> {
+    let lines = Lines::new(text);
+    if lines.len() == 0 {
+        return Vec::new();
+    }
+    match lang.family() {
+        Family::Markdown => {
+            let layout = prose::markdown(&lines, "", &SegmentOptions::default());
+            let sections = &layout.sections;
+            sections
+                .iter()
+                .map(|s| {
+                    let mut depth = 0;
+                    let mut cur = s.parent;
+                    while let Some(p) = cur.and_then(|p| sections.get(p as usize)) {
+                        depth += 1;
+                        cur = p.parent;
+                    }
+                    let last = lines.line_of(s.end.max(s.start + 1) - 1);
+                    OutlineItem {
+                        name: s.title.clone(),
+                        depth,
+                        lines: (lines.line_of(s.start) as u32 + 1, last as u32 + 1),
+                    }
+                })
+                .collect()
+        }
+        Family::Brace | Family::Indent => code::definitions(&lines, lang),
+        Family::Plain => Vec::new(),
+    }
+}
+
 /// Segment `text` into sections and passages.
 ///
 /// `location` is the document's display location (relative path or title),
