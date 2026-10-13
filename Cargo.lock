@@ -1055,6 +1055,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "syntext-context"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "log",
+ "memchr",
+ "proptest",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "syntext",
+ "tempfile",
+ "uuid",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,276 @@
+//! [`ContextEngine`]: the facade an inference host talks to.
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use syntext_context::{
+//!     ChatRequest, ContextEngine, ContextStore, DirectorySource, StoreOptions,
+//! };
+//!
+//! let store = Arc::new(ContextStore::open_or_create(".context", StoreOptions::default())?);
+//! store.sync_directory(&DirectorySource::new("repo", ".")?)?;
+//! let engine = ContextEngine::builder(Arc::clone(&store)).build();
+//!
+//! // One call: evidence chosen and packed for an 8K window.
+//! let turn = engine.assemble(&ChatRequest::new("Where is the query router?", 8192))?;
+//! for m in &turn.messages {
+//!     println!("{}: {} chars", m.role.as_str(), m.content.len());
+//! }
+//! println!("{}", turn.packet.receipt.to_json());
+//! # Ok::<(), syntext_context::ContextError>(())
+//! ```
+
+mod request;
+
+use std::sync::Arc;
+use std::time::Instant;
+
+pub use request::{ChatRequest, ChatTurn, EvidencePacket, PrepareRequest};
+
+use crate::compile::CompileOptions;
+use crate::error::Result;
+use crate::pack::{pack, Budget, PackOptions, MESSAGE_OVERHEAD};
+use crate::receipt::{EvidenceRef, Receipt, RECEIPT_VERSION};
+use crate::render::{ChatMessage, RenderOptions};
+use crate::retrieve::{retrieve, RetrieveOptions, Retrieved, SyntextSource};
+use crate::store::ContextStore;
+use crate::tokens::{HeuristicCounter, TokenCounter};
+use crate::types::Role;
+
+/// Builder for [`ContextEngine`].
+pub struct EngineBuilder {
+    store: Arc<ContextStore>,
+    syntext: Option<SyntextSource>,
+    counter: Arc<dyn TokenCounter>,
+    retrieve: RetrieveOptions,
+    pack: PackOptions,
+    render: RenderOptions,
+    model: Option<String>,
+}
+
+impl EngineBuilder {
+    /// Add exact-match evidence from a syntext index.
+    pub fn syntext(mut self, source: SyntextSource) -> Self {
+        self.syntext = Some(source);
+        self
+    }
+
+    /// Count tokens with the model's tokenizer (strongly recommended).
+    pub fn token_counter(mut self, counter: Arc<dyn TokenCounter>) -> Self {
+        self.counter = counter;
+        self
+    }
+
+    /// Retrieval options.
+    pub fn retrieve_options(mut self, opts: RetrieveOptions) -> Self {
+        self.retrieve = opts;
+        self
+    }
+
+    /// Packing options.
+    pub fn pack_options(mut self, opts: PackOptions) -> Self {
+        self.pack = opts;
+        self
+    }
+
+    /// Rendering options.
+    pub fn render_options(mut self, opts: RenderOptions) -> Self {
+        self.render = opts;
+        self
+    }
+
+    /// Model name recorded in receipts.
+    pub fn model(mut self, name: impl Into<String>) -> Self {
+        self.model = Some(name.into());
+        self
+    }
+
+    /// Build the engine.
+    pub fn build(self) -> ContextEngine {
+        let compile = self.store.compile_options();
+        ContextEngine {
+            store: self.store,
+            syntext: self.syntext,
+            counter: self.counter,
+            retrieve: self.retrieve,
+            pack: self.pack,
+            render: self.render,
+            model: self.model,
+            compile,
+        }
+    }
+}
+
+/// Retrieval, packing, and prompt assembly over one store.
+pub struct ContextEngine {
+    store: Arc<ContextStore>,
+    syntext: Option<SyntextSource>,
+    counter: Arc<dyn TokenCounter>,
+    retrieve: RetrieveOptions,
+    pack: PackOptions,
+    render: RenderOptions,
+    model: Option<String>,
+    compile: CompileOptions,
+}
+
+impl ContextEngine {
+    /// Start building an engine over `store`.
+    pub fn builder(store: Arc<ContextStore>) -> EngineBuilder {
+        EngineBuilder {
+            store,
+            syntext: None,
+            counter: Arc::new(HeuristicCounter::new()),
+            retrieve: RetrieveOptions::default(),
+            pack: PackOptions::default(),
+            render: RenderOptions::default(),
+            model: None,
+        }
+    }
+
+    /// The underlying store.
+    pub fn store(&self) -> &Arc<ContextStore> {
+        &self.store
+    }
+
+    /// Ranked passages for `question`, without packing.
+    pub fn retrieve(&self, question: &str, opts: &RetrieveOptions) -> Result<Retrieved> {
+        retrieve(
+            &self.store.snapshot(),
+            self.syntext.as_ref(),
+            &self.compile,
+            question,
+            opts,
+        )
+    }
+
+    /// Retrieve and pack evidence for `req.question` within its budget.
+    pub fn prepare(&self, req: &PrepareRequest<'_>) -> Result<EvidencePacket> {
+        let start = Instant::now();
+        let mut opts = self.retrieve.clone();
+        if let Some(s) = &req.scopes {
+            opts.scopes = s.clone();
+        }
+        opts.exclude.extend(req.exclude.iter().cloned());
+        let retrieved = self.retrieve(req.question, &opts)?;
+        let t = Instant::now();
+        let packed = pack(
+            &retrieved.passages,
+            req.evidence_tokens,
+            &*self.counter,
+            &self.pack,
+            &self.render,
+        )?;
+        let mut timings = retrieved.timings;
+        timings.pack_us = t.elapsed().as_micros() as u64;
+        timings.total_us = start.elapsed().as_micros() as u64;
+        let receipt = Receipt {
+            version: RECEIPT_VERSION,
+            created_unix: crate::store::manifest::unix_now(),
+            store_id: retrieved.store_id,
+            generation: retrieved.generation,
+            question: req.question.to_string(),
+            intent: retrieved.query.intent,
+            terms: retrieved.query.terms,
+            identifiers: retrieved.query.identifiers,
+            entities: retrieved.query.entities,
+            evidence: packed.blocks.iter().map(EvidenceRef::from).collect(),
+            excluded: packed.excluded,
+            evidence_budget: req.evidence_tokens,
+            evidence_tokens: packed.tokens,
+            candidates_considered: retrieved.candidates_considered,
+            timings,
+            tokenizer: self.counter.name().to_string(),
+            model: self.model.clone(),
+        };
+        Ok(EvidencePacket {
+            blocks: packed.blocks,
+            evidence_text: packed.evidence_text,
+            evidence_tokens: packed.tokens,
+            budget: req.evidence_tokens,
+            receipt,
+            render: self.render.clone(),
+        })
+    }
+
+    /// Assemble a complete prompt for a model with `req.window` tokens:
+    /// keep recent history verbatim (up to `history_share`), spend what
+    /// remains after the answer reserve on evidence, and verify the total.
+    pub fn assemble(&self, req: &ChatRequest<'_>) -> Result<ChatTurn> {
+        let counter = &*self.counter;
+        let history: Vec<ChatMessage> = match req.memory {
+            Some(m) => m.history(),
+            None => req.history.to_vec(),
+        };
+        let cap = (req.window as f32 * req.history_share.clamp(0.0, 1.0)) as usize;
+        let kept = fit_history(&history, counter, cap);
+        let mut budget = Budget::for_window(req.window);
+        if let Some(g) = req.generation_reserve {
+            budget.generation = g;
+        }
+        let budget = budget.measure(counter, req.system, kept, req.question);
+        let mut scopes = req
+            .scopes
+            .clone()
+            .unwrap_or_else(|| self.retrieve.scopes.clone());
+        let mut exclude = req.exclude.clone();
+        if let Some(m) = req.memory {
+            if let Some(scope) = m.scope() {
+                scopes = scopes.grant(scope.clone());
+            }
+            exclude.extend(m.recent_keys(kept.len()));
+        }
+        let limit = req.window.saturating_sub(budget.generation);
+        let mut evidence_tokens = budget.evidence_tokens();
+        loop {
+            let packet = self.prepare(&PrepareRequest {
+                question: req.question,
+                evidence_tokens,
+                scopes: Some(scopes.clone()),
+                exclude: exclude.clone(),
+            })?;
+            let msgs = packet.messages(req.system, kept, req.question);
+            let prompt_tokens: usize = msgs
+                .iter()
+                .map(|m| counter.count(&m.content) + MESSAGE_OVERHEAD)
+                .sum();
+            if prompt_tokens <= limit || packet.is_empty() {
+                return Ok(ChatTurn {
+                    messages: msgs,
+                    packet,
+                    budget,
+                    history_kept: kept.len(),
+                    history_dropped: history.len() - kept.len(),
+                    prompt_tokens,
+                });
+            }
+            // Tokenizer non-additivity or policy text overflowed: shrink.
+            let over = prompt_tokens - limit;
+            evidence_tokens = evidence_tokens.saturating_sub(over.max(16));
+        }
+    }
+}
+
+/// The longest suffix of `history` within `cap` tokens that does not begin
+/// with an assistant message (templates expect a user turn first).
+fn fit_history<'h>(
+    history: &'h [ChatMessage],
+    counter: &dyn TokenCounter,
+    cap: usize,
+) -> &'h [ChatMessage] {
+    let mut used = 0;
+    let mut start = history.len();
+    for (i, m) in history.iter().enumerate().rev() {
+        let cost = counter.count(&m.content) + MESSAGE_OVERHEAD;
+        if used + cost > cap {
+            break;
+        }
+        used += cost;
+        start = i;
+    }
+    while start < history.len() && history[start].role == Role::Assistant {
+        start += 1;
+    }
+    &history[start..]
+}
+
+#[cfg(test)]
+mod tests;

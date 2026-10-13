@@ -226,3 +226,12 @@ priority = "optional"
 assets = [
     ["target/release/st", "usr/bin/st", "755"],
 ]
+
+# The context engine library in `context/` (package `syntext-context`) builds on
+# this crate and shares its lockfile and target directory. A root-level
+# `cargo test` / `cargo clippy` still selects only the `syntext` package; pass
+# `-p syntext-context` (or `--workspace`) to build the context crate.
+[workspace]
+members = ["context"]
+# cargo-fuzz builds `fuzz/` separately on nightly; it is not a member.
+exclude = ["fuzz"]

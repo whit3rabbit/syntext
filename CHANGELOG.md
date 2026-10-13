@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`syntext-context`, a context engine for small-window local inference** (new workspace member in `context/`, `publish = false` for now). A library for inference hosts that lets a model with a 4K to 8K token window work over repositories, document sets, and conversation histories far larger than its window, without claiming the model reads all of it. Sources are compiled into a local store of structural passages (Markdown sections and block groups, functions with their doc comments, conversation turns) with a code-aware BM25F index and an optional entity graph (canonical keys, aliases, typed edges with confidence and source passage). Each question gets a token-budgeted evidence packet: lexical candidates, a bounded graph walk, and exact identifier matches from a syntext index verified against live files, reranked and packed whole, condensed with explicit omission markers only when a unit does not fit. Evidence is rendered in a user message as sanitized, trust-labelled `<evidence>` blocks, never in the system role, and `EvidencePacket::lowest_trust()` lets the host gate tools on it. Conversation turns are journaled durably, searchable immediately, and recalled as cited evidence once they leave the window, isolated per project or app scope. Every packet carries a receipt with BLAKE3 source digests, ranges, and score breakdowns, and `Receipt::check_sources` reports drift. The store uses its own checksummed segment format (`.ctxs`), read with positional reads and no `unsafe`; writes compile 32 MiB of source per segment and publish atomically, which held peak memory to 571 MiB on a 9,076-file, 274 MiB corpus (1,731 MiB unbatched). Directory sync reuses syntext's repository walk and change catalogue. Measured on that corpus: 16.6 s cold compile, 0.16 to 0.19 s no-op sync, 15 to 30 ms per question. Design: `docs/CONTEXT.md`.
+
+### Fixed
+- Building `syntext` without the `cli` feature (as `syntext-context` does) no longer warns that `MatchedFile::raw_len` and `first_nul` are never read; both are consumed only by the CLI's `--json` renderer.
+
 ## [2.5.0] - 2026-09-12
 
 ### Added

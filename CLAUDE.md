@@ -134,7 +134,15 @@ cargo bench --bench query_latency -- --sample-size 10
 cargo bench --bench index_build -- --sample-size 10
 cargo bench --bench selectivity -- --sample-size 10
 cargo bench --bench freshness -- --sample-size 10
+cargo test -p syntext-context # context engine (workspace member in context/)
+cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
+cargo run -p syntext-context --release --example ask -- . "question" --window 4096 --syntext
 ```
+
+`cargo test` and `cargo clippy` at the repo root cover only the root `syntext`
+package; the context crate needs `-p syntext-context`. Lint it with
+`--no-deps` so clippy findings in `syntext` itself (built there without the
+`cli` feature) do not block it.
 
 ## Differential Oracle (st ↔ rg)
 
@@ -420,7 +428,35 @@ swift/                        # Swift package (SPM) wrapping the C ABI (ffi feat
   Sources/Syntext/            # Swift wrapper: SyntextIndex (projects), SyntextChatIndex (chats)
   Scripts/build-xcframework.sh  # cargo staticlib per target -> lipo universal -> xcframework + zip
   Tests/SyntextTests/         # XCTest round-trips (run after the xcframework script)
+
+context/                      # syntext-context: context engine for small-window local models (workspace member)
+  README.md                   # usage, guarantees, measured numbers
+  src/lib.rs                  # public API re-exports
+  src/analysis/               # code-aware terms: identifier subwords + compounds, Porter stemmer, stopwords
+  src/structure/              # structural passages: Markdown sections/blocks, code items, size normalization
+  src/graph/                  # canonical entities (fold_key), aliases, typed edges from code and prose
+  src/compile/                # SourceDoc -> CompiledDoc; DirectorySource sync over syntext's walk + change catalogue
+  src/store/                  # .ctxs segments, manifest commit point, staged batched writes, journal, compaction
+  src/retrieve/               # BM25 candidates, graph beam walk, syntext exact bridge, reranker
+  src/pack/                   # token budget, span merge caps, condensation, widening, exact fit
+  src/render/                 # evidence blocks in a user message, system-prompt policy, sanitization
+  src/memory.rs               # scoped conversation memory over the journal
+  src/receipt.rs              # provenance receipts + source drift checks
+  src/engine/                 # ContextEngine facade: prepare (packet) / assemble (whole prompt)
+  examples/ask.rs             # sync a directory and print the prompt for a question
+  tests/                      # end_to_end, budget_props (proptest), memory_recovery
 ```
+
+## Context engine (`context/`)
+
+Design and alternatives: [`docs/CONTEXT.md`](docs/CONTEXT.md). Invariants to keep:
+
+- **Retrieved evidence never goes in the system role.** It is rendered in a user message as `<evidence>` blocks; the system prompt only gains `EVIDENCE_POLICY`. `budget_props` asserts no system message contains `<evidence id=`.
+- **Prompts fit.** `ContextEngine::assemble` re-counts the whole prompt and shrinks evidence until it fits `window - generation`; `pack` verifies rendered evidence against its budget with the real counter. Do not replace either check with an estimate.
+- **Whole units, explicit elision.** Never trim passages to sentences; condensation keeps whole lines and marks every gap `[... lines A-B omitted ...]`.
+- **Bump `COMPILER_VERSION`** (`context/src/compile/mod.rs`) whenever analysis, segmentation, or graph extraction would compile the same document differently. Stale segments are recompiled by `maybe_compact`; forgetting the bump leaves old postings answering queries analyzed the new way.
+- **Writes are staged, then committed once.** `StagedWrite` (`context/src/store/write.rs`) writes a segment per `batch_bytes` of source and publishes all of them in one manifest rename. New write paths go through it, not around it, so memory stays bounded and a write stays atomic.
+- **Segments are untrusted input.** The reader validates every cross-reference at open; accessors must not panic on segment contents. The crate is `#![forbid(unsafe_code)]`.
 
 ## Deferred Work
 
