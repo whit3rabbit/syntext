@@ -9,7 +9,7 @@
 //! | Sections, 8-byte aligned   |  META, STRINGS, DOCS, SECTIONS, PASSAGES,
 //! |                            |  TEXT, TERMS, POSTINGS [, graph sections]
 //! +----------------------------+
-//! | TOC (32 bytes per section) |  kind, offset, length, xxh64 checksum
+//! | TOC (32 bytes per section) |  kind, flags, offset, length, xxh64
 //! +----------------------------+
 //! | Footer (32 bytes)          |  TOC offset/length/checksum, "SXCTXEND"
 //! +----------------------------+
@@ -20,6 +20,11 @@
 //! verify the small metadata sections on open and defer the large TEXT and
 //! POSTINGS checks to an explicit `verify`. All integers are little-endian.
 //! Strings are `(offset, length)` references into the STRINGS section.
+//!
+//! A section whose TOC flags carry [`SECTION_OPTIONAL`] may be skipped by a
+//! reader that does not know its kind, so later versions can add sections
+//! (vectors, for example) that older readers ignore. An unknown section
+//! without the flag fails the open.
 
 use crate::error::{ContextError, Result};
 
@@ -44,6 +49,9 @@ pub(crate) const ALIAS_RECORD_LEN: usize = 24;
 
 /// Sentinel for "no index" in u32 reference fields.
 pub(crate) const NONE_U32: u32 = u32::MAX;
+
+/// TOC flag: readers that do not know this section's kind skip it.
+pub(crate) const SECTION_OPTIONAL: u32 = 1;
 
 /// Section identifiers stored in the TOC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

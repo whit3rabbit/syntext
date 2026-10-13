@@ -34,7 +34,7 @@ pub mod tokens;
 pub mod types;
 
 pub use compile::{
-    decode_text, CompileOptions, DirectorySource, SkipReason, SourceDoc, SyncReport,
+    decode_text, CompileOptions, DirectorySource, SkipReason, SourceDoc, SyncProgress, SyncReport,
     COMPILER_VERSION,
 };
 pub use engine::{

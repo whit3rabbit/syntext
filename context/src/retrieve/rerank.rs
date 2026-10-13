@@ -177,15 +177,23 @@ pub(crate) fn combine(s: &Signals, w: &RankWeights, intent: QueryIntent) -> f32 
     } else {
         w.recency
     };
+    // "Where is X defined?" is a question about structure: the definition
+    // must beat prose that merely names X, however closely that prose
+    // echoes the question.
+    let (symbol_weight, structure_weight) = if intent == QueryIntent::Locate {
+        (w.symbol * 2.0, w.structure * 2.0)
+    } else {
+        (w.symbol, w.structure)
+    };
     w.bm25 * s.bm25
         + w.coverage * s.coverage
         + w.proximity * s.proximity
         + w.phrase * s.phrase
         + w.title * s.title
-        + w.symbol * s.symbol
+        + symbol_weight * s.symbol
         + w.exact * s.exact
         + w.graph * s.graph
-        + w.structure * s.structure
+        + structure_weight * s.structure
         + recency_weight * s.recency
 }
 

@@ -6,6 +6,7 @@
 
 pub(crate) mod directory;
 mod source;
+mod sync;
 
 use std::collections::HashMap;
 
@@ -15,6 +16,7 @@ use syntext::changes::ContentDigest;
 
 pub use directory::{DirectorySource, SyncReport};
 pub use source::{decode_text, SourceDoc};
+pub use sync::SyncProgress;
 
 use crate::analysis::analyze_with;
 use crate::graph::{self, GraphMode, PassageFacts};
@@ -27,7 +29,7 @@ use crate::types::{DocKey, DocKind, Role, Scope, Trust};
 /// differently. Segments record the version that wrote them, and compaction
 /// recompiles older ones, so a store never answers a query with one term
 /// normalization against postings built with another.
-pub const COMPILER_VERSION: u32 = 1;
+pub const COMPILER_VERSION: u32 = 2;
 
 /// Compile-time settings, persisted in the store manifest so every segment
 /// of a store is built the same way.

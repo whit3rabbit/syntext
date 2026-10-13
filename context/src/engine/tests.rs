@@ -220,3 +220,96 @@ fn fit_history_keeps_a_user_led_suffix() {
     assert_eq!(kept[0], ChatMessage::user("three"));
     assert!(fit_history(&h, &c, 0).is_empty());
 }
+
+#[test]
+fn a_question_too_large_for_the_window_is_an_error_not_an_oversized_prompt() {
+    let (_d, engine) = engine_with(docs());
+    let huge = "queue depth ".repeat(3_000);
+    match engine.assemble(&ChatRequest::new(&huge, 2048)) {
+        Err(ContextError::WindowExceeded { needed, limit }) => {
+            assert!(needed > limit);
+            assert_eq!(limit, 2048 - Budget::for_window(2048).generation);
+        }
+        other => panic!("expected WindowExceeded, got {other:?}"),
+    }
+}
+
+#[test]
+fn history_that_cannot_fit_is_trimmed_oldest_first() {
+    let (_d, engine) = engine_with(docs());
+    let mut history = Vec::new();
+    for i in 0..40 {
+        history.push(ChatMessage::user(format!(
+            "question {i}: {}",
+            "detail ".repeat(30)
+        )));
+        history.push(ChatMessage::assistant(format!(
+            "answer {i}: {}",
+            "reply ".repeat(30)
+        )));
+    }
+    // Allow history the whole window: only the final fit can trim it.
+    let mut req = ChatRequest::new("What should I do when the queue depth alarm fires?", 2048)
+        .history(&history);
+    req.history_share = 1.0;
+    let turn = engine.assemble(&req).unwrap();
+    assert!(turn.prompt_tokens <= 2048 - turn.budget.generation);
+    assert!(turn.history_dropped > 0 && turn.history_kept > 0);
+    let first_kept = &turn.messages[usize::from(turn.messages[0].role == Role::System)];
+    assert_eq!(
+        first_kept.role,
+        Role::User,
+        "history still opens with a user turn"
+    );
+    assert!(turn
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .contains("queue depth alarm"));
+}
+
+/// Counts each message's text plus a large per-message template cost.
+struct TemplateCounter;
+
+impl crate::tokens::TokenCounter for TemplateCounter {
+    fn count(&self, text: &str) -> usize {
+        text.split_whitespace().count()
+    }
+
+    fn name(&self) -> &str {
+        "template"
+    }
+
+    fn count_messages(&self, messages: &[ChatMessage]) -> usize {
+        messages.iter().map(|m| self.count(&m.content) + 200).sum()
+    }
+}
+
+#[test]
+fn the_final_fit_uses_the_hosts_whole_prompt_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContextStore::create(
+        dir.path(),
+        StoreOptions {
+            sync: false,
+            ..StoreOptions::default()
+        },
+    )
+    .unwrap();
+    store.upsert(docs()).unwrap();
+    let engine = ContextEngine::builder(Arc::new(store))
+        .token_counter(Arc::new(TemplateCounter))
+        .build();
+    let turn = engine
+        .assemble(
+            &ChatRequest::new("What should I do when the queue depth alarm fires?", 1024)
+                .system("Be brief."),
+        )
+        .unwrap();
+    assert_eq!(
+        turn.prompt_tokens,
+        TemplateCounter.count_messages(&turn.messages)
+    );
+    assert!(turn.prompt_tokens <= 1024 - turn.budget.generation);
+}

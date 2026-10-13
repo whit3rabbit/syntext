@@ -6,7 +6,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use syntext_context::{
-    ChatRequest, ContextEngine, ContextStore, DirectorySource, PrepareRequest, Role, StoreOptions,
+    ChatRequest, ContextEngine, ContextStore, DirectorySource, PrepareRequest, Role, SourceDoc,
+    StoreOptions,
 };
 
 fn write(root: &Path, rel: &str, text: &str) {
@@ -180,6 +181,55 @@ fn a_second_process_sees_the_same_evidence() {
     assert_eq!(first.evidence_text, second.evidence_text);
     assert_eq!(first.receipt.generation, second.receipt.generation);
     store.verify().unwrap();
+    drop(engine);
+    drop(store);
+}
+
+#[test]
+fn every_hop_of_an_evidence_chain_reaches_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ContextStore::create(dir.path(), opts()).unwrap());
+    let mut docs = vec![
+        SourceDoc::note(
+            "staff",
+            "# Staff\n\nAlice works for Meridian Labs as a data engineer.\n",
+        )
+        .unwrap(),
+        SourceDoc::note(
+            "deals",
+            "# Deals\n\nMeridian Labs acquired Northstar Systems in 2019.\n",
+        )
+        .unwrap(),
+        SourceDoc::note(
+            "history",
+            "# History\n\nNorthstar Systems was founded by Robert Chen in 2004.\n",
+        )
+        .unwrap(),
+    ];
+    // Passages sharing the question's common words but no entity: they
+    // outscore the later hops lexically.
+    for i in 0..30 {
+        docs.push(
+            SourceDoc::note(
+                &format!("noise{i}"),
+                format!("# Note {i}\n\nThe company founded a new team and the employer acquired tools for project {i}.\n"),
+            )
+            .unwrap(),
+        );
+    }
+    store.upsert(docs).unwrap();
+    let engine = ContextEngine::builder(Arc::clone(&store)).build();
+    let packet = engine
+        .prepare(&PrepareRequest::new(
+            "Who founded the company acquired by Alice's employer?",
+            600,
+        ))
+        .unwrap();
+    let keys: Vec<&str> = packet.blocks.iter().map(|b| b.doc_key.as_str()).collect();
+    for hop in ["note:staff", "note:deals", "note:history"] {
+        assert!(keys.contains(&hop), "{hop} missing from {keys:?}");
+    }
+    assert!(packet.evidence_text.contains("Robert Chen"));
     drop(engine);
     drop(store);
 }

@@ -1,5 +1,6 @@
 use super::*;
-use crate::store::StoreOptions;
+use crate::error::ContextError;
+use crate::store::{ContextStore, StoreOptions};
 
 fn write(root: &Path, rel: &str, text: &[u8]) {
     let p = root.join(rel);
@@ -153,5 +154,108 @@ fn a_large_sync_is_batched_but_lands_in_one_generation() {
 
     let r = store.sync_directory(&source).unwrap();
     assert_eq!((r.added, r.modified, r.generation), (0, 0, 1), "{r:?}");
+    drop(store);
+}
+
+#[test]
+fn a_file_that_turns_binary_is_removed() {
+    let repo = tempfile::tempdir().unwrap();
+    write(repo.path(), "data/table.csv", b"id,name\n1,alpha\n");
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = store_in(store_dir.path());
+    let source = DirectorySource::new("repo", repo.path()).unwrap();
+    store.sync_directory(&source).unwrap();
+    assert_eq!(keys(&store), ["repo:data/table.csv"]);
+
+    write(repo.path(), "data/table.csv", b"\0\x01binary now");
+    let r = store.sync_directory(&source).unwrap();
+    assert_eq!((r.removed, r.skipped), (1, 1), "{r:?}");
+    assert!(keys(&store).is_empty());
+    drop(store);
+}
+
+#[test]
+fn sync_paths_updates_only_the_named_files() {
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    write(root, "src/a.rs", b"fn alpha() {}\n");
+    write(root, "src/b.rs", b"fn beta() {}\n");
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = store_in(store_dir.path());
+    let source = DirectorySource::new("repo", root).unwrap();
+    store.sync_directory(&source).unwrap();
+
+    write(root, "src/a.rs", b"fn alpha() { changed() }\n");
+    write(root, "src/b.rs", b"fn beta() { also_changed() }\n");
+    write(root, "src/c.rs", b"fn gamma() {}\n");
+    // An absolute path, a relative one, and a path outside the root.
+    let r = store
+        .sync_paths(
+            &source,
+            &[
+                root.join("src/a.rs"),
+                PathBuf::from("src/c.rs"),
+                PathBuf::from("/etc/hosts"),
+            ],
+        )
+        .unwrap();
+    assert_eq!((r.added, r.modified, r.scanned), (1, 1, 2), "{r:?}");
+    let snap = store.snapshot();
+    assert!(snap
+        .document_text("repo:src/a.rs")
+        .unwrap()
+        .unwrap()
+        .contains("changed()"));
+    assert!(
+        !snap
+            .document_text("repo:src/b.rs")
+            .unwrap()
+            .unwrap()
+            .contains("also_changed"),
+        "b.rs was not named"
+    );
+
+    std::fs::remove_file(root.join("src/a.rs")).unwrap();
+    let r = store.sync_paths(&source, &["src/a.rs"]).unwrap();
+    assert_eq!(r.removed, 1);
+    assert!(store.snapshot().document("repo:src/a.rs").is_none());
+    drop(snap);
+    drop(store);
+}
+
+#[test]
+fn a_cancelled_sync_publishes_nothing_and_is_redone_later() {
+    let repo = tempfile::tempdir().unwrap();
+    for i in 0..1100 {
+        write(
+            repo.path(),
+            &format!("n/{i}.md"),
+            format!("note {i}\n").as_bytes(),
+        );
+    }
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = store_in(store_dir.path());
+    let source = DirectorySource::new("repo", repo.path()).unwrap();
+    let mut seen = Vec::new();
+    let err = store
+        .sync_directory_with(&source, |p| {
+            seen.push(*p);
+            false
+        })
+        .unwrap_err();
+    assert!(matches!(err, ContextError::Cancelled), "{err}");
+    assert_eq!(seen.len(), 1);
+    assert_eq!((seen[0].observed, seen[0].total), (OBSERVE_CHUNK, 1100));
+    assert_eq!(store.stats().documents, 0, "nothing published");
+
+    let mut calls = 0;
+    let r = store
+        .sync_directory_with(&source, |p| {
+            calls += 1;
+            assert!(p.observed <= p.total);
+            true
+        })
+        .unwrap();
+    assert_eq!((r.added, calls), (1100, 3));
     drop(store);
 }

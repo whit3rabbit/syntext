@@ -197,16 +197,27 @@ pub(crate) fn write_segment(
 }
 
 pub(super) fn assemble(sections: Vec<(SectionKind, Vec<u8>)>, created_unix: i64) -> Vec<u8> {
+    let raw = sections
+        .into_iter()
+        .map(|(kind, bytes)| (kind as u32, 0, bytes))
+        .collect();
+    assemble_raw(raw, created_unix)
+}
+
+/// Assemble sections given as `(kind, flags, bytes)`.
+pub(super) fn assemble_raw(sections: Vec<(u32, u32, Vec<u8>)>, created_unix: i64) -> Vec<u8> {
     let mut out = Enc::default();
     out.zeros(HEADER_LEN);
     let mut toc = Enc::default();
-    let has_graph = sections.iter().any(|(k, _)| *k == SectionKind::Entities);
+    let has_graph = sections
+        .iter()
+        .any(|(k, _, _)| *k == SectionKind::Entities as u32);
     let count = sections.len() as u32;
-    for (kind, bytes) in sections {
+    for (kind, flags, bytes) in sections {
         out.align(8);
         let off = out.buf.len() as u64;
-        toc.u32(kind as u32);
-        toc.u32(0);
+        toc.u32(kind);
+        toc.u32(flags);
         toc.u64(off);
         toc.u64(bytes.len() as u64);
         toc.u64(xxh64(&bytes, 0));

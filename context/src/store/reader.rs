@@ -313,13 +313,22 @@ fn parse_toc(toc: &[u8], count: usize, toc_off: u64) -> Result<Vec<SectionLoc>> 
     let mut d = Dec::new(toc, "toc");
     let mut locs: Vec<SectionLoc> = Vec::with_capacity(count);
     for _ in 0..count {
-        let kind = SectionKind::from_u32(d.u32()?)
-            .ok_or_else(|| ContextError::corrupt("unknown section kind"))?;
-        d.skip(4)?;
+        let raw_kind = d.u32()?;
+        let flags = d.u32()?;
         let (off, len, checksum) = (d.u64()?, d.u64()?, d.u64()?);
         let in_bounds =
             off >= HEADER_LEN as u64 && off.checked_add(len).is_some_and(|e| e <= toc_off);
-        if !in_bounds || locs.iter().any(|l| l.kind == kind) {
+        if !in_bounds {
+            return Err(ContextError::corrupt("bad section entry"));
+        }
+        let Some(kind) = SectionKind::from_u32(raw_kind) else {
+            // A newer writer's section: skip it when marked optional.
+            if flags & SECTION_OPTIONAL != 0 {
+                continue;
+            }
+            return Err(ContextError::corrupt("unknown required section"));
+        };
+        if locs.iter().any(|l| l.kind == kind) {
             return Err(ContextError::corrupt("bad section entry"));
         }
         locs.push(SectionLoc {

@@ -53,7 +53,7 @@ pub(super) fn segment(
         out: Vec::new(),
     };
     for (s, e) in seg.units(0, lines.len(), 0) {
-        seg.emit(s, e, 0, location, None);
+        seg.emit(s, e, 0, location, None, None);
     }
     Layout {
         sections: Vec::new(),
@@ -114,20 +114,45 @@ impl Segmenter<'_, '_> {
     }
 
     /// Turn unit `[s, e)` into passages, splitting it when oversized.
-    fn emit(&mut self, s: usize, e: usize, depth: usize, crumb: &str, parent: Option<&Symbol>) {
+    /// `head` is the definition a split function's first piece inherits:
+    /// that piece holds the signature, so it is where the function is
+    /// defined.
+    fn emit(
+        &mut self,
+        s: usize,
+        e: usize,
+        depth: usize,
+        crumb: &str,
+        parent: Option<&Symbol>,
+        head: Option<(Symbol, usize)>,
+    ) {
         let Some((s, e)) = self.lines.trim_blank(s, e) else {
             return;
         };
-        let (symbol, def_line) = self.find_def(s, e, parent);
+        let (found, found_line) = self.find_def(s, e, parent);
+        let inherited = found.is_none() && head.is_some();
+        let (symbol, def_line) = match (found, head) {
+            (Some(sym), _) => (Some(sym), found_line),
+            (None, Some((sym, line))) if (s..e).contains(&line) => (Some(sym), Some(line)),
+            _ => (None, None),
+        };
         if self.lines.bytes(s, e) > self.opts.max_passage_bytes && depth < MAX_SPLIT_DEPTH {
             if let Some(children) = self.children(s, e) {
                 let child_crumb = match &symbol {
-                    Some(sym) => format!("{crumb} > {} {}", sym.kind.as_str(), sym.name),
-                    None => crumb.to_string(),
+                    Some(sym) if !inherited => {
+                        format!("{crumb} > {} {}", sym.kind.as_str(), sym.name)
+                    }
+                    _ => crumb.to_string(),
                 };
-                let container = symbol.clone().or_else(|| parent.cloned());
-                for (cs, ce) in children {
-                    self.emit(cs, ce, depth + 1, &child_crumb, container.as_ref());
+                let container = if inherited {
+                    parent.cloned()
+                } else {
+                    symbol.clone().or_else(|| parent.cloned())
+                };
+                let callable = symbol.clone().filter(|sym| !sym.kind.is_container());
+                for (i, (cs, ce)) in children.into_iter().enumerate() {
+                    let head = callable.clone().zip(def_line).filter(|_| i == 0);
+                    self.emit(cs, ce, depth + 1, &child_crumb, container.as_ref(), head);
                 }
                 return;
             }

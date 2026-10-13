@@ -16,7 +16,7 @@ use serde::Serialize;
 use syntext::changes::ContentDigest;
 
 use super::write::StagedWrite;
-use super::ContextStore;
+use super::{lock, ContextStore};
 use crate::compile::{SourceDoc, COMPILER_VERSION};
 use crate::error::Result;
 use crate::types::{DocKey, Scope};
@@ -85,7 +85,8 @@ impl ContextStore {
     /// Recompile the live documents of the durable segments `select`
     /// accepts (by file size) into new segments and drop the old ones.
     fn rewrite(&self, select: impl Fn(&Self, u64) -> bool) -> Result<CompactReport> {
-        let mut w = self.writer()?;
+        let w = self.writable()?;
+        let mut seg = lock(&w.segments);
         let snap = self.snapshot();
         let durable: Vec<usize> = (0..snap.segments.len())
             .filter(|&i| snap.segments[i].durable)
@@ -121,7 +122,7 @@ impl ContextStore {
             .iter()
             .map(|&i| snap.segments[i].name.clone())
             .collect();
-        let mut staged = StagedWrite::new(self, &mut w);
+        let mut staged = StagedWrite::new(self, w, &mut seg);
         for &si in &chosen {
             let r = &snap.segments[si].reader;
             for di in live(si) {

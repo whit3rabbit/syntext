@@ -32,6 +32,17 @@ pub enum ContextError {
     InvalidInput(String),
     /// An error surfaced by the underlying syntext index.
     Index(syntext::IndexError),
+    /// The system prompt and question alone, with no history and no
+    /// evidence, do not fit the model window.
+    WindowExceeded {
+        /// Tokens the smallest possible prompt needs.
+        needed: usize,
+        /// Tokens available after the answer reserve.
+        limit: usize,
+    },
+    /// The caller cancelled the operation (for example from a sync
+    /// progress callback). Nothing was published.
+    Cancelled,
 }
 
 impl ContextError {
@@ -74,6 +85,11 @@ impl std::fmt::Display for ContextError {
             ContextError::NotFound(p) => write!(f, "no context store at {}", p.display()),
             ContextError::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
             ContextError::Index(e) => write!(f, "syntext index error: {e}"),
+            ContextError::WindowExceeded { needed, limit } => write!(
+                f,
+                "prompt needs {needed} tokens even without history or evidence, but only {limit} fit the window"
+            ),
+            ContextError::Cancelled => write!(f, "operation cancelled"),
         }
     }
 }

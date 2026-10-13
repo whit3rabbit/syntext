@@ -109,3 +109,33 @@ fn toml_tables_start_units() {
     let layout = seg(text, Lang::Toml, 1800);
     assert_eq!(layout.passages.len(), 2);
 }
+
+#[test]
+fn a_split_function_is_defined_by_its_first_piece() {
+    let mut text =
+        String::from("/// Route a query.\npub fn route_query(pattern: &str) -> Route {\n");
+    for i in 0..6 {
+        text.push_str(&format!(
+            "    if pattern.len() > {i} {{\n        let step_{i} = prepare({i});\n        record(step_{i});\n    }}\n\n"
+        ));
+    }
+    text.push_str("    Route::Scan\n}\n");
+    let layout = seg(&text, Lang::Rust, 160);
+    assert!(layout.passages.len() > 2, "the function is split");
+    let first = &layout.passages[0];
+    assert_eq!(first.kind, PassageKind::Definition);
+    assert_eq!(
+        first.symbol.as_ref().map(|s| s.name.as_str()),
+        Some("route_query")
+    );
+    let anchor = first.line_start as usize + first.anchor_offset as usize;
+    assert!(text
+        .lines()
+        .nth(anchor - 1)
+        .unwrap()
+        .starts_with("pub fn route_query"));
+    for p in &layout.passages[1..] {
+        assert_eq!(p.kind, PassageKind::Code);
+        assert_eq!(p.breadcrumb, "f > function route_query");
+    }
+}

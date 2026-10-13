@@ -1,7 +1,10 @@
 use std::path::Path;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use super::super::{ContextStore, StoreOptions};
 use crate::compile::SourceDoc;
+use crate::types::{Role, Scope};
 
 fn opts(batch_bytes: usize) -> StoreOptions {
     StoreOptions {
@@ -110,5 +113,64 @@ fn small_segments_merge_without_rewriting_full_ones() {
     let r = store.compact().unwrap();
     assert_eq!((r.documents, r.segments_after), (4, 2));
     assert!(!segment_files(dir.path()).contains(&full[0]));
+    drop(store);
+}
+
+#[test]
+fn recording_a_turn_never_waits_on_a_running_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = StoreOptions {
+        memory_flush_turns: 1,
+        ..opts(1 << 20)
+    };
+    let store = Arc::new(ContextStore::create(dir.path(), opts).unwrap());
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let writer = {
+        let store = Arc::clone(&store);
+        std::thread::spawn(move || {
+            store
+                .write_batched(|s| {
+                    s.push(note("doc", "a document being written"))?;
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(Vec::new())
+                })
+                .unwrap()
+        })
+    };
+    entered_rx.recv().unwrap();
+
+    // Due for a flush (threshold 1), but the write holds the segment lock:
+    // the turn must still be recorded, durable, and searchable right away.
+    let (done_tx, done_rx) = mpsc::channel();
+    {
+        let store = Arc::clone(&store);
+        std::thread::spawn(move || {
+            let turn = store
+                .append_turn("s", Role::User, Scope::default(), "said mid-sync", None)
+                .unwrap();
+            done_tx.send(turn).unwrap();
+        });
+    }
+    // Generous guard so a regression fails instead of hanging the suite.
+    let turn = done_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("append_turn blocked on the running write");
+    assert_eq!(store.live_turns().len(), 1, "flush deferred");
+    let key = format!("turn:{}", turn.seq);
+    assert!(store.snapshot().lookup(&key).is_some());
+
+    release_tx.send(()).unwrap();
+    writer.join().unwrap();
+    assert!(
+        store.snapshot().lookup(&key).is_some(),
+        "the write kept the live turn"
+    );
+    store
+        .append_turn("s", Role::Assistant, Scope::default(), "reply", None)
+        .unwrap();
+    assert_eq!(store.live_turns().len(), 0, "the next turn flushes both");
+    assert_eq!(store.stats().documents, 3);
     drop(store);
 }

@@ -11,6 +11,7 @@
 
 pub(crate) mod access;
 mod candidates;
+mod chains;
 mod graph_walk;
 mod pipeline;
 mod query;

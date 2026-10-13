@@ -1,4 +1,5 @@
 use super::manifest::segment_file_name;
+use super::reader::SegmentReader;
 use super::writer::write_segment;
 use super::*;
 use crate::compile::{compile_all, SourceDoc};
@@ -393,4 +394,45 @@ fn segments_from_an_older_compiler_are_recompiled() {
     );
     assert!(store.maybe_compact().unwrap().is_none());
     drop(store);
+}
+
+/// Every TOC entry of a segment image as `(kind, flags, bytes)`.
+fn raw_sections(bytes: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
+    use super::format::{FOOTER_LEN, TOC_ENTRY_LEN};
+    let footer = &bytes[bytes.len() - FOOTER_LEN..];
+    let u64_at = |b: &[u8], i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+    let u32_at = |b: &[u8], i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+    let (toc_off, toc_len) = (u64_at(footer, 0) as usize, u64_at(footer, 8) as usize);
+    bytes[toc_off..toc_off + toc_len]
+        .chunks(TOC_ENTRY_LEN)
+        .map(|e| {
+            let (off, len) = (u64_at(e, 8) as usize, u64_at(e, 16) as usize);
+            (u32_at(e, 0), u32_at(e, 4), bytes[off..off + len].to_vec())
+        })
+        .collect()
+}
+
+#[test]
+fn unknown_sections_are_skipped_only_when_marked_optional() {
+    use super::format::SECTION_OPTIONAL;
+    let (compiled, _) = compile_all(
+        vec![note("a", "# T\n\nAlice works for Meridian Labs.\n")],
+        &CompileOptions::default(),
+    );
+    let (bytes, _) = write_segment(&compiled, crate::graph::GraphMode::Full, 0).unwrap();
+    let with_extra = |flags: u32| {
+        let mut sections = raw_sections(&bytes);
+        sections.push((200, flags, b"from a newer writer".to_vec()));
+        super::writer::assemble_raw(sections, 0)
+    };
+
+    let r = SegmentReader::from_bytes(Arc::from(with_extra(SECTION_OPTIONAL))).unwrap();
+    assert_eq!(r.docs.len(), 1);
+    assert!(r.passage_text(0).unwrap().contains("Meridian Labs"));
+
+    let err = SegmentReader::from_bytes(Arc::from(with_extra(0))).unwrap_err();
+    assert!(
+        err.to_string().contains("unknown required section"),
+        "{err}"
+    );
 }

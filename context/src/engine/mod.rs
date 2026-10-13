@@ -27,7 +27,8 @@ use std::time::Instant;
 pub use request::{ChatRequest, ChatTurn, EvidencePacket, PrepareRequest};
 
 use crate::compile::CompileOptions;
-use crate::error::Result;
+use crate::error::{ContextError, Result};
+use crate::memory::ConversationMemory;
 use crate::pack::{pack, Budget, PackOptions, MESSAGE_OVERHEAD};
 use crate::receipt::{EvidenceRef, Receipt, RECEIPT_VERSION};
 use crate::render::{ChatMessage, RenderOptions};
@@ -193,7 +194,12 @@ impl ContextEngine {
 
     /// Assemble a complete prompt for a model with `req.window` tokens:
     /// keep recent history verbatim (up to `history_share`), spend what
-    /// remains after the answer reserve on evidence, and verify the total.
+    /// remains after the answer reserve on evidence, and verify the total
+    /// with [`TokenCounter::count_messages`]. When it does not fit, evidence
+    /// shrinks first, then the oldest history goes. If the system prompt and
+    /// question alone exceed the window, the result is
+    /// [`ContextError::WindowExceeded`]; an oversized prompt is never
+    /// returned.
     pub fn assemble(&self, req: &ChatRequest<'_>) -> Result<ChatTurn> {
         let counter = &*self.counter;
         let history: Vec<ChatMessage> = match req.memory {
@@ -201,52 +207,67 @@ impl ContextEngine {
             None => req.history.to_vec(),
         };
         let cap = (req.window as f32 * req.history_share.clamp(0.0, 1.0)) as usize;
-        let kept = fit_history(&history, counter, cap);
-        let mut budget = Budget::for_window(req.window);
+        let mut kept = fit_history(&history, counter, cap);
+        let mut base = Budget::for_window(req.window);
         if let Some(g) = req.generation_reserve {
-            budget.generation = g;
+            base.generation = g;
         }
-        let budget = budget.measure(counter, req.system, kept, req.question);
+        let limit = req.window.saturating_sub(base.generation);
         let mut scopes = req
             .scopes
             .clone()
             .unwrap_or_else(|| self.retrieve.scopes.clone());
-        let mut exclude = req.exclude.clone();
-        if let Some(m) = req.memory {
-            if let Some(scope) = m.scope() {
-                scopes = scopes.grant(scope.clone());
-            }
-            exclude.extend(m.recent_keys(kept.len()));
+        if let Some(scope) = req.memory.and_then(ConversationMemory::scope) {
+            scopes = scopes.grant(scope.clone());
         }
-        let limit = req.window.saturating_sub(budget.generation);
-        let mut evidence_tokens = budget.evidence_tokens();
         loop {
-            let packet = self.prepare(&PrepareRequest {
-                question: req.question,
-                evidence_tokens,
-                scopes: Some(scopes.clone()),
-                exclude: exclude.clone(),
-            })?;
-            let msgs = packet.messages(req.system, kept, req.question);
-            let prompt_tokens: usize = msgs
-                .iter()
-                .map(|m| counter.count(&m.content) + MESSAGE_OVERHEAD)
-                .sum();
-            if prompt_tokens <= limit || packet.is_empty() {
-                return Ok(ChatTurn {
-                    messages: msgs,
-                    packet,
-                    budget,
-                    history_kept: kept.len(),
-                    history_dropped: history.len() - kept.len(),
-                    prompt_tokens,
-                });
+            let budget = base.measure(counter, req.system, kept, req.question);
+            let mut exclude = req.exclude.clone();
+            if let Some(m) = req.memory {
+                exclude.extend(m.recent_keys(kept.len()));
             }
-            // Tokenizer non-additivity or policy text overflowed: shrink.
-            let over = prompt_tokens - limit;
-            evidence_tokens = evidence_tokens.saturating_sub(over.max(16));
+            let mut evidence_tokens = budget.evidence_tokens();
+            let needed = loop {
+                let packet = self.prepare(&PrepareRequest {
+                    question: req.question,
+                    evidence_tokens,
+                    scopes: Some(scopes.clone()),
+                    exclude: exclude.clone(),
+                })?;
+                let messages = packet.messages(req.system, kept, req.question);
+                let prompt_tokens = counter.count_messages(&messages);
+                if prompt_tokens <= limit {
+                    return Ok(ChatTurn {
+                        messages,
+                        packet,
+                        budget,
+                        history_kept: kept.len(),
+                        history_dropped: history.len() - kept.len(),
+                        prompt_tokens,
+                    });
+                }
+                if packet.is_empty() {
+                    break prompt_tokens;
+                }
+                // Tokenizer non-additivity or the evidence policy overflowed.
+                let over = prompt_tokens - limit;
+                evidence_tokens = evidence_tokens.saturating_sub(over.max(16));
+            };
+            if kept.is_empty() {
+                return Err(ContextError::WindowExceeded { needed, limit });
+            }
+            kept = drop_oldest(kept);
         }
     }
+}
+
+/// `history` without its oldest message, still starting with a user turn.
+fn drop_oldest(history: &[ChatMessage]) -> &[ChatMessage] {
+    let mut start = 1.min(history.len());
+    while start < history.len() && history[start].role == Role::Assistant {
+        start += 1;
+    }
+    &history[start..]
 }
 
 /// The longest suffix of `history` within `cap` tokens that does not begin

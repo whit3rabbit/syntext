@@ -24,6 +24,7 @@ mod journal;
 mod live;
 pub(crate) mod manifest;
 mod options;
+mod publish;
 pub(crate) mod reader;
 mod reader_graph;
 mod reader_records;
@@ -49,31 +50,51 @@ use crate::compile::CompileOptions;
 use crate::error::{ContextError, Result};
 use journal::Journal;
 use manifest::Manifest;
-use reader::SegmentReader;
+use publish::{open_durable, Published};
 use snapshot::SegmentHandle;
 
-/// Mutable state of a writable handle.
+/// Segment-writing state: the manifest and the inter-process writer lock.
 struct Writer {
     _lock: File,
     manifest: Manifest,
+}
+
+/// Conversation-memory state. Locked separately from segment writes, so
+/// recording a turn never waits on a directory sync or a compaction.
+struct Memory {
     journal: Journal,
     live: Vec<Turn>,
-    live_handle: Option<Arc<SegmentHandle>>,
+    next_seq: u64,
+}
+
+/// What a writable handle adds. Locks are always taken in field order:
+/// `memory`, then `segments`, then `published`.
+struct Writable {
+    memory: Mutex<Memory>,
+    segments: Mutex<Writer>,
+    published: Mutex<Published>,
 }
 
 /// A context store handle. `Send + Sync`; share it behind an `Arc`.
 pub struct ContextStore {
     dir: PathBuf,
     options: StoreOptions,
+    compile: CompileOptions,
     snapshot: ArcSwap<StoreSnapshot>,
-    writer: Option<Mutex<Writer>>,
+    writable: Option<Writable>,
+}
+
+/// Lock `m`, recovering the data of a poisoned lock: every critical section
+/// leaves the state consistent before anything can panic.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl std::fmt::Debug for ContextStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ContextStore")
             .field("dir", &self.dir)
-            .field("read_only", &self.writer.is_none())
+            .field("read_only", &self.writable.is_none())
             .finish()
     }
 }
@@ -112,9 +133,8 @@ impl ContextStore {
             .filter(|t| t.seq > manifest.memory_through)
             .collect();
         let store = Self::finish_open(dir, options, manifest, lock, journal, live)?;
-        if let Some(w) = &store.writer {
-            let w = w.lock().unwrap_or_else(|e| e.into_inner());
-            files::gc(&store.dir, &w.manifest);
+        if let Some(w) = &store.writable {
+            files::gc(&store.dir, &self::lock(&w.segments).manifest);
         }
         Ok(store)
     }
@@ -134,12 +154,13 @@ impl ContextStore {
     /// generations published by a writer in another process.
     pub fn open_read_only(dir: impl AsRef<Path>, options: StoreOptions) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
-        let snapshot = Self::load_read_only(&dir, &options, None)?;
+        let (snapshot, compile) = Self::load_read_only(&dir, &options, None)?;
         Ok(ContextStore {
             dir,
             options,
+            compile,
             snapshot: ArcSwap::from_pointee(snapshot),
-            writer: None,
+            writable: None,
         })
     }
 
@@ -151,19 +172,31 @@ impl ContextStore {
         journal: Journal,
         live: Vec<Turn>,
     ) -> Result<Self> {
-        let live_handle = live::build_live(&live, &manifest.compile)?;
-        let snapshot = assemble(&dir, &options, &manifest, None, live_handle.clone())?;
+        let compile = manifest.compile;
+        let live_handle = live::build_live(&live, &compile)?;
+        let durable = open_durable(&dir, &options, &manifest, None)?;
+        let published = Published::new(&manifest, durable, live_handle);
+        let snapshot = published.snapshot();
+        let next_seq = live.last().map_or(manifest.memory_through, |t| {
+            t.seq.max(manifest.memory_through)
+        }) + 1;
         Ok(ContextStore {
             dir,
             options,
+            compile,
             snapshot: ArcSwap::from_pointee(snapshot),
-            writer: Some(Mutex::new(Writer {
-                _lock: lock,
-                manifest,
-                journal,
-                live,
-                live_handle,
-            })),
+            writable: Some(Writable {
+                memory: Mutex::new(Memory {
+                    journal,
+                    live,
+                    next_seq,
+                }),
+                segments: Mutex::new(Writer {
+                    _lock: lock,
+                    manifest,
+                }),
+                published: Mutex::new(published),
+            }),
         })
     }
 
@@ -175,7 +208,7 @@ impl ContextStore {
         dir: &Path,
         options: &StoreOptions,
         prev: Option<&StoreSnapshot>,
-    ) -> Result<StoreSnapshot> {
+    ) -> Result<(StoreSnapshot, CompileOptions)> {
         let mut last_err = None;
         for _ in 0..5 {
             let manifest =
@@ -185,8 +218,11 @@ impl ContextStore {
                 .filter(|t| t.seq > manifest.memory_through)
                 .collect();
             let live = live::build_live(&turns, &manifest.compile)?;
-            match assemble(dir, options, &manifest, prev, live) {
-                Ok(s) => return Ok(s),
+            match open_durable(dir, options, &manifest, prev) {
+                Ok(durable) => {
+                    let snap = Published::new(&manifest, durable, live).snapshot();
+                    return Ok((snap, manifest.compile));
+                }
                 Err(ContextError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                     last_err = Some(ContextError::Io(e));
                 }
@@ -203,7 +239,7 @@ impl ContextStore {
 
     /// True for handles opened with [`open_read_only`](Self::open_read_only).
     pub fn is_read_only(&self) -> bool {
-        self.writer.is_none()
+        self.writable.is_none()
     }
 
     /// The current snapshot. Cheap (one atomic load); hold it for the
@@ -212,31 +248,24 @@ impl ContextStore {
         self.snapshot.load_full()
     }
 
-    /// Compile options in effect for this store.
+    /// Compile options in effect for this store (fixed at creation).
     pub fn compile_options(&self) -> CompileOptions {
-        match &self.writer {
-            Some(w) => w.lock().unwrap_or_else(|e| e.into_inner()).manifest.compile,
-            None => Manifest::load(&self.dir)
-                .ok()
-                .flatten()
-                .map_or(self.options.compile, |m| m.compile),
-        }
+        self.compile
     }
 
-    fn writer(&self) -> Result<MutexGuard<'_, Writer>> {
-        let w = self.writer.as_ref().ok_or(ContextError::ReadOnly)?;
-        Ok(w.lock().unwrap_or_else(|e| e.into_inner()))
+    fn writable(&self) -> Result<&Writable> {
+        self.writable.as_ref().ok_or(ContextError::ReadOnly)
     }
 
     /// Re-read the manifest and journal written by another process. Returns
     /// whether the snapshot changed. A no-op for writable handles, which
     /// are the only writer.
     pub fn reload(&self) -> Result<bool> {
-        if self.writer.is_some() {
+        if self.writable.is_some() {
             return Ok(false);
         }
         let cur = self.snapshot();
-        let next = Self::load_read_only(&self.dir, &self.options, Some(&cur))?;
+        let (next, _) = Self::load_read_only(&self.dir, &self.options, Some(&cur))?;
         let changed = next.generation != cur.generation || next.live_through != cur.live_through;
         if changed {
             self.snapshot.store(Arc::new(next));
@@ -283,60 +312,6 @@ impl ContextStore {
         }
         Ok(())
     }
-}
-
-/// Build a snapshot for `manifest`, reusing already-open segments from
-/// `prev` and appending the live memory segment.
-fn assemble(
-    dir: &Path,
-    options: &StoreOptions,
-    manifest: &Manifest,
-    prev: Option<&StoreSnapshot>,
-    live: Option<Arc<SegmentHandle>>,
-) -> Result<StoreSnapshot> {
-    let mut segments: Vec<Arc<SegmentHandle>> = Vec::with_capacity(manifest.segments.len() + 1);
-    for e in &manifest.segments {
-        let reused = prev.and_then(|p| {
-            p.segments
-                .iter()
-                .find(|s| s.durable && s.name == e.file)
-                .cloned()
-        });
-        let handle = match reused {
-            Some(h) => h,
-            None => Arc::new(SegmentHandle {
-                name: e.file.clone(),
-                durable: true,
-                reader: SegmentReader::open_file(&dir.join(&e.file), options.verify_on_open)?,
-            }),
-        };
-        if handle.reader.docs.len() != e.docs as usize {
-            return Err(ContextError::corrupt(format!(
-                "segment {} does not match the manifest",
-                e.file
-            )));
-        }
-        segments.push(handle);
-    }
-    let dead: Vec<&[u32]> = manifest
-        .segments
-        .iter()
-        .map(|e| e.dead.as_slice())
-        .collect();
-    let live_through = live.as_ref().map_or(0, |h| {
-        h.reader.docs.iter().map(|d| d.seq).max().unwrap_or(0)
-    });
-    if let Some(h) = live {
-        segments.push(h);
-    }
-    let mut snap = StoreSnapshot::build(
-        manifest.generation,
-        manifest.store_id.clone(),
-        segments,
-        &dead,
-    );
-    snap.live_through = live_through;
-    Ok(snap)
 }
 
 #[cfg(test)]

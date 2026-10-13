@@ -7,6 +7,9 @@
 
 use std::fmt;
 
+use crate::pack::MESSAGE_OVERHEAD;
+use crate::render::ChatMessage;
+
 /// Counts tokens the way the target model's tokenizer does.
 pub trait TokenCounter: Send + Sync {
     /// Number of tokens `text` encodes to (without template overhead).
@@ -14,6 +17,17 @@ pub trait TokenCounter: Send + Sync {
 
     /// Identifier recorded in receipts, e.g. `"qwen3"` or `"heuristic-v1"`.
     fn name(&self) -> &str;
+
+    /// Tokens of a whole prompt as the model will receive it, chat template
+    /// included. Used for the final fit check. The default adds
+    /// [`MESSAGE_OVERHEAD`] per message; a host that can render its chat
+    /// template should override this with an exact count.
+    fn count_messages(&self, messages: &[ChatMessage]) -> usize {
+        messages
+            .iter()
+            .map(|m| self.count(&m.content) + MESSAGE_OVERHEAD)
+            .sum()
+    }
 }
 
 /// Adapts a closure into a [`TokenCounter`]:

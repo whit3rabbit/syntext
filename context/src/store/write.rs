@@ -13,12 +13,12 @@
 //! [`StoreOptions::batch_bytes`]: super::StoreOptions::batch_bytes
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use super::files;
 use super::manifest::{segment_file_name, unix_now, SegmentEntry};
+use super::publish::{dead_lists, open_durable};
 use super::writer::write_segment;
-use super::{assemble, ContextStore, IngestReport, Writer};
+use super::{lock, ContextStore, IngestReport, Writable, Writer};
 use crate::compile::{compile_all, SkipReason, SourceDoc};
 use crate::error::Result;
 use crate::types::DocKey;
@@ -60,8 +60,9 @@ impl ContextStore {
         &self,
         fill: impl FnOnce(&mut StagedWrite<'_>) -> Result<Vec<DocKey>>,
     ) -> Result<IngestReport> {
-        let mut w = self.writer()?;
-        let mut staged = StagedWrite::new(self, &mut w);
+        let w = self.writable()?;
+        let mut seg = lock(&w.segments);
+        let mut staged = StagedWrite::new(self, w, &mut seg);
         let removals = fill(&mut staged)?;
         staged.commit(removals, None, &[])
     }
@@ -77,6 +78,7 @@ struct Staged {
 /// batch by batch, published by [`commit`](Self::commit).
 pub(crate) struct StagedWrite<'a> {
     store: &'a ContextStore,
+    writable: &'a Writable,
     w: &'a mut Writer,
     generation: u64,
     pending: Vec<SourceDoc>,
@@ -87,10 +89,11 @@ pub(crate) struct StagedWrite<'a> {
 }
 
 impl<'a> StagedWrite<'a> {
-    pub(super) fn new(store: &'a ContextStore, w: &'a mut Writer) -> Self {
+    pub(super) fn new(store: &'a ContextStore, writable: &'a Writable, w: &'a mut Writer) -> Self {
         let generation = w.manifest.generation + 1;
         StagedWrite {
             store,
+            writable,
             w,
             generation,
             pending: Vec::new(),
@@ -117,13 +120,13 @@ impl<'a> StagedWrite<'a> {
         }
         self.pending_bytes = 0;
         let (compiled, skipped) =
-            compile_all(std::mem::take(&mut self.pending), &self.w.manifest.compile);
+            compile_all(std::mem::take(&mut self.pending), &self.store.compile);
         self.skipped.extend(skipped);
         if compiled.is_empty() {
             return Ok(());
         }
         self.passages += compiled.iter().map(|d| d.passages.len()).sum::<usize>();
-        let (bytes, meta) = write_segment(&compiled, self.w.manifest.compile.graph, unix_now())?;
+        let (bytes, meta) = write_segment(&compiled, self.store.compile.graph, unix_now())?;
         let name = segment_file_name(self.generation);
         files::write_atomic(&self.store.dir, &name, &bytes, self.store.options.sync)?;
         self.staged.push(Staged {
@@ -141,10 +144,11 @@ impl<'a> StagedWrite<'a> {
     }
 
     /// Publish everything staged: mark superseded and `removals` documents
-    /// dead, drop the `drop` segments, advance `memory_through`, and commit
-    /// a new manifest. Nothing after the commit point can fail except
-    /// best-effort garbage collection. A write with nothing to publish
-    /// leaves the generation unchanged.
+    /// dead, drop the `drop` segments, and commit a new manifest. With
+    /// `memory_through`, the manifest records those turns as durable and
+    /// the published live segment is cleared. Nothing after the commit
+    /// point can fail except best-effort garbage collection. A write with
+    /// nothing to publish leaves the generation unchanged.
     pub(super) fn commit(
         mut self,
         mut removals: Vec<DocKey>,
@@ -216,16 +220,18 @@ impl<'a> StagedWrite<'a> {
             manifest.memory_through = manifest.memory_through.max(m);
         }
         let store = self.store;
-        let next = assemble(
-            &store.dir,
-            &store.options,
-            &manifest,
-            Some(&snap),
-            self.w.live_handle.clone(),
-        )?;
+        let durable = open_durable(&store.dir, &store.options, &manifest, Some(&snap))?;
         manifest.save(&store.dir, store.options.sync)?;
+        let dead = dead_lists(&manifest);
         self.w.manifest = manifest;
-        store.snapshot.store(Arc::new(next));
+        store.publish(self.writable, |p| {
+            p.generation = self.generation;
+            p.durable = durable;
+            p.dead = dead;
+            if memory_through.is_some() {
+                p.live = None;
+            }
+        });
         files::gc(&store.dir, &self.w.manifest);
         Ok(IngestReport {
             generation: self.generation,

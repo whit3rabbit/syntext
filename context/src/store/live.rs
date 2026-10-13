@@ -1,7 +1,7 @@
 //! Conversation memory inside the store: journal appends, the live
 //! in-memory segment, and compaction of turns into durable segments.
 
-use std::sync::Arc;
+use std::sync::{Arc, TryLockError};
 
 use super::journal::Turn;
 use super::manifest::unix_now;
@@ -9,7 +9,7 @@ use super::reader::SegmentReader;
 use super::snapshot::SegmentHandle;
 use super::write::StagedWrite;
 use super::writer::write_segment;
-use super::{assemble, ContextStore, Writer};
+use super::{lock, ContextStore, Memory, Writable, Writer};
 use crate::compile::{compile_all, CompileOptions, SourceDoc};
 use crate::error::{ContextError, Result};
 use crate::structure::Lang;
@@ -65,8 +65,11 @@ impl ContextStore {
     /// Durably record one conversation turn and make it searchable.
     ///
     /// The turn is synced to the journal before this returns, then indexed
-    /// in the live segment. Every `memory_flush_turns` turns the live set is
-    /// compacted into a durable segment. `timestamp` defaults to now.
+    /// in the live segment. About every `memory_flush_turns` turns the live
+    /// set is compacted into a durable segment. Recording never waits on a
+    /// directory sync or compaction: when one holds the segment lock, the
+    /// flush is left for a later turn (the turns are already durable in the
+    /// journal). `timestamp` defaults to now.
     pub fn append_turn(
         &self,
         session: &str,
@@ -83,79 +86,67 @@ impl ContextStore {
                 "session id must be 1..=128 bytes without control characters",
             ));
         }
-        let mut w = self.writer()?;
-        let seq = w.live.last().map_or(w.manifest.memory_through, |t| {
-            t.seq.max(w.manifest.memory_through)
-        }) + 1;
+        let w = self.writable()?;
+        let mut m = lock(&w.memory);
         let turn = Turn {
-            seq,
+            seq: m.next_seq,
             session: session.to_string(),
             role,
             scope,
             text: text.to_string(),
             timestamp: timestamp.unwrap_or_else(unix_now),
         };
-        w.journal.append(&turn)?;
-        w.live.push(turn.clone());
-        if w.live.len() >= self.options.memory_flush_turns.max(1) {
-            self.flush_memory_locked(&mut w)?;
-        } else {
-            self.refresh_live(&mut w)?;
+        m.journal.append(&turn)?;
+        m.next_seq += 1;
+        m.live.push(turn.clone());
+        let mut flushed = false;
+        if m.live.len() >= self.options.memory_flush_turns.max(1) {
+            let seg = match w.segments.try_lock() {
+                Ok(seg) => Some(seg),
+                Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            };
+            if let Some(mut seg) = seg {
+                flushed = self.flush_memory_locked(w, &mut m, &mut seg)?;
+            }
+        }
+        if !flushed {
+            let handle = build_live(&m.live, &self.compile)?;
+            self.publish(w, |p| p.live = handle);
         }
         Ok(turn)
     }
 
-    /// Compact all live turns into a durable segment now. Returns whether
-    /// anything was flushed.
+    /// Compact all live turns into a durable segment now (waiting for any
+    /// running sync or compaction). Returns whether anything was flushed.
     pub fn flush_memory(&self) -> Result<bool> {
-        let mut w = self.writer()?;
-        self.flush_memory_locked(&mut w)
+        let w = self.writable()?;
+        let mut m = lock(&w.memory);
+        let mut seg = lock(&w.segments);
+        self.flush_memory_locked(w, &mut m, &mut seg)
     }
 
     /// Turns currently held only in the live journal (not yet compacted).
     pub fn live_turns(&self) -> Vec<Turn> {
-        match &self.writer {
-            Some(w) => w.lock().unwrap_or_else(|e| e.into_inner()).live.clone(),
+        match &self.writable {
+            Some(w) => lock(&w.memory).live.clone(),
             None => Vec::new(),
         }
     }
 
-    fn refresh_live(&self, w: &mut Writer) -> Result<()> {
-        w.live_handle = build_live(&w.live, &w.manifest.compile)?;
-        let snap = self.snapshot();
-        let next = assemble(
-            &self.dir,
-            &self.options,
-            &w.manifest,
-            Some(&snap),
-            w.live_handle.clone(),
-        )?;
-        self.snapshot.store(Arc::new(next));
-        Ok(())
-    }
-
-    pub(super) fn flush_memory_locked(&self, w: &mut Writer) -> Result<bool> {
-        let Some(through) = w.live.last().map(|t| t.seq) else {
+    fn flush_memory_locked(&self, w: &Writable, m: &mut Memory, seg: &mut Writer) -> Result<bool> {
+        let Some(through) = m.live.last().map(|t| t.seq) else {
             return Ok(false);
         };
-        let docs: Vec<SourceDoc> = w.live.iter().map(turn_doc).collect();
-        let live = std::mem::take(&mut w.live);
-        let handle = w.live_handle.take();
-        let flushed = (|| {
-            let mut staged = StagedWrite::new(self, w);
-            for doc in docs {
-                staged.push(doc)?;
-            }
-            staged.commit(Vec::new(), Some(through), &[])
-        })();
-        if let Err(e) = flushed {
-            w.live = live;
-            w.live_handle = handle;
-            return Err(e);
+        let mut staged = StagedWrite::new(self, w, seg);
+        for doc in m.live.iter().map(turn_doc) {
+            staged.push(doc)?;
         }
+        staged.commit(Vec::new(), Some(through), &[])?;
+        m.live.clear();
         // The manifest now records `through`; replay skips older records,
         // so a failed rotation only costs journal space.
-        if let Err(e) = w.journal.rewrite(&self.dir, &[]) {
+        if let Err(e) = m.journal.rewrite(&self.dir, &[]) {
             log::warn!("memory journal rotation failed: {e}");
         }
         Ok(true)
