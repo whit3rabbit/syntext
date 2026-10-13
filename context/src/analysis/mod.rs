@@ -7,10 +7,12 @@
 //! shared by every casing convention, so `parse_query` in a question matches
 //! `parseQuery` in a file.
 
+mod relations;
 mod stem;
 mod stopwords;
 mod words;
 
+pub(crate) use relations::relation_class;
 pub(crate) use stem::porter_stem;
 pub(crate) use stopwords::is_stopword;
 pub(crate) use words::{for_each_word, is_cjk, split_subwords};

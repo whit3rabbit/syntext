@@ -276,3 +276,39 @@ proptest::proptest! {
         let _ = merged(&text, lang, GraphMode::Full);
     }
 }
+
+#[test]
+fn verbs_are_matched_by_their_real_stems() {
+    // `employs` stems to `emploi` and `buys` to `bui`: both must still read
+    // as relations, not bare co-mentions.
+    let f = merged(
+        "Juniper Logistics employs Amara Nakamura. Kestrel Foods buys Copperleaf Foods.\n",
+        Lang::Markdown,
+        GraphMode::Full,
+    );
+    assert!(has_edge(
+        &f,
+        "juniper logistics",
+        "employs",
+        "amara nakamura"
+    ));
+    assert!(has_edge(&f, "kestrel foods", "buys", "copperleaf foods"));
+}
+
+#[test]
+fn a_heading_that_is_a_name_defines_that_entity() {
+    let f = merged(
+        "# Juniper Logistics\n\nJuniper Logistics was founded by Zoe Sato in 1981.\n",
+        Lang::Markdown,
+        GraphMode::Full,
+    );
+    assert!(f.defines.iter().any(|e| e.key == "juniper logistics"));
+    for heading in ["# Notes on Juniper Logistics", "# Refund policy"] {
+        let f = merged(
+            &format!("{heading}\n\nJuniper Logistics ships parcels.\n"),
+            Lang::Markdown,
+            GraphMode::Full,
+        );
+        assert!(f.defines.is_empty(), "{heading}: {:?}", f.defines);
+    }
+}

@@ -11,7 +11,7 @@ use super::access::DocAccess;
 use super::candidates::{lexical, TermStats, Visibility};
 use super::chains::lift_chains;
 use super::graph_walk::{walk, WalkOptions};
-use super::query::{analyze_query, QueryIntent};
+use super::query::{analyze_query, QueryIntent, QuestionRelations};
 use super::rerank::{asks_about_tests, combine, features, path_prior, Prelim, View};
 use super::syntext_source::{ExactResults, LiveHit, SyntextSource};
 use super::{QueryReport, RankedPassage, RetrieveOptions, Retrieved, Signals, StageTimings};
@@ -159,7 +159,7 @@ pub(crate) fn retrieve(
         .map(|(p, _)| p)
         .filter(|p| p.score > 0.0)
         .collect();
-    lift_chains(&mut passages);
+    lift_chains(&mut passages, &QuestionRelations::new(&q));
     passages.sort_by(|a, b| {
         b.score
             .total_cmp(&a.score)

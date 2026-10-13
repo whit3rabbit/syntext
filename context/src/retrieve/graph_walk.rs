@@ -11,13 +11,13 @@
 //! passages that define it, so the model receives the whole chain of
 //! evidence, not just its last hop.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::candidates::{TermStats, Visibility};
-use super::query::AnalyzedQuery;
-use crate::analysis::{entity_term, term_set};
+use super::query::{AnalyzedQuery, QuestionRelations};
+use crate::analysis::entity_term;
 use crate::error::Result;
 use crate::graph::EdgeKind;
 use crate::store::{PassageLoc, StoreSnapshot};
@@ -84,14 +84,18 @@ pub(crate) fn walk(
     if opts.hops == 0 || !snap.segments.iter().any(|s| s.reader.graph.is_some()) {
         return Ok((hits, Vec::new()));
     }
-    let query_terms: HashSet<&str> = query.content_terms.iter().map(String::as_str).collect();
+    let asks = QuestionRelations::new(query);
     let mut best: HashMap<String, Reached> = seeds(snap, query, stats);
     let mut seed_names: Vec<String> = best.values().map(|r| r.display.clone()).collect();
     seed_names.sort();
     seed_names.dedup();
     let mut frontier: Vec<String> = best.keys().cloned().collect();
     frontier.sort();
-    for _ in 0..opts.hops {
+    for hop in 0..opts.hops {
+        // Past two hops, only relations the question asks about: a third
+        // hop is how "who founded the company acquired by X's employer"
+        // is answered, and anything else that far out is noise.
+        let asked_only = hop >= 2;
         let mut next: HashMap<String, Reached> = HashMap::new();
         for key in &frontier {
             let (act, steps) = match best.get(key) {
@@ -99,14 +103,11 @@ pub(crate) fn walk(
                 None => continue,
             };
             for_each_neighbor(snap, key, |n| {
-                let bonus = if term_set(&n.relation)
-                    .iter()
-                    .any(|t| query_terms.contains(t.as_str()))
-                {
-                    2.5
-                } else {
-                    1.0
-                };
+                let asked = asks.matches(&n.relation);
+                if asked_only && !asked {
+                    return;
+                }
+                let bonus = if asked { 2.5 } else { 1.0 };
                 let a = act * n.confidence * opts.decay * bonus * n.damping;
                 if a < opts.min_activation {
                     return;

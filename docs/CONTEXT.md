@@ -172,7 +172,8 @@ Each document version is compiled once:
    - Code yields definitions, containment, calls, inheritance, and import
      aliases.
    - Prose yields named entities, acronym and "also known as" aliases, and
-     relations read from sentences.
+     relations read from sentences. A Markdown heading that is nothing but
+     a name (`# Juniper Logistics`) makes its section define that entity.
    - Each edge has a type, a confidence, and the passage it was read from.
 5. **Write a segment** (`store/`). The postings, passage table, stored text,
    and graph facts of a batch go into one immutable `.ctxs` file.
@@ -254,10 +255,16 @@ A store is a directory:
    postings budget (`RetrieveOptions::postings_budget`). Very common terms
    are left to the reranker instead of being traversed in full.
 2. **Graph**: entities the question names seed a beam walk of up to `hops`
-   (2) in both edge directions, keeping `beam` (16) entities per hop.
+   (3) in both edge directions, keeping `beam` (16) entities per hop.
    - Activation decays per hop and is damped for hub entities.
-   - An edge whose predicate shares a term with the question gets a bonus,
-     so "which group does X's manager manage" prefers a `manages` edge.
+   - An edge whose relation the question asks about gets a bonus, so
+     "which group does X's manager manage" prefers a `manages` edge. The
+     comparison goes through small relation classes
+     (`context/src/analysis/relations.rs`), so "who founded" meets
+     "started" and "X's employer" meets "employs".
+   - The third hop follows only relations the question asks about, which
+     answers "who founded the company acquired by X's employer" without
+     letting the walk fan out.
    - Every traversed edge contributes the passage it was read from, so the
      model receives the whole chain, not just the last hop.
 3. **Exact** (optional `SyntextSource`): a case-insensitive syntext search
@@ -292,9 +299,20 @@ code is too (x0.75).
 "Who founded the company acquired by Alice's employer?", only the first hop
 shares much vocabulary with the question, so scored alone the later hops
 would fall below the relevance floor. A passage further along a graph path
-therefore inherits 85% of the best earlier passage's score per hop, but
-only when it covers question terms that the earlier passage does not. At
-most 6 passages are lifted per question.
+therefore inherits 85% of the best earlier passage's score per hop. The
+passage about the question's own entity is the root of every path out of
+it. Which passages qualify depends on how they were reached:
+
+- On a path through a relation the question asks about, the passage that
+  *states* the next relation, or *defines* the entity it reaches, is that
+  hop's evidence whatever words it uses ("In 2018, Juniper bought
+  Copperleaf" answers "acquired").
+- Any other passage must cover a question term the earlier passage does
+  not, and never through a bare co-mention. Otherwise a common name such as
+  `len` or `is_empty` would carry every homonym along.
+- At most 6 passages are lifted per question. Hops that answer a part of
+  the question the path has not yet covered go first: "headquartered" after
+  "made" and "acquired" beats a hub's tenth "acquired".
 
 ### Packing
 
@@ -724,7 +742,7 @@ existing store keeps the options in its manifest):
 | `candidate_limit` | 400 | Lexical candidates kept |
 | `rerank_limit` | 200 | Candidates whose text is re-read and scored |
 | `postings_budget` | 200,000 | Postings traversed before common terms are left to the reranker |
-| `hops`, `beam` | 2, 16 | Graph walk depth and width (`hops = 0` disables it) |
+| `hops`, `beam` | 3, 16 | Graph walk depth and width (`hops = 0` disables it; hops past the second follow only relations the question asks about) |
 | `weights` | see `RankWeights` | Signal weights |
 | `scopes` | `default` only | Readable scopes |
 | `intent` | detected | Override the detected intent |
@@ -1062,7 +1080,7 @@ Inputs (every field except those named in the description is optional):
 // engine options
 {"model": "qwen3-8b", "tokenizer": "qwen3",
  "syntext": {"index_dir": "...", "repo_root": "...", "label": "repo", "scope": "default", "trust": "workspace"},
- "hops": 2, "max_results": 24, "max_blocks": 10, "per_doc_cap": 3,
+ "hops": 3, "max_results": 24, "max_blocks": 10, "per_doc_cap": 3,
  "relevance_floor": 0.3, "expand": true,
  "order": "ranked",                                   // "ranked" | "document"
  "placement": "with_question",                        // "with_question" | "separate_message"

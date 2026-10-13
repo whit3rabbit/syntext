@@ -16,15 +16,20 @@ const MAX_PREDICATE_WORDS: usize = 6;
 /// Weak co-mention edges recorded per sentence.
 const MAX_COMENTIONS: usize = 4;
 
-/// Porter stems of verbs that mark a gap as a relation rather than filler.
-/// Sorted.
+/// Porter stems of verbs that mark a gap as a relation rather than filler,
+/// as `porter_stem` produces them (`employs` stems to `emploi`, `buys` to
+/// `bui`). Sorted.
 const VERBS: &[&str] = &[
     "acquir",
     "approv",
     "ar",
+    "attend",
+    "base",
     "be",
     "belong",
+    "born",
     "bought",
+    "bui",
     "build",
     "built",
     "call",
@@ -35,24 +40,33 @@ const VERBS: &[&str] = &[
     "defin",
     "depend",
     "describ",
+    "design",
     "develop",
+    "direct",
+    "emploi",
     "employ",
+    "establish",
     "extend",
     "found",
     "ha",
     "had",
     "handl",
+    "head",
+    "headquart",
     "hire",
     "implement",
     "includ",
     "invent",
     "is",
     "join",
+    "launch",
     "lead",
     "led",
     "live",
     "locat",
+    "made",
     "maintain",
+    "make",
     "manag",
     "marri",
     "merg",
@@ -61,6 +75,7 @@ const VERBS: &[&str] = &[
     "produc",
     "provid",
     "publish",
+    "purchas",
     "read",
     "receiv",
     "releas",
@@ -71,13 +86,17 @@ const VERBS: &[&str] = &[
     "run",
     "sell",
     "send",
+    "sign",
     "sold",
+    "start",
     "store",
+    "studi",
     "support",
     "us",
     "valid",
     "wa",
     "were",
+    "won",
     "work",
     "write",
     "wrote",
@@ -102,6 +121,9 @@ const FILLERS: &[&str] = &[
 const PRONOUNS: &[&str] = &["he", "her", "his", "it", "its", "she", "their", "they"];
 
 pub(super) fn extract(body: &str, facts: &mut PassageFacts) {
+    if let Some(e) = heading_entity(body) {
+        facts.defines.push(e);
+    }
     let mut previous_subject: Option<EntityRef> = None;
     for sentence in sentences(body) {
         let spans = entity_spans(sentence);
@@ -119,6 +141,24 @@ pub(super) fn extract(body: &str, facts: &mut PassageFacts) {
         if let Some(first) = spans.first() {
             previous_subject = Some(first.entity.clone());
         }
+    }
+}
+
+/// The entity a passage's leading Markdown heading names, when the heading
+/// is nothing but that name (`# Juniper Logistics`): the section is about
+/// it, so the passage defines it. Headings with other words (`# Refund
+/// policy`, `# Notes on Juniper`) define nothing.
+fn heading_entity(body: &str) -> Option<EntityRef> {
+    let line = body.trim_start().lines().next()?;
+    let text = line.trim_start_matches('#');
+    if text.len() == line.len() || !text.starts_with(' ') {
+        return None;
+    }
+    let text = text.trim().trim_end_matches(['.', ':']);
+    let spans = entity_spans(text);
+    match spans.as_slice() {
+        [only] if only.start == 0 && only.end == text.len() => Some(only.entity.clone()),
+        _ => None,
     }
 }
 

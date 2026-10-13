@@ -1,8 +1,10 @@
 //! Question analysis: terms, identifiers, phrases, entity keys, and intent.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
-use crate::analysis::{analyze, fold_key, for_each_word, is_stopword};
+use crate::analysis::{analyze, fold_key, for_each_word, is_stopword, relation_class, term_set};
 
 /// What a question asks for. Shifts structural priors: a *where* question
 /// favours definitions, a *recall* question favours past conversation.
@@ -19,6 +21,41 @@ pub enum QueryIntent {
     Recall,
     /// None of the above.
     General,
+}
+
+/// The relations a question asks about: its terms, and their relation
+/// classes, so a `started` edge answers "who founded".
+pub(crate) struct QuestionRelations {
+    terms: HashSet<String>,
+    classes: HashSet<&'static str>,
+}
+
+impl QuestionRelations {
+    pub(crate) fn new(query: &AnalyzedQuery) -> Self {
+        let terms: HashSet<String> = query.content_terms.iter().cloned().collect();
+        let classes = terms.iter().filter_map(|t| relation_class(t)).collect();
+        QuestionRelations { terms, classes }
+    }
+
+    /// Whether `predicate` names a relation the question asks about.
+    pub(crate) fn matches(&self, predicate: &str) -> bool {
+        !self.matched(predicate).is_empty()
+    }
+
+    /// The parts of the question `predicate` answers: relation classes
+    /// where the term has one (`started` and `founded` are both `found`),
+    /// question terms otherwise.
+    pub(crate) fn matched(&self, predicate: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for t in term_set(predicate) {
+            match relation_class(&t) {
+                Some(c) if self.classes.contains(c) => out.push(c.to_string()),
+                _ if self.terms.contains(&t) => out.push(t),
+                _ => {}
+            }
+        }
+        out
+    }
 }
 
 /// A question, analyzed.

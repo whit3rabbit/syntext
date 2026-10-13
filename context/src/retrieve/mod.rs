@@ -83,7 +83,8 @@ pub struct RetrieveOptions {
     pub rerank_limit: usize,
     /// Postings traversed before common terms are left to the reranker.
     pub postings_budget: usize,
-    /// Entity-graph hops (0 disables the graph).
+    /// Entity-graph hops (0 disables the graph). Hops past the second
+    /// follow only relations the question names.
     pub hops: u8,
     /// Entities kept per hop.
     pub beam: usize,
@@ -104,7 +105,7 @@ impl Default for RetrieveOptions {
             candidate_limit: 400,
             rerank_limit: 200,
             postings_budget: 200_000,
-            hops: 2,
+            hops: 3,
             beam: 16,
             weights: RankWeights::default(),
             scopes: ScopeFilter::default(),

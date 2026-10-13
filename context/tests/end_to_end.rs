@@ -233,3 +233,51 @@ fn every_hop_of_an_evidence_chain_reaches_the_prompt() {
     drop(engine);
     drop(store);
 }
+
+#[test]
+fn chain_hops_in_other_words_still_reach_the_prompt() {
+    // The question says "founded" and "acquired"; the evidence says
+    // "started" and "bought". Each hop shares no word with the question.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(ContextStore::create(dir.path(), opts()).unwrap());
+    let mut docs = vec![
+        SourceDoc::note(
+            "staff",
+            "# Staff\n\nBruno Moreau joined Halcyon Labs in 2015.\n",
+        )
+        .unwrap(),
+        SourceDoc::note(
+            "deals",
+            "# Deals\n\nIn 2019, Halcyon Labs bought Kestrel Robotics.\n",
+        )
+        .unwrap(),
+        SourceDoc::note(
+            "history",
+            "# History\n\nGrace Okafor started Kestrel Robotics in 2004.\n",
+        )
+        .unwrap(),
+    ];
+    for i in 0..30 {
+        docs.push(
+            SourceDoc::note(
+                &format!("noise{i}"),
+                format!("# Note {i}\n\nThe company founded a club; the employer acquired chairs for project {i}.\n"),
+            )
+            .unwrap(),
+        );
+    }
+    store.upsert(docs).unwrap();
+    let engine = ContextEngine::builder(Arc::clone(&store)).build();
+    let packet = engine
+        .prepare(&PrepareRequest::new(
+            "Who founded the company acquired by Bruno Moreau's employer?",
+            600,
+        ))
+        .unwrap();
+    let keys: Vec<&str> = packet.blocks.iter().map(|b| b.doc_key.as_str()).collect();
+    for hop in ["note:staff", "note:deals", "note:history"] {
+        assert!(keys.contains(&hop), "{hop} missing from {keys:?}");
+    }
+    drop(engine);
+    drop(store);
+}
