@@ -139,14 +139,17 @@ final class SyntextContextTests: XCTestCase {
             SyntextContextDocument(id: "refunds", text: "Refunds are issued within 45 days of purchase."),
             SyntextContextDocument(id: "menu", text: "The cafeteria menu changes every Monday."),
         ])
-        // A toy model: "money" and "refunds" share a dimension.
-        let embedder = try SyntextContextEmbedder(id: "toy-v1", dimensions: 8) { texts, _ in
+        // A toy model: "money" and "refunds" share a dimension; every other
+        // word gets one of 62 others from a stable hash (not `hashValue`,
+        // which Swift seeds per process), so unrelated words rarely meet.
+        let embedder = try SyntextContextEmbedder(id: "toy-v1", dimensions: 64) { texts, _ in
             texts.map { text in
-                var v = [Float](repeating: 0, count: 8)
-                v[7] = 0.01
+                var v = [Float](repeating: 0, count: 64)
+                v[63] = 0.01
                 for word in text.lowercased().split(whereSeparator: { !$0.isLetter }) where word.count > 2 {
                     let w = String(word)
-                    let d = (w == "money" || w.hasPrefix("refund")) ? 0 : 1 + abs(w.hashValue % 6)
+                    let h = w.unicodeScalars.reduce(UInt32(7)) { $0 &* 31 &+ $1.value }
+                    let d = (w == "money" || w.hasPrefix("refund")) ? 0 : 1 + Int(h % 62)
                     v[d] += 1
                 }
                 return v
@@ -165,7 +168,7 @@ final class SyntextContextTests: XCTestCase {
         let packet = try engine.prepare(question: "How do I get my money back?", evidenceTokens: 300)
         XCTAssertTrue(packet.evidenceText.contains("Refunds are issued"))
 
-        let failing = try SyntextContextEmbedder(id: "broken", dimensions: 8) { _, _ in [] }
+        let failing = try SyntextContextEmbedder(id: "broken", dimensions: 64) { _, _ in [] }
         XCTAssertThrowsError(try store.embed(failing)) { error in
             XCTAssertTrue((error as? SyntextError)?.isEmbedderFailure == true, "\(error)")
         }
