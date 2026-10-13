@@ -98,7 +98,7 @@ The `wasm32-unknown-unknown` target is also added in `release.yml` as a `build-w
 curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
 ```
 
-See `install.sh` at the repo root for platform detection logic (macOS: Homebrew cask first; Linux: `.deb` on Debian/Ubuntu amd64, raw binary otherwise).
+See `install.sh` at the repo root for platform detection logic (macOS: Homebrew cask first; Linux: `.deb` on Debian/Ubuntu amd64 and the raw gnu binary otherwise, except old-glibc/musl/unprobeable systems which get the fully static `*-linux-*-musl` binary -- see `REQUIRED_GLIBC` in `install.sh`).
 
 ## Releasing
 

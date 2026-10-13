@@ -1974,6 +1974,28 @@ fn count_lines(path: &Path) -> usize {
     }
 }
 
+/// Count log lines whose PID tag matches `pid`. The PID-tagged shim format
+/// (`echo "$PPID $@"`) lets a test attribute git calls to a specific `st`
+/// process even when a detached child races its own calls into the same log
+/// before the parent's `wait_with_output` returns -- which musl's faster
+/// static exec makes routine.
+fn count_lines_from_pid(path: &Path, pid: u32) -> usize {
+    let prefix = format!("{pid} ");
+    match fs::read_to_string(path) {
+        Ok(s) => s.lines().filter(|l| l.starts_with(&prefix)).count(),
+        Err(_) => 0,
+    }
+}
+
+/// Count log lines whose PID tag is anything other than `pid`.
+fn count_lines_not_from_pid(path: &Path, pid: u32) -> usize {
+    let prefix = format!("{pid} ");
+    match fs::read_to_string(path) {
+        Ok(s) => s.lines().filter(|l| !l.starts_with(&prefix)).count(),
+        Err(_) => 0,
+    }
+}
+
 /// End-to-end proof that a stale search spawns a detached `st update --quiet`
 /// catch-up: the spawned child runs its own git detection command
 /// (`git status --porcelain=v1 -z ...`), which is observable as an extra
@@ -2024,10 +2046,16 @@ fn stale_search_spawns_async_catchup_git_child() {
     let bin_dir = tempfile::TempDir::new().unwrap();
     let log_path = bin_dir.path().join("git_invocations.log");
     let shim = bin_dir.path().join("git");
+    // PID-tagged log: the detached catch-up child is spawned before the
+    // parent exits, so on a fast-exec box (static musl binaries) the child's
+    // first `git status` can land in the log before `wait_with_output`
+    // returns. Each shim logs its `$PPID` -- the pid of the `st` process
+    // that spawned it -- so calls attribute to the right process instead of
+    // racing the child.
     write_text(
         &shim,
         &format!(
-            "#!/bin/sh\necho \"$@\" >> \"{log}\"\nexec \"{real}\" \"$@\"\n",
+            "#!/bin/sh\necho \"$PPID $@\" >> \"{log}\"\nexec \"{real}\" \"$@\"\n",
             log = log_path.display(),
             real = real_git
         ),
@@ -2038,8 +2066,9 @@ fn stale_search_spawns_async_catchup_git_child() {
 
     // Default config: auto_update_async_catchup is true, so this triggers
     // the detached `st update --quiet` spawn once results are printed. The
-    // parent's own bounded detection contributes exactly 1 log line.
-    let out = st()
+    // parent's own bounded detection contributes exactly 1 of its PID's log
+    // lines.
+    let st_child = st()
         .arg("--repo-root")
         .arg(repo.path())
         .arg("--index-dir")
@@ -2051,15 +2080,22 @@ fn stale_search_spawns_async_catchup_git_child() {
         // masks the TooManyFiles outcome this test depends on.
         .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .arg("hello")
-        .output()
+        // Match `Command::output()`'s stdio: spawn() alone would leave the
+        // pipes unconnected and wait_with_output would see empty output.
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("run st");
+    let parent_pid = st_child.id();
+    let out = st_child.wait_with_output().expect("run st");
     assert!(
         stderr_text(&out).contains("files behind"),
         "expected the initial search to report staleness, got: {}",
         stderr_text(&out)
     );
 
-    let parent_git_calls = count_lines(&log_path);
+    let parent_git_calls = count_lines_from_pid(&log_path, parent_pid);
     assert_eq!(
         parent_git_calls, 1,
         "expected exactly the parent's 1 detection call before any catch-up runs"
@@ -2073,7 +2109,7 @@ fn stale_search_spawns_async_catchup_git_child() {
     // process-table slots -- while the next test in this binary starts.
     let mut saw_child_git_calls = false;
     for _ in 0..50 {
-        if count_lines(&log_path) > parent_git_calls {
+        if count_lines_not_from_pid(&log_path, parent_pid) > 0 {
             saw_child_git_calls = true;
             break;
         }

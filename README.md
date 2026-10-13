@@ -37,7 +37,7 @@ Agent harness installs edit your editor and agent config files. Each install wri
 curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
 ```
 
-Installs `st` to `/usr/local/bin`. On macOS it uses the Homebrew cask when `brew` is present and downloads the release zip otherwise. On Debian and Ubuntu (x86_64) it installs the `.deb` package. Every other Linux target gets the raw binary. All downloads are verified against the release's `SHA256SUMS`.
+Installs `st` to `/usr/local/bin`. On macOS it uses the Homebrew cask when `brew` is present and downloads the release zip otherwise. On Debian and Ubuntu (x86_64) it installs the `.deb` package. Every other Linux target gets the raw binary. Linux systems whose glibc is older than the gnu binaries require (or that run musl, e.g. Alpine, or where the libc cannot be probed) automatically get the fully static musl binary instead. All downloads are verified against the release's `SHA256SUMS`.
 
 Override the install directory or pin a version with environment variables:
 
@@ -46,7 +46,7 @@ INSTALL_DIR=~/.local/bin SYNTEXT_VERSION=2.4.0 \
   curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
 ```
 
-Every release also ships raw binaries for Linux (amd64, arm64), macOS (arm64, x86_64), and Windows, plus the `.deb`, on the [releases page](https://github.com/whit3rabbit/syntext/releases).
+Every release also ships raw binaries for Linux (amd64, arm64, plus fully static musl variants of both), macOS (arm64, x86_64), and Windows, plus the `.deb`, on the [releases page](https://github.com/whit3rabbit/syntext/releases).
 
 <details>
 <summary>macOS (Homebrew)</summary>

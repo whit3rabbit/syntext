@@ -9,8 +9,9 @@ DIST_DIR := dist
 
 .PHONY: all build test lint clean dist install-tools \
         build-linux-amd64 build-linux-arm64 \
+        build-linux-amd64-musl build-linux-arm64-musl \
         build-macos-x86_64 build-macos-arm64 \
-        deb-amd64 deb-arm64
+        deb-amd64 deb-arm64 dist-linux-musl
 
 all: build
 
@@ -51,6 +52,21 @@ build-linux-arm64:
 	cp target/aarch64-unknown-linux-gnu/release/$(BINARY) \
 	   $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64
 
+# Fully static binaries: run on any Linux regardless of glibc version
+# (and on musl systems like Alpine). Same names as the release workflow.
+
+build-linux-amd64-musl:
+	cross build --release --target x86_64-unknown-linux-musl
+	mkdir -p $(DIST_DIR)
+	cp target/x86_64-unknown-linux-musl/release/$(BINARY) \
+	   $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-amd64-musl
+
+build-linux-arm64-musl:
+	cross build --release --target aarch64-unknown-linux-musl
+	mkdir -p $(DIST_DIR)
+	cp target/aarch64-unknown-linux-musl/release/$(BINARY) \
+	   $(DIST_DIR)/$(BINARY)-$(VERSION)-linux-arm64-musl
+
 # ── macOS builds (native only, no cross-compilation to macOS) ─────────────────
 
 build-macos-arm64:
@@ -78,8 +94,11 @@ deb-arm64: build-linux-arm64
 	  --output $(DIST_DIR)/syntext_$(VERSION)_arm64.deb
 
 # ── Full distribution artifacts ───────────────────────────────────────────────
-# Builds all Linux targets + debs. Run macOS targets separately on a macOS host.
+# Builds all Linux targets + debs + static musl binaries.
+# Run macOS targets separately on a macOS host.
 
-dist: deb-amd64 deb-arm64
+dist-linux-musl: build-linux-amd64-musl build-linux-arm64-musl
+
+dist: deb-amd64 deb-arm64 dist-linux-musl
 	@echo "Artifacts in $(DIST_DIR)/:"
 	@ls -lh $(DIST_DIR)/
