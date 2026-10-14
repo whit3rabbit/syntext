@@ -47,7 +47,10 @@ jobs:
         run: |
           BIN="target/${{ matrix.target }}/release/st"
           file "${BIN}"
-          if ! file "${BIN}" | grep -q 'statically linked'; then
+          # Rust links x86_64 musl as static-pie, which `file` reports as
+          # "static-pie linked" (no interpreter, no shared deps); aarch64
+          # comes out plain "statically linked". Both are fully static.
+          if ! file "${BIN}" | grep -Eq 'statically linked|static-pie linked'; then
             echo "::error::musl binary is not statically linked"
             exit 1
           fi
