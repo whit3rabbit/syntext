@@ -223,6 +223,7 @@ impl PathIndex {
 /// / `component_to_files` must be consistent with it; the sidecar decoder is
 /// responsible for that invariant (a checksum over the whole payload guards
 /// against a torn or corrupted sidecar reaching this function at all).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn from_sidecar_parts(
     paths: Vec<PathBuf>,
     extension_to_files: HashMap<Vec<u8>, RoaringBitmap>,

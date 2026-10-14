@@ -55,6 +55,8 @@ pub mod wasm;
 pub use error::IndexError;
 
 // ── Internal modules (not public API) ────────────────────────
+// Only the CLI, ffi, and `__internal` encode, all native-only.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod base64;
 /// Command-line interface (used by the `st` binary).
 #[cfg(all(not(target_arch = "wasm32"), feature = "cli"))]

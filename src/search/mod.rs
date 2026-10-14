@@ -10,6 +10,7 @@
 //! 4. Matches are sorted by path, then line number.
 
 mod collect;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use collect::group_outcome;
 use collect::{all_doc_ids, sort_matches, FileResult};
 mod executor;
@@ -59,6 +60,8 @@ use verifier::{verify_empty, verify_literal, verify_regex};
 #[derive(Clone)]
 pub(crate) struct MatchedFile {
     /// Encoding-normalized bytes the verifier matched against.
+    // Read by the CLI renderer and `group_outcome`, both native-only.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub normalized: Arc<[u8]>,
     /// On-disk raw byte length (pre-normalize) for `bytes_searched`.
     // Read only by the CLI's `--json` renderer.
@@ -76,6 +79,8 @@ pub(crate) struct MatchedFile {
 /// contains an entry for each path present in `matches`.
 pub(crate) struct SearchOutcome {
     pub matches: Vec<SearchMatch>,
+    // Read by the CLI renderer and `group_outcome`, both native-only.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub files: HashMap<PathBuf, MatchedFile>,
 }
 

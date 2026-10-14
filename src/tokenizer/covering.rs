@@ -36,16 +36,20 @@ pub struct CoveringSet {
     /// Grams with at least one synthetic boundary (a position-0/len endpoint
     /// whose byte is not a forced boundary). Using these alone as an AND
     /// filter risks false negatives on sub-token matches.
+    // Read only via `__internal` (tests, benches), absent on wasm32.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub optional: Vec<u64>,
 }
 
 impl CoveringSet {
     /// All grams (required + optional) in a single flat iterator.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn all_grams(&self) -> impl Iterator<Item = u64> + '_ {
         self.required.iter().chain(self.optional.iter()).copied()
     }
 
     /// True when no grams of either tier exist.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn is_empty(&self) -> bool {
         self.required.is_empty() && self.optional.is_empty()
     }

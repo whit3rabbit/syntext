@@ -1,5 +1,14 @@
 //! Index builder (`Index::build`) and reader (`Index::open`).
 
+// The on-disk index needs mmap and the repo walk, which only `native` brings
+// (wasm32 uses `InMemoryIndex`). Without this, the build fails with opaque
+// missing-item errors inside build/open instead of naming the feature.
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "native")))]
+compile_error!(
+    "syntext on a native target requires the `native` feature (on by default). \
+     For wasm, build with --target wasm32-unknown-unknown --features wasm --no-default-features."
+);
+
 #[cfg(not(target_arch = "wasm32"))]
 mod batch_apply;
 #[cfg(not(target_arch = "wasm32"))]
@@ -28,6 +37,7 @@ pub(crate) mod io_util;
 #[cfg(not(target_arch = "wasm32"))]
 /// `git status --porcelain=v1 -z` record parser, used only by `freshness`.
 mod porcelain;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use io_util::open_readonly_nofollow;
 #[cfg(any(unix, windows))]
 pub(crate) use io_util::verify_fd_matches_stat;
