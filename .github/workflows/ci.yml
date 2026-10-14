@@ -81,6 +81,39 @@ jobs:
           cargo clippy -p syntext-context --all-targets --no-deps -- -D warnings
           cargo clippy -p syntext-context --all-targets --features ffi --no-deps -- -D warnings
 
+  test-musl:
+    # Links and runs the full default-feature suite natively under musl,
+    # guarding the static *-musl release binaries. The rust:alpine image has
+    # no rustup, so rust-toolchain.toml is inert and the image's stable
+    # toolchain is used. git is needed by actions/checkout and by the
+    # freshness/CLI tests; build-base provides the musl C toolchain for
+    # blake3; the pinned ripgrep satisfies the correctness oracle's exact
+    # 15.2.0 version check (below, in the install step).
+    name: Test (musl)
+    runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
+    steps:
+      - name: Install build deps + pinned ripgrep
+        run: |
+          apk add --no-cache git build-base curl
+          # The correctness suite pins ripgrep 15.2.0 exactly; Alpine's
+          # packaged version drifts, so install the official static musl
+          # build (the runner is x86_64, matching this container).
+          curl -sLO https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz
+          install -m755 ripgrep-15.2.0-x86_64-unknown-linux-musl/rg /usr/local/bin/rg
+          rg --version
+
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-musl
+
+      - name: cargo test (native musl)
+        run: cargo test
+
   test-symbols:
     name: Test (symbols feature)
     runs-on: ubuntu-latest

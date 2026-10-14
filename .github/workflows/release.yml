@@ -7,16 +7,20 @@ on:
 
 jobs:
   build-linux:
-    name: Linux ${{ matrix.deb_arch }}
+    name: Linux ${{ matrix.suffix }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            deb_arch: amd64
+            suffix: linux-amd64
           - target: aarch64-unknown-linux-gnu
-            deb_arch: arm64
+            suffix: linux-arm64
+          - target: x86_64-unknown-linux-musl
+            suffix: linux-amd64-musl
+          - target: aarch64-unknown-linux-musl
+            suffix: linux-arm64-musl
     steps:
       - uses: actions/checkout@v5
 
@@ -38,23 +42,50 @@ jobs:
       - name: Build binary
         run: cross build --release --target ${{ matrix.target }}
 
+      - name: Verify static linking (musl)
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          BIN="target/${{ matrix.target }}/release/st"
+          file "${BIN}"
+          if ! file "${BIN}" | grep -q 'statically linked'; then
+            echo "::error::musl binary is not statically linked"
+            exit 1
+          fi
+
+      - name: Smoke test x86_64 musl binary (native + old glibc container)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          BIN="target/${{ matrix.target }}/release/st"
+          "${BIN}" --version
+          # manylinux2014 = glibc 2.17: proves the static binary runs where the
+          # gnu build would fail with GLIBC_x.yy-not-found.
+          docker run --rm -v "${PWD}/${BIN}:/st:ro" quay.io/pypa/manylinux2014_x86_64 /st --version
+
+      - name: Report glibc floor (gnu amd64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          BIN="target/${{ matrix.target }}/release/st"
+          FLOOR=$(objdump -T "${BIN}" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n1 | sed 's/^GLIBC_//')
+          echo "## Linux glibc floor" >> "$GITHUB_STEP_SUMMARY"
+          echo "gnu amd64 binary requires glibc >= ${FLOOR}. install.sh REQUIRED_GLIBC must be >= this; refresh it if it moved." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Stage binary and deb
         env:
           TARGET: ${{ matrix.target }}
-          DEB_ARCH: ${{ matrix.deb_arch }}
+          SUFFIX: ${{ matrix.suffix }}
           VERSION: ${{ github.ref_name }}
         run: |
           VER="${VERSION#v}"
           mkdir -p dist
-          cp "target/${TARGET}/release/st" "dist/st-${VER}-linux-${DEB_ARCH}"
+          cp "target/${TARGET}/release/st" "dist/st-${VER}-${SUFFIX}"
           if [ "${TARGET}" = "x86_64-unknown-linux-gnu" ]; then
             cargo deb --no-build --target "${TARGET}" \
-              --output "dist/syntext_${VER}_${DEB_ARCH}.deb"
+              --output "dist/syntext_${VER}_amd64.deb"
           fi
 
       - uses: actions/upload-artifact@v7
         with:
-          name: linux-${{ matrix.deb_arch }}
+          name: linux-${{ matrix.suffix }}
           path: dist/
 
   build-macos:

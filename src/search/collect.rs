@@ -1,9 +1,12 @@
 //! Post-search collection: grouping, sorting, and doc-id helpers shared by
 //! the search executor.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
-use super::{IndexSnapshot, MatchedFile, SearchMatch, SearchOutcome};
+#[cfg(not(target_arch = "wasm32"))]
+use super::SearchOutcome;
+use super::{IndexSnapshot, MatchedFile, SearchMatch};
 
 /// Group a content-capturing [`SearchOutcome`] into per-file results, moving
 /// each file's verified content into its group.
@@ -14,6 +17,7 @@ use super::{IndexSnapshot, MatchedFile, SearchMatch, SearchOutcome};
 /// entry. The empty-content fallback is unreachable from the public
 /// `SearchOptions` (symbol/refs lookups, which carry no content map, are
 /// CLI-only), hence the `debug_assert`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn group_outcome(outcome: SearchOutcome) -> Vec<crate::FileMatches> {
     let SearchOutcome { matches, mut files } = outcome;
     let mut groups: Vec<crate::FileMatches> = Vec::new();

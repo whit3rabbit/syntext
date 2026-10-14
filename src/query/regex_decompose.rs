@@ -27,6 +27,8 @@ const MAX_LITERAL_VARIANTS: usize = 16;
 ///
 /// Returns `Err` if the pattern fails regex syntax parsing.
 /// The returned tree should be passed through `GramQuery::simplify()` before use.
+// Reached only via `__internal` (tests, benches); the router calls `decompose_hir`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn decompose(pattern: &str, case_insensitive: bool) -> Result<GramQuery, String> {
     let hir = regex_syntax::ParserBuilder::new()
         .case_insensitive(case_insensitive)

@@ -107,4 +107,3 @@ pub fn apply_change_batch_with_retry(
 pub fn build_with_retry(config: syntext::Config) -> Result<Index, IndexError> {
     retry_lock_contention(|| Index::build(config.clone()), is_lock_conflict)
 }
-

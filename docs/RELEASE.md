@@ -58,13 +58,15 @@ Once preparation is complete and verified:
 > The automated installer defaults must only be updated **after** the release artifacts are successfully built and published. Pointing installers to a version tag before GHA publishes the assets will break installation attempts.
 
 - [ ] **Monitor GitHub Actions**: Go to GitHub Actions and monitor the **Release** workflow. It will:
-  - Build binaries for Linux (amd64, arm64), macOS (arm64, x86_64), Windows (amd64), and WASM (bundler).
+  - Build binaries for Linux (amd64, arm64, plus fully static musl variants of both), macOS (arm64, x86_64), Windows (amd64), and WASM (bundler).
   - Build the `SyntextFFI.xcframework` zip (Swift package binary target) from `syntext-context` with its `ffi` feature, so one library exports both `syntext.h` and `syntext_context.h` (the `Syntext` and `SyntextContext` products).
   - Package and generate SHA256 checksums.
   - Create/publish a GitHub Release, using `scripts/extract_release_notes.py` to auto-populate the release description from `CHANGELOG.md`.
   - Publish the `syntext` crate to [crates.io](https://crates.io/crates/syntext). `syntext-context` is `publish = false`, and the published package leaves out `context/`.
   - Automatically update the Homebrew cask in `whit3rabbit/homebrew-tap`.
   - Automatically pin `swift/Package.swift` to the new xcframework zip (url + checksum) and push a `swift-vX.Y.Z` tag. If this push is blocked (branch protection on `main` rejecting the workflow token), pin manually: `shasum -a 256 <zip>` and edit the `url:`/`checksum:` literals in `swift/Package.swift`.
+  - Verify the musl entries passed the `Verify static linking` step, and that the x86_64 musl `Smoke test` step ran the binary inside the `manylinux2014` (glibc 2.17) container.
+  - Check the **Linux glibc floor** job summary (from the gnu amd64 build's `Report glibc floor` step): if the printed floor exceeds `REQUIRED_GLIBC` in `install.sh`, bump the constant in the same commit as the installer-defaults bump below. Note: releases before the musl artifacts existed (≤ 2.5.0) have no `*-musl` assets, so pinning `SYNTEXT_VERSION` that far back on an old-glibc box still fails at download.
 - [ ] **Bump Installer Defaults**: Once the GitHub Release has successfully published:
   - Update `README.md`:
     - Status badge/version strings referencing the stable release.
@@ -80,6 +82,12 @@ Once preparation is complete and verified:
 - [ ] **Verify Installer**: Run a quick validation to ensure the installer works:
   ```sh
   SYNTEXT_VERSION=X.Y.Z curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
+  ```
+  Also spot-check the musl fallback on systems the gnu binaries cannot serve (both need Docker):
+  ```sh
+  # Alpine (musl-native) and an old-glibc distro must both pick the *-musl artifact:
+  docker run --rm -i alpine sh -c "curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | SYNTEXT_VERSION=X.Y.Z sh"
+  docker run --rm -i quay.io/pypa/manylinux2014_x86_64 sh -c "curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | SYNTEXT_VERSION=X.Y.Z sh"
   ```
 
 ---

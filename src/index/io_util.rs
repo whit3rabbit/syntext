@@ -171,6 +171,7 @@ pub(crate) fn open_beneath(
 /// repo-root anchor fd for this single open. The hot search path instead opens
 /// the anchor once per query via [`open_root_dirfd`] and reuses it across every
 /// candidate. Same containment guarantees and `None`-on-failure semantics.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn open_beneath_fresh(canonical_root: &Path, rel: &Path) -> Option<std::fs::File> {
     let root_fd = open_root_dirfd(canonical_root);
     open_beneath(root_fd.as_ref(), canonical_root, rel)
