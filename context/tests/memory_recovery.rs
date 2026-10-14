@@ -115,6 +115,10 @@ fn sessions_and_scopes_stay_separate() {
 }
 
 /// Every byte under `dir`, concatenated (segments, journal, manifest).
+///
+/// `write.lock` is skipped. It is never written, and on Windows the open
+/// store's lock on it is a mandatory byte-range lock, so reading it fails
+/// with `ERROR_LOCK_VIOLATION` (33) while the store is open.
 fn store_bytes(dir: &std::path::Path) -> Vec<u8> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -123,6 +127,8 @@ fn store_bytes(dir: &std::path::Path) -> Vec<u8> {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 stack.push(path);
+            } else if path.file_name().is_some_and(|n| n == "write.lock") {
+                assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
             } else {
                 out.extend(std::fs::read(&path).unwrap());
             }
