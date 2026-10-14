@@ -60,6 +60,19 @@ public final class SyntextConversation: @unchecked Sendable {
         try record(.assistant, answer)
     }
 
+    /// Delete every persisted turn of this conversation and clear its
+    /// history, for a chat the user deleted or rewrote (record the kept
+    /// turns again afterwards). Journaled turns leave the disk now; compacted
+    /// ones at the next `store.compact(force: true)`. Other handles open on
+    /// the same session keep their in-process history; reopen them. Returns
+    /// how many turns were removed. Idempotent.
+    @discardableResult
+    public func forget() throws -> Int {
+        var removed: UInt64 = 0
+        _ = try ffiCall { err in syntext_context_memory_forget(handle, &removed, err) }
+        return Int(removed)
+    }
+
     /// Every turn, oldest first.
     public func history() throws -> [SyntextChatMessage] {
         let json = try ffiCall { err in syntext_context_memory_history(handle, err) }

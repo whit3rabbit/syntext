@@ -206,7 +206,7 @@ public struct SyntextContextEngineOptions: Encodable, Sendable {
     public var tokenizer: String?
     /// Exact identifier search over a syntext index of the same files.
     public var syntext: SyntextIndexBinding?
-    /// Entity-graph hops (default 2; 0 disables the graph walk).
+    /// Entity-graph hops (default 3; 0 disables the graph walk).
     public var hops: Int?
     /// Passages retrieved before packing (default 24).
     public var maxResults: Int?

@@ -718,6 +718,11 @@ memory.record(Role::Assistant, "Noted.")?;
 let history = memory.history(); // every turn of this session, oldest first
 ```
 
+When the user deletes or rewrites a conversation, `memory.forget()` deletes
+every turn of the session from the store: journaled turns leave the disk at
+once, compacted ones at the next `store.compact()`. Record the turns to keep
+again afterwards.
+
 Every recorded turn is durable before `record` returns. If the store is
 locked by a running sync or compaction, the periodic flush into a segment is
 deferred to a later turn; recording itself never waits.
@@ -1047,6 +1052,9 @@ let turn = try await engine.assembleAsync(
 // turn.messages -> the model, with turn.budget.generation as max tokens.
 let answer = try await model.complete(turn.messages, maxTokens: turn.budget.generation)
 try chat.recordExchange(question: question, answer: answer)
+
+// The user deleted or rewrote the chat: drop its turns from the store.
+try chat.forget()
 ```
 
 `SyntextChatRequest` also takes `history` (when no conversation is passed),
@@ -1290,6 +1298,7 @@ These are the same as `syntext.h`:
 | `syntext_context_memory_free(memory)` | |
 | `syntext_context_memory_record(memory, role, text, err)` | Status |
 | `syntext_context_memory_history(memory, err)` | `[{"role", "content"}]` |
+| `syntext_context_memory_forget(memory, &removed, err)` | Status; `removed` set to the number of turns deleted |
 | `syntext_context_receipt_check(receipt_json, root, label, err)` | `[{"id", "doc_key", "status"}]` |
 
 `memory` arguments may be NULL.

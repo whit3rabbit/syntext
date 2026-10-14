@@ -126,6 +126,54 @@ impl ContextStore {
         self.flush_memory_locked(w, &mut m, &mut seg)
     }
 
+    /// Remove every turn of `session` recorded under `scope`, whether it is
+    /// still in the journal or already compacted into a segment. Returns how
+    /// many turns were removed. Other sessions and scopes are untouched.
+    ///
+    /// Journaled turns leave the disk now: the journal is rewritten without
+    /// them, and a failed rewrite is an error (nothing is reported removed
+    /// that still sits in the journal). Compacted turns are marked dead and
+    /// their bytes leave the disk at the next compaction, so call
+    /// [`compact`](Self::compact) afterwards when the text must be gone.
+    /// Idempotent: after a failure, calling again finishes the job.
+    pub fn forget_session(&self, session: &str, scope: &Scope) -> Result<usize> {
+        let w = self.writable()?;
+        let mut m = lock(&w.memory);
+        let before = m.live.len();
+        let keep: Vec<Turn> = m
+            .live
+            .iter()
+            .filter(|t| !(t.session == session && &t.scope == scope))
+            .cloned()
+            .collect();
+        let from_journal = before - keep.len();
+        if from_journal > 0 {
+            m.journal.rewrite(&self.dir, &keep)?;
+            m.live = keep;
+            let handle = build_live(&m.live, &self.compile)?;
+            self.publish(w, |p| p.live = handle);
+        }
+        // The live segment no longer holds the session, so every match left
+        // in the snapshot is a compacted turn.
+        let keys: Vec<DocKey> = self
+            .snapshot()
+            .documents()
+            .into_iter()
+            .filter(|d| {
+                d.kind == DocKind::Turn
+                    && d.group.as_deref() == Some(session)
+                    && d.scope == scope.as_str()
+            })
+            .filter_map(|d| DocKey::new(d.key).ok())
+            .collect();
+        if keys.is_empty() {
+            return Ok(from_journal);
+        }
+        let mut seg = lock(&w.segments);
+        let report = StagedWrite::new(self, w, &mut seg).commit(keys, None, &[])?;
+        Ok(from_journal + report.removed)
+    }
+
     /// Turns currently held only in the live journal (not yet compacted).
     pub fn live_turns(&self) -> Vec<Turn> {
         match &self.writable {

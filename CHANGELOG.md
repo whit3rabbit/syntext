@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Forget a conversation.** `ConversationMemory::forget` (and `ContextStore::forget_session`) deletes every turn of a session in its scope, whether still journaled or already compacted into a segment, so an app can honour a deleted or rewritten chat. The journal is rewritten without the session's turns before the call returns, and a failed rewrite is an error rather than a warning; compacted turns are marked dead and leave the disk at the next `compact()`. C ABI: `syntext_context_memory_forget`; Swift: `SyntextConversation.forget()`.
+
+### Fixed
+- `SyntextContextEngineOptions.hops` documented a default of 2; the engine's default is 3.
+
 ## [2.6.0] - 2026-10-14
 
 ### Added

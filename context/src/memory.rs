@@ -142,6 +142,21 @@ impl ConversationMemory {
         self.record(Role::Assistant, answer)
     }
 
+    /// Delete this session's turns from the store and from this handle, for
+    /// a conversation the user deleted or rewrote (re-record the kept turns
+    /// afterwards). Returns how many persisted turns were removed; with the
+    /// mode `Off` only the in-process history is cleared. Compacted turns
+    /// leave the disk at the next [`ContextStore::compact`]. Other handles
+    /// open on the same session keep their in-process history; resume them.
+    pub fn forget(&self) -> Result<usize> {
+        let removed = match &self.scope {
+            Some(scope) => self.store.forget_session(&self.session, scope)?,
+            None => 0,
+        };
+        self.turns.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        Ok(removed)
+    }
+
     /// Every turn of this session, oldest first.
     pub fn history(&self) -> Vec<ChatMessage> {
         self.turns

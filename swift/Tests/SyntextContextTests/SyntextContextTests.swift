@@ -176,6 +176,26 @@ final class SyntextContextTests: XCTestCase {
         XCTAssertEqual(packet.lowestTrust, .memory)
     }
 
+    func testForgetDeletesTheConversation() throws {
+        let store = try openStore()
+        let chat = try SyntextConversation(store: store, session: "chat-3", mode: .app("chat-3"))
+        try chat.recordExchange(question: "My locker code is 4417.", answer: "Noted.")
+        let engine = try SyntextContextEngine(store: store)
+        let question = "What is my locker code?"
+        XCTAssertTrue(try engine.prepare(
+            question: question, evidenceTokens: 400, conversation: chat, keptTurns: 0
+        ).evidenceText.contains("4417"))
+
+        XCTAssertEqual(try chat.forget(), 2)
+        XCTAssertTrue(try chat.history().isEmpty)
+        XCTAssertFalse(try engine.prepare(
+            question: question, evidenceTokens: 400, conversation: chat, keptTurns: 0
+        ).evidenceText.contains("4417"))
+        XCTAssertEqual(try chat.forget(), 0, "idempotent")
+        let reopened = try SyntextConversation(store: store, session: "chat-3", mode: .app("chat-3"))
+        XCTAssertTrue(try reopened.history().isEmpty)
+    }
+
     func testEmbeddingsFindAParaphrase() throws {
         let store = try openStore()
         try store.upsert([

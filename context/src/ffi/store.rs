@@ -286,3 +286,23 @@ pub extern "C" fn syntext_context_memory_history(
         owned_json(&memory.history())
     })
 }
+
+/// Delete every persisted turn of the conversation (journaled turns now,
+/// compacted ones at the next `syntext_context_store_compact`) and clear
+/// its history. `*removed_out` (nullable) receives how many were removed.
+#[no_mangle]
+pub extern "C" fn syntext_context_memory_forget(
+    memory: *const syntext_context_memory,
+    removed_out: *mut u64,
+    err_out: *mut *mut syntext_error,
+) -> i32 {
+    ffi_status(err_out, || unsafe {
+        let memory =
+            borrow_memory(memory).ok_or_else(|| FfiError::invalid_arg("memory handle is NULL"))?;
+        let removed = memory.forget().map_err(ffi_error)?;
+        if !removed_out.is_null() {
+            *removed_out = removed as u64;
+        }
+        Ok(())
+    })
+}

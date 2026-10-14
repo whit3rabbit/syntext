@@ -214,6 +214,13 @@ int32_t syntext_context_memory_record(const syntext_context_memory *memory,
 /* Every turn, oldest first: [{"role", "content"}]. */
 char *syntext_context_memory_history(const syntext_context_memory *memory,
                                      syntext_error **err_out);
+/* Delete every persisted turn of the conversation and clear its history:
+ * journaled turns leave the disk now, compacted ones at the next
+ * syntext_context_store_compact. *removed_out (nullable) receives how many
+ * turns were removed. Idempotent. */
+int32_t syntext_context_memory_forget(const syntext_context_memory *memory,
+                                      uint64_t *removed_out,
+                                      syntext_error **err_out);
 
 /* ── Receipts ───────────────────────────────────────────────── */
 /* Re-hash the files a receipt cites (keys "<label>:<path>" under root).

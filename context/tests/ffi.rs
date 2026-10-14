@@ -314,6 +314,32 @@ fn assemble_with_memory_and_a_host_token_counter() {
     let history = json(syntext_context_memory_history(memory, &mut err), err);
     assert_eq!(history.as_array().unwrap().len(), 2);
 
+    // Forgetting deletes the conversation's turns from the store.
+    let mut removed = 0u64;
+    let mut err = null_mut();
+    let rc = syntext_context_memory_forget(memory, &mut removed, &mut err);
+    assert_eq!(rc, 0, "{:?}", take_error(err));
+    assert_eq!(removed, 2);
+    let mut err = null_mut();
+    let history = json(syntext_context_memory_history(memory, &mut err), err);
+    assert!(history.as_array().unwrap().is_empty());
+    let forgotten = ask(0);
+    assert!(!forgotten["evidence_text"]
+        .as_str()
+        .unwrap()
+        .contains("March 3rd"));
+    let mut err = null_mut();
+    let rc = syntext_context_memory_forget(memory, null_mut(), &mut err);
+    assert_eq!(rc, 0, "idempotent, NULL out-param: {:?}", take_error(err));
+    let mut err = null_mut();
+    let rc = syntext_context_memory_forget(null(), null_mut(), &mut err);
+    assert_eq!(
+        rc as u32,
+        SYNTEXT_ERR_INVALID_ARGUMENT,
+        "{:?}",
+        take_error(err)
+    );
+
     // Handles may be freed in any order.
     syntext_context_store_free(store);
     syntext_context_memory_free(memory);
