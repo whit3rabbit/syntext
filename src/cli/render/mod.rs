@@ -60,6 +60,15 @@ pub(in crate::cli) struct FormatOpts {
     pub byte_offset: Option<u64>,
 }
 
+/// Trim leading ASCII whitespace from bytes, matching rg's `--trim` behavior.
+pub(in crate::cli) fn trim_ascii_leading(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    &bytes[start..]
+}
+
 /// Sorted, non-overlapping match byte spans into `content`, for highlighting.
 /// Returns an empty vec when `re` is `None` (no regex was compiled).
 pub(in crate::cli) fn match_spans(

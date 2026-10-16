@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **`--trim` strips leading whitespace under `-o`/`--only-matching` and context lines.** When `--trim` was used with `-o` and a matched substring contained leading whitespace, `st` printed the untrimmed match, differing from `rg` which trims the beginning of every printed line. The only-matching, context, and invert renderers now all honor `--trim`.
+
 ## [2.7.0] - 2026-10-14
 
 ### Added

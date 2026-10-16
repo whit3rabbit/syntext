@@ -120,6 +120,12 @@ pub(in crate::cli) fn render_with_context_to(
             let is_match = match_set.contains(&idx);
             let sep = if is_match { b':' } else { b'-' };
 
+            let content = if args.trim {
+                super::trim_ascii_leading(content)
+            } else {
+                content
+            };
+
             let spans = if is_match {
                 match_spans(re.as_ref(), content)
             } else {

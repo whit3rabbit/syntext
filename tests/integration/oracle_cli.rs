@@ -297,6 +297,8 @@ fn stdin_golden_flag_matrix() {
         &["--column"][..],
         &["--byte-offset"][..],
         &["--vimgrep"][..],
+        &["--trim"][..],
+        &["--trim", "-o"][..],
         &["-n", "-i"][..],
         &["-c", "-i"][..],
         &["-n", "-A", "1"][..],
@@ -304,6 +306,30 @@ fn stdin_golden_flag_matrix() {
         run_stdin_differential(STDIN_STREAM, "parse", flags, false)
             .unwrap_or_else(|e| panic!("stdin flags {flags:?}: {e}"));
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_golden_trim_only_matching() {
+    run_stdin_differential(
+        b"alpha  parse_query beta\n",
+        " parse",
+        &["--trim", "-o"],
+        false,
+    )
+    .unwrap();
+    run_stdin_differential(b"alpha  parse_query beta\n", " parse", &["--trim"], false).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn stdin_golden_regression_trim_only_matching_leading_whitespace() {
+    let stream = b"parse snake_case\n";
+    let ((st_code, st_out), (rg_code, rg_out)) =
+        stdin_raw_outputs(stream, " snak", &["--trim", "-o"]).unwrap();
+    assert_eq!(st_code, rg_code);
+    assert_eq!(st_out, rg_out);
+    assert_eq!(st_out, b"snak\n");
 }
 
 #[test]

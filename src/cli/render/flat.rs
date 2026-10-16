@@ -282,12 +282,9 @@ fn apply_output_modifiers<'a>(
 ) -> OutputLine<'a> {
     let mut trimmed_bytes = 0;
     let trimmed: &[u8] = if args.trim {
-        let start = line
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .unwrap_or(line.len());
-        trimmed_bytes = start;
-        &line[start..]
+        let t = super::trim_ascii_leading(line);
+        trimmed_bytes = line.len() - t.len();
+        t
     } else {
         line
     };
