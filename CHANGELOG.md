@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **A `vX.Y.Z` tag now pins its own Swift xcframework.** Every tag through v2.7.0 pinned the previous release's zip, because the zip was built by the release the tag triggered and pinned on `main` afterwards, so a SwiftPM consumer pinning `exact: "X.Y.Z"` silently linked the older binary. The new Swift prepare workflow stages the zip on a draft release and pins it in both `Package.swift` files before tagging. The Release workflow checks the staged zip against the tag's checksum, publishes that exact zip, and still tags `swift-vX.Y.Z`. A tag made without the prepare step takes the old path with a warning. `scripts/pin_swift_package.py` does the pinning for both paths.
+
 ### Fixed
+- **The xcframework targets the package's macOS 12 floor.** `build-xcframework.sh` set no deployment target, so blake3's cc-built C objects took the build machine's SDK version (macOS 14.5 in 2.7.0), and apps with a lower floor got ld "built for newer macOS version" warnings. The script now defaults `MACOSX_DEPLOYMENT_TARGET` to 12.0, builds into a target directory per deployment target (cargo does not treat the variable as a build input, so a cached `target/` kept the old C objects), and fails if any archive member requires a newer macOS.
 - **`--trim` strips leading whitespace under `-o`/`--only-matching` and context lines.** When `--trim` was used with `-o` and a matched substring contained leading whitespace, `st` printed the untrimmed match, differing from `rg` which trims the beginning of every printed line. The only-matching, context, and invert renderers now all honor `--trim`.
 
 ## [2.7.0] - 2026-10-14

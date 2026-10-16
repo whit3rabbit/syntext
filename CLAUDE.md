@@ -108,6 +108,13 @@ For the complete release checklist and instructions on how releases are automate
 
 When cutting a release, make sure to follow the checklist in `docs/RELEASE.md`. The release workflow builds binaries and publishes them to crates.io and GitHub Releases, automatically extracting release notes from `CHANGELOG.md`.
 
+Swift release gotchas (details in `docs/RELEASE.md` and `docs/SWIFT.md`):
+
+- **Run the Swift prepare workflow before tagging, then tag the pin PR's merge commit.** Skip it and the `vX.Y.Z` tag pins the previous release's xcframework, as every tag through v2.7.0 does. A SwiftPM consumer using `exact:` then links the old binary with no error. The release run warns ("does not pin its own xcframework") and falls back to pinning `main` afterwards.
+- **Never rebuild the staged zip.** Its checksum is in the tag's `Package.swift`, and a rebuilt zip never reproduces it. The release publishes the zip from the draft release, and `swift-staged` fails on a mismatch. To change it, re-run the prepare workflow and re-tag from its updated PR.
+- **`MACOSX_DEPLOYMENT_TARGET` is not a cargo build input.** A cached `target/` keeps C objects built at another minimum (CI's rust-cache kept blake3 at macOS 14.5). `build-xcframework.sh` builds into `target/xcframework-macos-<floor>` and fails when any archive member's `minos` exceeds the floor. Keep both if you touch the script.
+- **PRs opened with the workflow token run no CI.** The prepare workflow's pin PR changes only the url and checksum literals. Review the checksum against the draft asset rather than waiting for checks.
+
 ## Commands
 
 ```

@@ -200,8 +200,69 @@ jobs:
           name: wasm-bundler
           path: dist/
 
+  # Does this tag pin its own xcframework? The Swift prepare workflow stages
+  # the zip on a draft release and pins both Package.swift files to it before
+  # the tag exists, so the tag carries its own url + checksum and SwiftPM can
+  # resolve `exact: "X.Y.Z"`. Then this job verifies the staged zip against
+  # the pin and hands that exact zip to the release (a rebuild would not
+  # reproduce the checksum). A tag without that pin takes the legacy path:
+  # build-swift builds a zip and update-swift-package pins main afterwards.
+  swift-staged:
+    name: Swift xcframework (staged)
+    runs-on: ubuntu-latest
+    permissions:
+      # Draft releases and their assets are visible only with push access.
+      contents: write
+    outputs:
+      staged: ${{ steps.pin.outputs.staged }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check whether the tag pins its own zip
+        id: pin
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VER="${VERSION#v}"
+          URL="https://github.com/whit3rabbit/syntext/releases/download/v${VER}/syntext-swift-${VER}.xcframework.zip"
+          if grep -qF "url: \"${URL}\"" Package.swift && grep -qF "url: \"${URL}\"" swift/Package.swift; then
+            echo "staged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "staged=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::v${VER} does not pin its own xcframework, so an exact v${VER} SwiftPM pin gets the previous release's zip. Building one and pinning main afterwards (legacy flow). Run the Swift prepare workflow before tagging."
+          fi
+
+      - name: Fetch the staged zip and check it against the pin
+        if: steps.pin.outputs.staged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VER="${VERSION#v}"
+          ZIP="syntext-swift-${VER}.xcframework.zip"
+          mkdir -p dist
+          if ! gh release download "v${VER}" --pattern "${ZIP}" --dir dist; then
+            echo "::error::the tag pins ${ZIP}, but no draft release v${VER} holds it. Run the Swift prepare workflow for ${VER}."
+            exit 1
+          fi
+          SUM="$(sha256sum "dist/${ZIP}" | awk '{print $1}')"
+          for f in Package.swift swift/Package.swift; do
+            if ! grep -qF "checksum: \"${SUM}\"" "${f}"; then
+              echo "::error::${f} pins a checksum other than the staged ${ZIP} (${SUM}). Re-run the Swift prepare workflow and re-tag from its pin PR."
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v7
+        if: steps.pin.outputs.staged == 'true'
+        with:
+          name: swift-xcframework
+          path: dist/
+
   build-swift:
-    name: Swift xcframework
+    name: Swift xcframework (legacy build)
+    needs: [swift-staged]
+    if: needs.swift-staged.outputs.staged != 'true'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
@@ -231,7 +292,10 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build-linux, build-macos, build-windows, build-wasm, build-swift]
+    needs: [build-linux, build-macos, build-windows, build-wasm, swift-staged, build-swift]
+    # build-swift is skipped on the staged path; a skipped need would skip
+    # this job too without the explicit condition.
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -259,10 +323,35 @@ jobs:
           echo "==============================="
 
       - uses: softprops/action-gh-release@v3
+        if: needs.swift-staged.outputs.staged != 'true'
         with:
           files: artifacts/*
           body_path: release_notes.md
           generate_release_notes: true
+
+      # Staged path: the draft release already holds the zip the tag pins.
+      # Add the other artifacts (the zip is the same bytes, downloaded from
+      # the draft, so SHA256SUMS covers it) and publish that draft.
+      - name: Publish the staged draft release
+        if: needs.swift-staged.outputs.staged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${TAG}" --jq .body > generated_notes.md
+          printf '\n' >> release_notes.md
+          cat generated_notes.md >> release_notes.md
+          gh release upload "${TAG}" artifacts/* --clobber
+          gh release edit "${TAG}" --draft=false --verify-tag --title "${TAG}" --notes-file release_notes.md
+
+      # Consumers that pin `swift-vX.Y.Z` (the legacy convention) keep working.
+      - name: Tag swift-vX.Y.Z at the release commit
+        if: needs.swift-staged.outputs.staged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/swift-${TAG}" -f sha="${GITHUB_SHA}"
 
   publish-crate:
     name: Publish to crates.io
@@ -371,8 +460,9 @@ jobs:
           git push origin main
 
   update-swift-package:
-    name: Pin Swift package to release
-    needs: [release]
+    name: Pin Swift package to release (legacy flow)
+    needs: [swift-staged, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.swift-staged.outputs.staged != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -402,24 +492,7 @@ jobs:
         env:
           VER: ${{ steps.sha.outputs.VER }}
           SHA: ${{ steps.sha.outputs.SHA }}
-        run: |
-          python3 - <<'EOF'
-          import os, pathlib, re
-          ver = os.environ["VER"]
-          sha = os.environ["SHA"]
-          for path_str in ["swift/Package.swift", "Package.swift"]:
-              p = pathlib.Path(path_str)
-              if not p.exists():
-                  continue
-              s = p.read_text()
-              url = f'url: "https://github.com/whit3rabbit/syntext/releases/download/v{ver}/syntext-swift-{ver}.xcframework.zip"'
-              s, n_url = re.subn(
-                  r'url: "https://github\.com/whit3rabbit/syntext/releases/download/[^"]*syntext-swift-[^"]*\.xcframework\.zip"',
-                  url, s)
-              s, n_sha = re.subn(r'checksum: "[0-9a-f]{64}"', f'checksum: "{sha}"', s)
-              assert n_url == 1 and n_sha == 1, f"expected exactly one url+checksum pin in {path_str}, got {n_url}/{n_sha}"
-              p.write_text(s)
-          EOF
+        run: python3 scripts/pin_swift_package.py "${VER}" "${SHA}"
 
       - name: Commit, push, and tag
         env:
