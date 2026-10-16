@@ -64,6 +64,11 @@ pub(in crate::cli) fn render_only_matching(
             // empty-submatch shape: a zero-width regex hit produces the same
             // 0==0 span legitimately and must still go through the per-match
             // loop below.
+            let content = if args.trim {
+                super::trim_ascii_leading(&m.line_content)
+            } else {
+                &m.line_content
+            };
             write_formatted_line(
                 &mut out,
                 super::FormatOpts {
@@ -76,7 +81,7 @@ pub(in crate::cli) fn render_only_matching(
                 &m.path,
                 m.line_number as usize,
                 b':',
-                &m.line_content,
+                content,
                 &[],
             )?;
             continue;
@@ -87,9 +92,14 @@ pub(in crate::cli) fn render_only_matching(
             }
             let matched_bytes = &m.line_content[matched.start()..matched.end()];
             let rendered = apply_match_replace(&re, args.replace.as_deref(), matched_bytes);
+            let trimmed = if args.trim {
+                super::trim_ascii_leading(rendered.as_ref())
+            } else {
+                rendered.as_ref()
+            };
             // -o prints only the match, so the whole rendered slice is the span.
             let spans: Vec<(usize, usize)> = if args.color {
-                vec![(0, rendered.as_ref().len())]
+                vec![(0, trimmed.len())]
             } else {
                 Vec::new()
             };
@@ -107,7 +117,7 @@ pub(in crate::cli) fn render_only_matching(
                 &m.path,
                 m.line_number as usize,
                 b':',
-                rendered.as_ref(),
+                trimmed,
                 &spans,
             )?;
         }
@@ -216,6 +226,11 @@ fn render_only_matching_with_context(
                 if args.invert_match {
                     // -v context: no submatch to extract; rg -v -o prints the
                     // whole (non-matching) line once.
+                    let content = if args.trim {
+                        super::trim_ascii_leading(content)
+                    } else {
+                        content
+                    };
                     write_formatted_line(
                         &mut out,
                         super::FormatOpts {
@@ -240,8 +255,13 @@ fn render_only_matching_with_context(
                     }
                     let matched_bytes = &content[matched.start()..matched.end()];
                     let rendered = apply_match_replace(re, args.replace.as_deref(), matched_bytes);
+                    let trimmed = if args.trim {
+                        super::trim_ascii_leading(rendered.as_ref())
+                    } else {
+                        rendered.as_ref()
+                    };
                     let spans: Vec<(usize, usize)> = if args.color {
-                        vec![(0, rendered.as_ref().len())]
+                        vec![(0, trimmed.len())]
                     } else {
                         Vec::new()
                     };
@@ -259,11 +279,16 @@ fn render_only_matching_with_context(
                         rel_path,
                         line_num,
                         b':',
-                        rendered.as_ref(),
+                        trimmed,
                         &spans,
                     )?;
                 }
             } else {
+                let content = if args.trim {
+                    super::trim_ascii_leading(content)
+                } else {
+                    content
+                };
                 write_formatted_line(
                     &mut out,
                     super::FormatOpts {
