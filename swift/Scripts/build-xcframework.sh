@@ -36,6 +36,12 @@ rustup target add "${TARGETS[@]}" >/dev/null
 # floor got an ld "built for newer macOS version" warning.
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 
+# One target directory per deployment target. Cargo does not treat
+# MACOSX_DEPLOYMENT_TARGET as a build input: a target/ built at another
+# minimum (or none) is reused as is, C objects included. That is how CI's
+# restored cache kept blake3 at 14.5 after the variable was set.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/xcframework-macos-${MACOSX_DEPLOYMENT_TARGET}"
+
 mkdir -p swift/build
 rm -rf swift/build/SyntextFFI.xcframework
 
@@ -45,7 +51,7 @@ for T in "${TARGETS[@]}"; do
   # Manifest crate types are unchanged; the staticlib is produced on demand
   # only, so plain builds/tests/publish are unaffected.
   cargo rustc -p syntext-context --lib --release --features ffi --target "$T" --crate-type staticlib
-  THIN+=("target/$T/release/libsyntext_context.a")
+  THIN+=("$CARGO_TARGET_DIR/$T/release/libsyntext_context.a")
 done
 
 # Static-library xcframework slices are per-PLATFORM, not per-arch: two .a
