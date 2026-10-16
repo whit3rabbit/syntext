@@ -14,8 +14,8 @@ use syntext::{Config, SearchOptions};
 #[path = "lock_retry.rs"]
 mod lock_retry;
 use lock_retry::{
-    commit_batch_result, commit_batch_with_retry, is_lock_conflict, retry_lock_contention,
-    retry_transient_write_lock,
+    build_with_retry, commit_batch_result, commit_batch_with_retry, is_lock_conflict,
+    retry_lock_contention, retry_transient_write_lock,
 };
 
 /// Create a temp directory with some source files, build an index, return both.
@@ -46,7 +46,7 @@ fn setup() -> (tempfile::TempDir, tempfile::TempDir, Index) {
         repo_root: repo.path().to_path_buf(),
         ..Config::default()
     };
-    let index = Index::build(config).expect("build");
+    let index = build_with_retry(config).expect("build");
     (repo, index_dir, index)
 }
 
@@ -390,7 +390,7 @@ fn large_file_excluded_during_commit() {
         max_file_size: 100, // very small limit
         ..Config::default()
     };
-    let index = Index::build(config).expect("build");
+    let index = build_with_retry(config).expect("build");
 
     // Create a file that exceeds the limit
     let big_path = repo.path().join("src/big.rs");
@@ -491,7 +491,7 @@ fn concurrent_commit_batch_returns_lock_conflict() {
         repo_root: repo.path().to_path_buf(),
         ..Config::default()
     };
-    let index = Index::build(config).unwrap();
+    let index = build_with_retry(config).unwrap();
 
     // Modify a file and notify.
     fs::write(repo.path().join("a.rs"), "fn aaa_v2() {}\n").unwrap();
@@ -565,7 +565,7 @@ fn build_returns_lock_conflict_while_writer_lock_is_held() {
     lock_file.unlock().unwrap();
     drop(lock_file);
     // After unlocking and closing the FD, build should succeed.
-    let index = Index::build(config).unwrap();
+    let index = build_with_retry(config).unwrap();
     drop(index);
 }
 
@@ -599,7 +599,7 @@ fn concurrent_reads_during_commit_batch() {
         repo_root: repo.path().to_path_buf(),
         ..Config::default()
     };
-    let index = Arc::new(Index::build(config).unwrap());
+    let index = Arc::new(build_with_retry(config).unwrap());
     let stop = Arc::new(AtomicBool::new(false));
     // Rendezvous reader startup with writer start so every reader performs at
     // least one search before any commit runs. Without this, slow thread
@@ -722,7 +722,7 @@ fn too_many_files_leaves_index_stale_then_raised_limit_applies_changes() {
         repo_root: repo.path().to_path_buf(),
         ..Config::default()
     };
-    let index = Index::build(config).unwrap();
+    let index = build_with_retry(config).unwrap();
 
     // 3 new untracked files exceed a max_files cap of 1.
     for i in 0..3 {
@@ -1079,7 +1079,7 @@ fn delta_setup() -> DeltaFixture {
         repo_root: repo.path().to_path_buf(),
         ..Config::default()
     };
-    let index = Index::build(config).expect("build");
+    let index = build_with_retry(config).expect("build");
     DeltaFixture {
         repo,
         index_dir,
