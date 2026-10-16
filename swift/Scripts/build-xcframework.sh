@@ -29,6 +29,13 @@ fi
 TARGETS=(aarch64-apple-darwin x86_64-apple-darwin)
 rustup target add "${TARGETS[@]}" >/dev/null
 
+# The package's platform floor (`.macOS(.v12)` in Package.swift). rustc and
+# the cc crate both read MACOSX_DEPLOYMENT_TARGET. Without it, cc-built C
+# objects (blake3's NEON/SSE kernels) take the build machine's SDK version:
+# 2.7.0 shipped `blake3_neon.o` for macOS 14.5, and every app with a lower
+# floor got an ld "built for newer macOS version" warning.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+
 mkdir -p swift/build
 rm -rf swift/build/SyntextFFI.xcframework
 
@@ -49,6 +56,22 @@ echo "==> lipo (universal libsyntext.a)"
 mkdir -p swift/build/lib
 rm -f swift/build/lib/libsyntext.a
 lipo -create "${THIN[@]}" -output swift/build/lib/libsyntext.a
+
+# Fail rather than ship a member built above the floor. `otool -l` prints a
+# `minos` per object (LC_BUILD_VERSION) for every member of every slice.
+echo "==> check minimum macOS of every archive member (<= $MACOSX_DEPLOYMENT_TARGET)"
+MAX_MINOS="$(otool -l swift/build/lib/libsyntext.a | awk '$1 == "minos" { print $2 }' | sort -V | tail -1)"
+if [[ -z "$MAX_MINOS" ]]; then
+  echo "error: no LC_BUILD_VERSION found in swift/build/lib/libsyntext.a" >&2
+  exit 1
+fi
+if [[ "$(printf '%s\n%s\n' "$MAX_MINOS" "$MACOSX_DEPLOYMENT_TARGET" | sort -V | tail -1)" != "$MACOSX_DEPLOYMENT_TARGET" ]]; then
+  echo "error: an archive member requires macOS $MAX_MINOS, above the $MACOSX_DEPLOYMENT_TARGET floor" >&2
+  otool -l swift/build/lib/libsyntext.a \
+    | awk -v max="$MAX_MINOS" '/libsyntext\.a\(/ { member = $0 } $1 == "minos" && $2 == max { print member } ' >&2
+  exit 1
+fi
+echo "    highest minos: $MAX_MINOS"
 
 echo "==> xcodebuild -create-xcframework"
 xcodebuild -create-xcframework \
