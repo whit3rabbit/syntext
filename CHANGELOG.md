@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-10-16
+
 ### Changed
 - **A `vX.Y.Z` tag now pins its own Swift xcframework.** Every tag through v2.7.0 pinned the previous release's zip, because the zip was built by the release the tag triggered and pinned on `main` afterwards, so a SwiftPM consumer pinning `exact: "X.Y.Z"` silently linked the older binary. The new Swift prepare workflow stages the zip on a draft release and pins it in both `Package.swift` files before tagging. The Release workflow checks the staged zip against the tag's checksum, publishes that exact zip, and still tags `swift-vX.Y.Z`. A tag made without the prepare step takes the old path with a warning. `scripts/pin_swift_package.py` does the pinning for both paths.
 
