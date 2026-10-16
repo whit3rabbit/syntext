@@ -39,14 +39,16 @@ Once preparation is complete and verified:
   ```sh
   git add Cargo.toml Cargo.lock CHANGELOG.md
   git commit -m "release: vX.Y.Z"
+  git push origin main
   ```
-- [ ] **Create Git Tag**: Create an annotated/signed tag for the new version:
+- [ ] **Stage the Swift xcframework**: Run the **Swift prepare** workflow on `main` (Actions > Swift prepare > Run workflow, or `gh workflow run swift-prepare.yml --ref main`). It builds `syntext-swift-X.Y.Z.xcframework.zip` once, stages it on a draft release `vX.Y.Z`, and opens a `swift-pin/vX.Y.Z` PR that pins both `Package.swift` files to it. Merge that PR. This is what makes the `vX.Y.Z` tag pin its own zip, so SwiftPM consumers can use `exact: "X.Y.Z"`. Tag right after merging: until the release is published, `main` pins a URL that is not downloadable yet.
+- [ ] **Create Git Tag**: Tag the pin PR's merge commit, not the release commit. Create an annotated/signed tag for the new version:
   ```sh
+  git pull origin main   # brings in the pin PR's merge commit
   git tag -a vX.Y.Z -m "Release vX.Y.Z"
   ```
-- [ ] **Push to Upstream**: Push the branch and the new tag to GitHub:
+- [ ] **Push the Tag**: The branch is already on GitHub; push the new tag:
   ```sh
-  git push origin main
   git push origin vX.Y.Z
   ```
 
@@ -64,7 +66,8 @@ Once preparation is complete and verified:
   - Create/publish a GitHub Release, using `scripts/extract_release_notes.py` to auto-populate the release description from `CHANGELOG.md`.
   - Publish the `syntext` crate to [crates.io](https://crates.io/crates/syntext). `syntext-context` is `publish = false`, and the published package leaves out `context/`.
   - Automatically update the Homebrew cask in `whit3rabbit/homebrew-tap`.
-  - Automatically pin `swift/Package.swift` to the new xcframework zip (url + checksum) and push a `swift-vX.Y.Z` tag. If this push is blocked (branch protection on `main` rejecting the workflow token), pin manually: `shasum -a 256 <zip>` and edit the `url:`/`checksum:` literals in `swift/Package.swift`.
+  - Swift, staged path (the tag pins its own zip): the `swift-staged` job downloads the zip from the draft release and fails the release if its checksum differs from the tag's pin. The release job publishes that draft with the other artifacts, without rebuilding the zip, and tags `swift-vX.Y.Z` at the same commit for consumers of the old convention.
+  - Swift, legacy path (the prepare workflow was skipped): the run warns, `build-swift` builds a zip, and `update-swift-package` pins `main` afterwards and tags `swift-vX.Y.Z`. That `vX.Y.Z` tag then pins the previous release's zip, the defect the prepare workflow exists to avoid. If the pin push is blocked (branch protection on `main` rejecting the workflow token), pin manually with `scripts/pin_swift_package.py X.Y.Z <sha256>`.
   - Verify the musl entries passed the `Verify static linking` step, and that the x86_64 musl `Smoke test` step ran the binary inside the `manylinux2014` (glibc 2.17) container.
   - Check the **Linux glibc floor** job summary (from the gnu amd64 build's `Report glibc floor` step): if the printed floor exceeds `REQUIRED_GLIBC` in `install.sh`, bump the constant in the same commit as the installer-defaults bump below. Note: releases before the musl artifacts existed (≤ 2.5.0) have no `*-musl` assets, so pinning `SYNTEXT_VERSION` that far back on an old-glibc box still fails at download.
 - [ ] **Bump Installer Defaults**: Once the GitHub Release has successfully published:
@@ -96,4 +99,4 @@ Once preparation is complete and verified:
 
 - **Changelog Extraction**: During the `release` job, `.github/workflows/release.yml` executes `python3 scripts/extract_release_notes.py` passing the version tag (e.g. `1.4.0`). This parses `CHANGELOG.md` and generates a temporary markdown file passed to `softprops/action-gh-release@v3` via `body_path`.
 - **Cask Generation**: Homebrew cask updater runs `scripts/render_homebrew_cask.sh` to generate the Ruby formula with calculated SHA256 checksums from the newly built macOS archives, committing directly to the tap repository.
-- **Swift xcframework**: The `build-swift` job runs `swift/Scripts/build-xcframework.sh` on `macos-14` (both Apple targets cross-compiled on one runner; static archives need no cross linker) and stages `syntext-swift-<ver>.xcframework.zip`. The `update-swift-package` job then downloads the published zip, computes its SPM checksum, patches `swift/Package.swift`, and commits + tags. See docs/SWIFT.md for the consumer-facing pin semantics.
+- **Swift xcframework**: `swift/Scripts/build-xcframework.sh` builds both Apple targets on one `macos-14` runner (static archives need no cross linker), with `MACOSX_DEPLOYMENT_TARGET` defaulting to the package's 12.0 floor. It fails if any archive member is built for a newer macOS, which is how 2.7.0 shipped blake3's C objects for 14.5. The Swift prepare workflow (`.github/workflows/swift-prepare.yml`) runs it before tagging and pins the zip with `scripts/pin_swift_package.py`. In the Release workflow, `swift-staged` reuses that zip, and the legacy `build-swift` and `update-swift-package` jobs run only for a tag without its own pin. A rebuilt zip never matches a recorded checksum, so the staged zip is published as is. See docs/SWIFT.md for the consumer-facing pin semantics.

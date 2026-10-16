@@ -7,11 +7,11 @@ import Foundation
 // 1. Dev/CI: Scripts/build-xcframework.sh drops a local xcframework at
 //    build/SyntextFFI.xcframework; when present it is preferred, so
 //    `swift test` never needs an unreleased artifact.
-// 2. Consumers: the pinned release zip. The `update-swift-package` release
-//    job rewrites url+checksum after each release, so `main` always pins the
-//    latest published xcframework. Caveat: an exact vX.Y.Z tag pins the
-//    PREVIOUS release (the zip for X.Y.Z does not exist when that tag is
-//    cut); pin `main` or a `swift-vX.Y.Z` tag instead — see docs/SWIFT.md.
+// 2. Consumers: the pinned release zip. The Swift prepare workflow stages
+//    a release's zip and pins it here BEFORE the vX.Y.Z tag is cut, so that
+//    tag pins its own zip and `exact: "X.Y.Z"` works. Tags through v2.7.0
+//    were made by the legacy flow and pin the PREVIOUS release's zip: for
+//    those, pin the `swift-vX.Y.Z` commit by revision. See docs/SWIFT.md.
 let hasLocalFFI = FileManager.default.fileExists(atPath: "build/SyntextFFI.xcframework")
 let ffiTarget: Target = hasLocalFFI
     ? .binaryTarget(name: "SyntextFFI", path: "build/SyntextFFI.xcframework")

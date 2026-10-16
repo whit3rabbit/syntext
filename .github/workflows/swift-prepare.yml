@@ -1,0 +1,110 @@
+name: Swift prepare
+
+# Stages a release's Swift xcframework BEFORE its tag exists, so the vX.Y.Z
+# tag can pin its own zip (url + checksum) and SwiftPM consumers can depend on
+# `exact: "X.Y.Z"`. Without this, the zip for X.Y.Z is built by the release
+# that the tag triggers, so the tag can only pin the previous release's zip.
+#
+# Run it on the release commit (version already bumped in Cargo.toml). It
+# builds the zip once, stages it on a DRAFT release vX.Y.Z, and opens a PR
+# pinning both Package.swift files to it. Merge that PR, then tag the merge
+# commit vX.Y.Z. The release workflow checks the staged zip against the tag's
+# pin and publishes that exact zip instead of building another one (a rebuild
+# would not reproduce the checksum). See docs/RELEASE.md.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: swift-prepare
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: Stage xcframework and open the pin PR
+    runs-on: macos-14
+    permissions:
+      # Draft releases and their assets are visible only with push access.
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read version
+        id: ver
+        run: |
+          VER="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ -z "${VER}" ]; then
+            echo "::error::could not read version from Cargo.toml"
+            exit 1
+          fi
+          echo "VER=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse a version that is already tagged or published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.VER }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VER}" >/dev/null; then
+            echo "::error::tag v${VER} already exists; bump the version in Cargo.toml first"
+            exit 1
+          fi
+          if [ "$(gh release view "v${VER}" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "::error::release v${VER} is already published"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: swift-xcframework
+
+      - name: Build xcframework
+        env:
+          SYNTEXT_SWIFT_ZIP_OUT: dist
+        run: ./swift/Scripts/build-xcframework.sh
+
+      - name: Stage the zip on a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.VER }}
+          SHA: ${{ github.sha }}
+        run: |
+          ZIP="dist/syntext-swift-${VER}.xcframework.zip"
+          NOTES="Draft staged by the Swift prepare workflow from ${SHA}. The Release workflow publishes it when v${VER} is pushed."
+          if gh release view "v${VER}" >/dev/null 2>&1; then
+            # A re-run replaces the staged zip; the pin PR below is updated to match.
+            gh release upload "v${VER}" "${ZIP}" --clobber
+            gh release edit "v${VER}" --notes "${NOTES}"
+          else
+            gh release create "v${VER}" "${ZIP}" --draft --title "v${VER}" --notes "${NOTES}" --target "${SHA}"
+          fi
+
+      - name: Open the pin PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.VER }}
+          SHA: ${{ github.sha }}
+        run: |
+          SUM="$(shasum -a 256 "dist/syntext-swift-${VER}.xcframework.zip" | awk '{print $1}')"
+          python3 scripts/pin_swift_package.py "${VER}" "${SUM}"
+          BRANCH="swift-pin/v${VER}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch -c "${BRANCH}"
+          git add Package.swift swift/Package.swift
+          git commit -m "swift: pin v${VER} xcframework (built from ${SHA})"
+          git push --force origin "${BRANCH}"
+          BODY="Pins both Package.swift files to the xcframework staged on the draft release v${VER} (checksum ${SUM}), built from ${SHA}.
+
+          Merge this, then tag the merge commit v${VER} and push the tag. Until the release is published the pinned URL is not downloadable, so tag right after merging.
+
+          A PR opened with the workflow token does not trigger CI; the change is only the url and checksum literals."
+          if gh pr view "${BRANCH}" >/dev/null 2>&1; then
+            echo "PR for ${BRANCH} already open; the force-push updated it."
+          elif ! gh pr create --base main --head "${BRANCH}" --title "swift: pin v${VER} xcframework" --body "${BODY}"; then
+            # Repositories can forbid workflow-token PRs; the branch is pushed either way.
+            echo "::warning::could not open the PR automatically; open one from ${BRANCH} to main"
+          fi

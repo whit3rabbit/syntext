@@ -16,7 +16,13 @@ Package.swift:
 .package(url: "https://github.com/whit3rabbit/syntext", branch: "main")
 ```
 
-Pin by branch (`main`) or by a `swift-vX.Y.Z` tag. Do not pin an exact `vX.Y.Z` tag: that tag's `swift/Package.swift` necessarily references the release zip of the *previous* version, because the zip for `X.Y.Z` is published by the release triggered from that same tag. (The fully tag-exact flow, a prepare-PR that records the checksum before tagging, is deliberate future work.)
+How to pin depends on how the release was made:
+
+- **Releases made with the Swift prepare workflow** (every release after 2.7.0): pin the version, `.package(url: "https://github.com/whit3rabbit/syntext", exact: "X.Y.Z")`. The workflow stages the xcframework on a draft release and pins it in both `Package.swift` files before the tag is cut, so the `vX.Y.Z` tag references its own zip. The Release workflow refuses to publish if the staged zip does not match the tag's checksum.
+- **2.7.0 and earlier**: do not pin the exact `vX.Y.Z` tag. Each of those tags references the PREVIOUS release's zip, because the zip was built by the release that the tag triggered and pinned on `main` afterwards. Pin the `swift-vX.Y.Z` commit by revision instead, since SwiftPM does not accept `swift-vX.Y.Z` as a version: `.package(url: ..., revision: "<git rev-list -n1 swift-vX.Y.Z>")`. For 2.7.0 that is `1a26441ddf646720cfb8828d894353659b48af56`.
+- `branch: "main"` always resolves to the newest published zip, but it is not reproducible.
+
+To confirm what you got, check `.build/workspace-state.json` after `swift package resolve`: the artifact URL must name the version you meant.
 
 Local development: run `./swift/Scripts/build-xcframework.sh` first. It builds the xcframework into `swift/build/`, and `swift/Package.swift` prefers that local copy over the pinned release zip, so `swift test` never needs an unreleased artifact.
 
