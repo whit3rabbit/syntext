@@ -323,6 +323,17 @@ fn stdin_golden_trim_only_matching() {
 
 #[test]
 #[cfg(unix)]
+fn stdin_golden_regression_trim_only_matching_leading_whitespace() {
+    let stream = b"parse snake_case\n";
+    let ((st_code, st_out), (rg_code, rg_out)) =
+        stdin_raw_outputs(stream, " snak", &["--trim", "-o"]).unwrap();
+    assert_eq!(st_code, rg_code);
+    assert_eq!(st_out, rg_out);
+    assert_eq!(st_out, b"snak\n");
+}
+
+#[test]
+#[cfg(unix)]
 fn stdin_golden_no_match_exits_1() {
     run_stdin_differential(b"alpha\nbeta\n", "zzq", &[], false).unwrap();
 }
