@@ -15,6 +15,12 @@
 //! to its open file, so the parent's drop does not release it until the
 //! child's exec closes the copy. That window is microseconds on an idle box
 //! and long enough to lose a race on a loaded runner.
+//!
+//! `write.lock` no longer has that window: `helpers::WriterLock` unlocks
+//! explicitly on drop, and `LOCK_UN` releases the lock through every copy.
+//! The directory lock an open `Index` holds is still released by close when
+//! the `Index` drops, so a build right after a drop can still lose the race.
+//! Keep retrying.
 #![allow(dead_code)]
 
 use std::sync::OnceLock;

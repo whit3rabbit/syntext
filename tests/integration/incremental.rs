@@ -1188,7 +1188,17 @@ fn corrupt_deletes_idx_fails_closed() {
     )
     .unwrap();
     fx.git(&["commit", "-am", "modify", "--no-gpg-sign"]);
-    fx.index.rebuild_if_stale().expect("rebuild_if_stale");
+    let (_, full_rebuild) = fx
+        .index
+        .rebuild_if_stale()
+        .expect("rebuild_if_stale")
+        .expect("HEAD moved, so an update must run");
+    // Fail here, not at the sidecar lookup below: a full rebuild writes no
+    // sidecar, and only this step knows which path ran.
+    assert!(
+        !full_rebuild,
+        "a modify must take the delta path, not a full rebuild"
+    );
 
     let config = fx.config();
     let index_dir = fx.index_dir.path().to_path_buf();

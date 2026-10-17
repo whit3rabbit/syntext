@@ -147,7 +147,7 @@ pub(super) fn compact_index(
     config: Config,
     snapshot: Arc<IndexSnapshot>,
     plan: CompactionPlan,
-    write_lock: std::fs::File,
+    write_lock: super::helpers::WriterLock,
 ) -> Result<super::Index, IndexError> {
     // Symbol index (symbols.db) is deliberately left untouched here. Symbol
     // lookups are path-keyed (see SymbolIndex::search / delete_for_paths), so

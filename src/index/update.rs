@@ -355,10 +355,11 @@ impl super::Index {
         }
 
         // Try a cheap durable delta first: `try_committed_delta` returns
-        // `Some(stats)` when it applied one, `None` for anything it can't
+        // `Ok(stats)` when it applied one, `Err(reason)` for anything it can't
         // safely/cheaply handle (a full rebuild always answers that "no").
-        if let Some(stats) = self.try_committed_delta(&manifest, current_head.as_deref())? {
-            return Ok(Some((stats, false)));
+        match self.try_committed_delta(&manifest, current_head.as_deref())? {
+            Ok(stats) => return Ok(Some((stats, false))),
+            Err(reason) => log::debug!("no delta ({reason}); full rebuild instead"),
         }
 
         self.rebuild_with(super::build::build_index)

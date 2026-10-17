@@ -36,7 +36,7 @@ pub(super) fn flush_overlay_durable(
     snapshot: Arc<IndexSnapshot>,
     anchor: FlushAnchor,
     inputs: AnchorInputs,
-    write_lock: std::fs::File,
+    write_lock: helpers::WriterLock,
 ) -> Result<Index, IndexError> {
     helpers::create_dir_all_secure(&config.index_dir)?;
 
