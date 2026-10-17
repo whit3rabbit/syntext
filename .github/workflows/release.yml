@@ -393,6 +393,10 @@ jobs:
   update-homebrew-cask:
     name: Update Homebrew Cask
     needs: [release]
+    # Explicit: without it the default success() also requires every job
+    # upstream of `release`, and on the staged Swift path build-swift is
+    # always skipped. v2.7.1 published without a cask update because of it.
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
