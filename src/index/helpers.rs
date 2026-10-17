@@ -109,8 +109,31 @@ pub(super) fn try_lock_shared(file: &std::fs::File, index_dir: &Path) -> Result<
     classify_try_lock(index_dir, "shared lock", || file.try_lock_shared())
 }
 
+/// Exclusive hold on `write.lock`, released by an explicit unlock on drop.
+///
+/// Closing the descriptor is not a reliable release. A `flock` belongs to the
+/// open file description, and a `fork`/`posix_spawn` on ANY thread copies
+/// every open descriptor into the child until its `exec` closes them. A lock
+/// released only by close therefore outlives the drop for that window, and the
+/// next writer in this process gets `WouldBlock`. That is how a committed-HEAD
+/// delta lost `write.lock` between `commit_batch` and `run_durable_flush` and
+/// silently became a full rebuild. `LOCK_UN` through any copy releases the
+/// lock for all of them, so the guard unlocks before it closes.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, IndexError> {
+pub(super) struct WriterLock(std::fs::File);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        if let Err(e) = self.0.unlock() {
+            // Close still releases it once no forked copy remains.
+            log::debug!("write.lock unlock failed: {e}");
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<WriterLock, IndexError> {
     let write_lock_path = index_dir.join("write.lock");
     let write_lock = std::fs::OpenOptions::new()
         .read(true)
@@ -119,7 +142,7 @@ pub(super) fn acquire_writer_lock(index_dir: &Path) -> Result<std::fs::File, Ind
         .truncate(false)
         .open(&write_lock_path)?;
     try_lock_exclusive(&write_lock, index_dir)?;
-    Ok(write_lock)
+    Ok(WriterLock(write_lock))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -281,5 +304,24 @@ mod tests {
         // resource failure too.
         assert!(matches!(err, IndexError::LockConflict(_)));
         assert_eq!(calls.get(), 1);
+    }
+
+    /// A second descriptor on the same open file description is exactly what a
+    /// child forked by another thread holds until it execs. Dropping the guard
+    /// must still free `write.lock` for the next writer in this process.
+    #[cfg(unix)]
+    #[test]
+    fn dropped_writer_lock_is_free_while_a_forked_copy_lives() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let held = acquire_writer_lock(dir.path()).unwrap();
+        let inherited = held.0.try_clone().unwrap();
+        drop(held);
+        let next = acquire_writer_lock(dir.path());
+        assert!(
+            next.is_ok(),
+            "write.lock still held through the inherited copy: {:?}",
+            next.err()
+        );
+        drop(inherited);
     }
 }
