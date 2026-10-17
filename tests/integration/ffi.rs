@@ -10,6 +10,9 @@ use std::ptr::{null, null_mut};
 
 use syntext::ffi;
 
+#[path = "lock_retry.rs"]
+mod lock_retry;
+
 // ── Helpers ─────────────────────────────────────────────────
 /// Drain `*err_out` into `(code, message)` and free the handle.
 fn take_error(err: *mut ffi::syntext_error) -> Option<(u32, String)> {
@@ -41,17 +44,48 @@ fn expected_rc(err: *mut ffi::syntext_error, want: u32) {
     assert_eq!(code, want, "error message: {msg}");
 }
 
+/// Whether an FFI error is the writer lock, which a sibling test's forked
+/// `git` can hold for a moment through an inherited descriptor (see
+/// `lock_retry.rs`). Retried within the calibrated budget; anything else is
+/// returned at once.
+fn is_lock_conflict(err: &Option<(u32, String)>) -> bool {
+    matches!(err, Some((code, _)) if *code == ffi::SYNTEXT_ERR_LOCK_CONFLICT)
+}
+
 fn build_index(idx_dir: &Path, repo: &Path) -> *mut ffi::syntext_index {
     let id = CString::new(idx_dir.to_str().unwrap()).unwrap();
     let rr = CString::new(repo.to_str().unwrap()).unwrap();
-    let mut err: *mut ffi::syntext_error = null_mut();
-    let idx = ffi::syntext_index_build(id.as_ptr(), rr.as_ptr(), null(), &mut err);
-    if idx.is_null() {
-        let (code, msg) = take_error(err).expect("build error handle");
-        panic!("syntext_index_build failed: {code} {msg}");
-    }
-    assert!(take_error(err).is_none(), "no error expected on success");
-    idx
+    let built = lock_retry::retry_lock_contention(
+        || {
+            let mut err: *mut ffi::syntext_error = null_mut();
+            let idx = ffi::syntext_index_build(id.as_ptr(), rr.as_ptr(), null(), &mut err);
+            if idx.is_null() {
+                Err(take_error(err))
+            } else {
+                assert!(take_error(err).is_none(), "no error expected on success");
+                Ok(idx)
+            }
+        },
+        is_lock_conflict,
+    );
+    built.unwrap_or_else(|err| panic!("syntext_index_build failed: {err:?}"))
+}
+
+/// `syntext_index_commit_batch`, retrying the writer lock (see `is_lock_conflict`).
+fn commit_batch(idx: *mut ffi::syntext_index) {
+    lock_retry::retry_lock_contention(
+        || {
+            let mut err: *mut ffi::syntext_error = null_mut();
+            let rc = ffi::syntext_index_commit_batch(idx, &mut err);
+            if rc == ffi::SYNTEXT_OK as i32 {
+                Ok(())
+            } else {
+                Err(take_error(err))
+            }
+        },
+        is_lock_conflict,
+    )
+    .unwrap_or_else(|err| panic!("syntext_index_commit_batch failed: {err:?}"));
 }
 
 fn open_index(idx_dir: &Path, repo: &Path) -> *mut ffi::syntext_index {
@@ -189,8 +223,7 @@ fn notify_change_visible_only_after_commit_batch() {
         0
     );
 
-    let rc = ffi::syntext_index_commit_batch(idx, &mut err);
-    assert_eq!(rc, ffi::SYNTEXT_OK as i32, "{:?}", take_error(err));
+    commit_batch(idx);
     assert_eq!(
         search(idx, "brand_new_needle", None)
             .as_array()

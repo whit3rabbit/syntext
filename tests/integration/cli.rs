@@ -1780,6 +1780,10 @@ fn auto_update_over_max_files_emits_notice_and_searches_normally() {
         .arg(&index_dir)
         .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "2")
         .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        // Detection must finish inside the budget, or the outcome is
+        // BudgetExceeded with a 0 estimate: no notice, and the fsmonitor tip
+        // instead (seen on a loaded ubuntu runner with the 150ms default).
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .arg("hello")
         .output()
         .expect("run st");
@@ -1811,6 +1815,7 @@ fn auto_update_over_max_files_emits_notice_and_searches_normally() {
         .arg(&index_dir)
         .env("SYNTEXT_AUTO_UPDATE_MAX_FILES", "2")
         .env("SYNTEXT_NO_ASYNC_UPDATE", "1")
+        .env("SYNTEXT_AUTO_UPDATE_BUDGET_MS", "10000")
         .arg("--quiet")
         .arg("hello")
         .output()
