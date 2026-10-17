@@ -4,8 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-10-16
+
 ### Fixed
 - **A committed HEAD move no longer turns into a silent full rebuild when another thread spawns a process.** `write.lock` was released by closing its descriptor, and a `flock` survives that close while any child forked by another thread still holds a copy of the descriptor before its `exec`. So the delta path lost `write.lock` between `commit_batch` and the durable flush, and `rebuild_if_stale` quietly answered the `LockConflict` with a full rebuild, sometimes followed by a second `LockConflict` from the rebuild itself. In-process hosts that spawn on other threads (FFI) and the parallel test suite hit it: about 2.5% of committed-modify rounds on Linux, and 0 after the fix. `write.lock` is now unlocked explicitly on drop, and the reason a delta falls back to a rebuild is logged at debug level.
+- **The release workflow updates the Homebrew cask again.** On the staged Swift path from 2.7.1, `build-swift` is always skipped, and the cask job, which had no `if:`, inherited GitHub's default of skipping when any upstream job was skipped. v2.7.1's cask was updated by hand; the job now runs whenever the release job succeeded.
 
 ## [2.7.1] - 2026-10-16
 
