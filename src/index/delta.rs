@@ -42,6 +42,49 @@ pub(super) enum DeltaOutcome {
     Fallback,
 }
 
+/// Why a moved HEAD was not applied as a delta. Every variant is answered by
+/// a full rebuild, which is always correct, so a fallback costs time, not
+/// results, and nothing else reports it. `rebuild_if_stale` logs it so a
+/// rebuild that should have been a delta says which gate sent it there.
+#[derive(Debug)]
+pub(super) enum DeltaFallback {
+    /// The manifest records no `base_commit` (built outside git, or HEAD was
+    /// unreadable when it was built).
+    NoBaseCommit,
+    /// `git rev-parse HEAD` produced no commit now.
+    NoHead,
+    /// No git binary at the resolved path.
+    GitMissing,
+    /// git answered that `base_commit` is not an ancestor of HEAD.
+    NotAncestor,
+    /// The ancestry check itself failed: a spawn error or an unexpected exit.
+    AncestryUnknown(std::io::Error),
+    /// `git diff --name-status` failed or returned incomplete output.
+    DetectFailed(FreshnessError),
+    /// Empty change set, over `DELTA_MAX_FILES`, or no segment headroom.
+    NotWorthIt(usize),
+    /// The change set would overflow the overlay cap.
+    OverlayFull,
+    /// The apply or the durable flush returned an error.
+    ApplyFailed(IndexError),
+}
+
+impl std::fmt::Display for DeltaFallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoBaseCommit => write!(f, "no base_commit in the manifest"),
+            Self::NoHead => write!(f, "HEAD is unreadable"),
+            Self::GitMissing => write!(f, "git binary not found"),
+            Self::NotAncestor => write!(f, "base_commit is not an ancestor of HEAD"),
+            Self::AncestryUnknown(e) => write!(f, "ancestry check failed: {e}"),
+            Self::DetectFailed(e) => write!(f, "{e}"),
+            Self::NotWorthIt(n) => write!(f, "{n} changed path(s) do not fit a delta"),
+            Self::OverlayFull => write!(f, "change set overflows the overlay"),
+            Self::ApplyFailed(e) => write!(f, "delta apply failed: {e}"),
+        }
+    }
+}
+
 /// Committed changes between two commits, split by kind. Paths are
 /// repository-relative and forward-slash normalized to match the keys in
 /// `BaseSegments::path_doc_ids`.
@@ -198,14 +241,26 @@ fn parse_name_status_z(bytes: &[u8]) -> Result<CommittedChanges, FreshnessError>
     Ok(changes)
 }
 
-/// True when `head` is a descendant of `base` (`git merge-base --is-ancestor`).
+/// Whether `head` is a descendant of `base` (`git merge-base --is-ancestor`).
 /// A rebase / amend / force-push makes `base` unreachable from `head`, so a
 /// delta over `base..HEAD` would be wrong; those cases fall back to a rebuild.
-pub(super) fn is_ancestor(git: &Path, repo_root: &Path, base: &str, head: &str) -> bool {
+///
+/// `Ok(false)` only for git's own "not an ancestor" answer (exit 1). A spawn
+/// failure or any other exit is `Err`: ancestry is unknown, which still means
+/// a rebuild, but the log must not call it a rewritten history.
+pub(super) fn is_ancestor(
+    git: &Path,
+    repo_root: &Path,
+    base: &str,
+    head: &str,
+) -> std::io::Result<bool> {
     if !is_hex_commit(base) || !is_hex_commit(head) {
-        return false;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid commit id",
+        ));
     }
-    Command::new(git)
+    let status = Command::new(git)
         .arg("-C")
         .arg(repo_root)
         .args([
@@ -217,9 +272,14 @@ pub(super) fn is_ancestor(git: &Path, repo_root: &Path, base: &str, head: &str) 
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .status()?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(std::io::Error::other(format!(
+            "git merge-base --is-ancestor: {status}"
+        ))),
+    }
 }
 
 /// Decide whether a detected change set can be applied as a delta rather than a
@@ -240,31 +300,41 @@ pub(super) fn should_delta(
 }
 
 impl Index {
-    /// Attempt a durable delta for a moved HEAD, returning `Some(stats)` if one
-    /// was applied and `None` if the caller should fall back to a full rebuild.
+    /// Attempt a durable delta for a moved HEAD, returning `Ok(stats)` if one
+    /// was applied and `Err(reason)` if the caller should fall back to a full
+    /// rebuild.
     ///
-    /// Falls back (`None`) when there is no recorded `base_commit`, HEAD is not a
+    /// Falls back when there is no recorded `base_commit`, HEAD is not a
     /// descendant of it (rebase/amend/force-push), git detection fails, the
     /// change set is too large (`should_delta`), or the apply overflows the
-    /// overlay. A delta apply error is logged (verbose) and answered by a
-    /// rebuild, never surfaced, since a rebuild is always correct.
+    /// overlay. A delta apply error is answered by a rebuild, never surfaced,
+    /// since a rebuild is always correct. The caller logs the reason.
     pub(super) fn try_committed_delta(
         &self,
         manifest: &Manifest,
         current_head: Option<&str>,
-    ) -> Result<Option<crate::IndexStats>, IndexError> {
-        let (Some(base), Some(head)) = (manifest.base_commit.as_deref(), current_head) else {
-            return Ok(None);
+    ) -> Result<Result<crate::IndexStats, DeltaFallback>, IndexError> {
+        let Some(base) = manifest.base_commit.as_deref() else {
+            return Ok(Err(DeltaFallback::NoBaseCommit));
+        };
+        let Some(head) = current_head else {
+            return Ok(Err(DeltaFallback::NoHead));
         };
         let git = crate::git_util::resolve_git_binary();
-        if !git.is_file() || !is_ancestor(&git, &self.canonical_root, base, head) {
-            return Ok(None);
+        if !git.is_file() {
+            return Ok(Err(DeltaFallback::GitMissing));
         }
-        let Ok(changes) = detect_committed_changes(&self.canonical_root, &git, base, None) else {
-            return Ok(None);
+        match is_ancestor(&git, &self.canonical_root, base, head) {
+            Ok(true) => {}
+            Ok(false) => return Ok(Err(DeltaFallback::NotAncestor)),
+            Err(e) => return Ok(Err(DeltaFallback::AncestryUnknown(e))),
+        }
+        let changes = match detect_committed_changes(&self.canonical_root, &git, base, None) {
+            Ok(changes) => changes,
+            Err(e) => return Ok(Err(DeltaFallback::DetectFailed(e))),
         };
         if !should_delta(manifest, &changes, &self.config) {
-            return Ok(None);
+            return Ok(Err(DeltaFallback::NotWorthIt(changes.len())));
         }
         match self.apply_committed_delta_update(changes) {
             Ok(DeltaOutcome::Applied) => {
@@ -272,13 +342,10 @@ impl Index {
                 // maybe_compact commits nothing new here (pending is empty
                 // post-delta) and only fires when a threshold is crossed.
                 self.maybe_compact()?;
-                Ok(Some(self.stats()))
+                Ok(Ok(self.stats()))
             }
-            Ok(DeltaOutcome::Fallback) => Ok(None),
-            Err(e) => {
-                log::debug!("delta apply failed ({e}); full rebuild instead");
-                Ok(None)
-            }
+            Ok(DeltaOutcome::Fallback) => Ok(Err(DeltaFallback::OverlayFull)),
+            Err(e) => Ok(Err(DeltaFallback::ApplyFailed(e))),
         }
     }
 
