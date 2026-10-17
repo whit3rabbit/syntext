@@ -12,8 +12,8 @@ let ffiTarget: Target = hasLocalFFI
     ? .binaryTarget(name: "SyntextFFI", path: "swift/build/SyntextFFI.xcframework")
     : .binaryTarget(
         name: "SyntextFFI",
-        url: "https://github.com/whit3rabbit/syntext/releases/download/v2.7.1/syntext-swift-2.7.1.xcframework.zip",
-        checksum: "b1b2faf4ee3cb42f118c2172114c78ed846b94ac1eedf668d93e54f9cd33c477")
+        url: "https://github.com/whit3rabbit/syntext/releases/download/v2.7.2/syntext-swift-2.7.2.xcframework.zip",
+        checksum: "8bb9c662864c9b5f9e237bf3d1dc60359e598130b6e67464eeeb0c30b383d416")
 
 let package = Package(
     name: "Syntext",
