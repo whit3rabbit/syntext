@@ -114,7 +114,7 @@ Swift release gotchas (details in `docs/RELEASE.md` and `docs/SWIFT.md`):
 - **Never rebuild the staged zip.** Its checksum is in the tag's `Package.swift`, and a rebuilt zip never reproduces it. The release publishes the zip from the draft release, and `swift-staged` fails on a mismatch. To change it, re-run the prepare workflow and re-tag from its updated PR.
 - **`MACOSX_DEPLOYMENT_TARGET` is not a cargo build input.** A cached `target/` keeps C objects built at another minimum (CI's rust-cache kept blake3 at macOS 14.5). `build-xcframework.sh` builds into `target/xcframework-macos-<floor>` and fails when any archive member's `minos` exceeds the floor. Keep both if you touch the script.
 - **A job downstream of a conditionally skipped job needs its own `if:`.** GitHub's default `success()` skips a job when any job upstream of it was skipped, not just its direct `needs`. On the staged path `build-swift` is always skipped, so `release` and `update-homebrew-cask` both carry explicit conditions (v2.7.1 shipped without a cask update before the second one existed).
-- **PRs opened with the workflow token run no CI.** The prepare workflow's pin PR changes only the url and checksum literals. Review the checksum against the draft asset rather than waiting for checks.
+- **This repo does not let GitHub Actions open pull requests.** The prepare workflow pushes `swift-pin/vX.Y.Z` and warns; open the PR yourself (`gh pr create --head swift-pin/vX.Y.Z`). Opened by you it runs CI; a workflow-token PR would not. Before merging, check the diff is only the url and checksum literals and that the draft asset's `shasum -a 256` matches the pin.
 
 ## Commands
 
