@@ -501,14 +501,32 @@ fn write_fake_git(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
 /// so the deadline is the whole bill.
 #[cfg(unix)]
 fn calibrated_kill_deadline_ms(fake: &std::path::Path, dir: &std::path::Path) -> u64 {
-    let start = std::time::Instant::now();
-    let out = std::process::Command::new(fake)
-        .arg("-C")
-        .arg(dir)
-        .arg("calibrate")
-        .output()
-        .expect("run calibration shim");
-    let observed = start.elapsed().as_millis() as u64;
+    // The shim was written moments ago. A sibling test thread that forks
+    // while that write is open gives its child a copy of the write
+    // descriptor until the child execs, and Linux refuses to exec a file
+    // open for writing (ETXTBSY, seen on ubuntu CI). The window is short, so
+    // retry, timing only the attempt that runs.
+    let mut busy_retries = 0;
+    let (out, observed) = loop {
+        let start = std::time::Instant::now();
+        match std::process::Command::new(fake)
+            .arg("-C")
+            .arg(dir)
+            .arg("calibrate")
+            .output()
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && busy_retries < 50 => {
+                busy_retries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            result => {
+                break (
+                    result.expect("run calibration shim"),
+                    start.elapsed().as_millis() as u64,
+                )
+            }
+        }
+    };
     assert!(
         !out.stdout.is_empty(),
         "the calibration branch must print, or it is not measuring a real write"
