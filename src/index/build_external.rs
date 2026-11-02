@@ -36,6 +36,7 @@ pub(super) fn build_index_from_external_records(
         normalize_external_records(records)?,
         WalkSkips::default(),
         BATCH_SIZE_BYTES,
+        &crate::index::source::DocReader::WorkingTree,
     )
 }
 

@@ -138,6 +138,13 @@ Making it work needs a content source that is not the working tree (`git
 cat-file`, or storing content in the segment), which is a much larger change
 than the query-side plumbing suggests.
 
+Since 2.8.0 the library half exists: the `content-source` feature lets an
+embedder build an index whose bytes come from a `ContentSource` instead of the
+working tree (`Index::build_from_source`, see `docs/ARCHITECTURE.md`). A CLI
+`--rev` would still need a git-backed source (`git cat-file --batch`), an index
+per revision or a branch-mask design, and the output format below. None of that
+is built.
+
 Format constraint: render `main:src/foo.rs`, matching `git grep <rev>`,
 precisely *because* that is not an openable path. The colon is the signal.
 

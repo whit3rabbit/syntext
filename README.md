@@ -312,6 +312,30 @@ It is usable from Rust, from Swift (the `SyntextContext` product of the Swift
 package), and through a C ABI. See [docs/CONTEXT.md](docs/CONTEXT.md) for how
 it works, integration guides, and the design.
 
+## Indexing content that is not on disk
+
+The `content-source` feature (off by default) lets a library embedder supply the corpus and every document's bytes, instead of syntext walking and reading the working tree. A version-control system can then index a revision that is not checked out: its `ContentSource` resolves each path at that revision to bytes.
+
+```toml
+syntext = { version = "2.8", default-features = false, features = ["content-source"] }
+```
+
+```rust
+use std::sync::Arc;
+use syntext::index::{ContentSource, Index, SourceFile};
+
+struct Revision; // maps paths at one revision to bytes
+
+impl ContentSource for Revision {
+    fn files(&self) -> std::io::Result<Vec<SourceFile>> { todo!() }
+    fn read(&self, path: &std::path::Path, limit: u64) -> std::io::Result<Option<Vec<u8>>> { todo!() }
+}
+
+let index = Index::build_from_source(config, Arc::new(Revision))?;
+```
+
+An index built or opened with a source (`Index::open_with_source`) reads only from it: builds, `notify_change`/`notify_delete` plus `commit_batch`, `flush_overlay`, and search verification all go through `read`. It never reads `repo_root` and never runs git, so `update_from_git` and `rebuild_if_stale` return an `Unsupported` I/O error, and `search_fresh` behaves like `search`. A source that drifts from what was indexed can only cause missed matches, because verification re-reads its bytes. Without the feature, nothing changes.
+
 ## Architecture
 
 ```

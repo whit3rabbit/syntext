@@ -5,7 +5,6 @@
 //! during a fresh `st index` build; it is not used by open/search/commit.
 
 use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -13,9 +12,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 use xxhash_rust::xxh64::xxh64;
 
+use crate::index::build_read::read_working_tree_file;
 use crate::index::calibrate::calibrate_threshold;
 use crate::index::manifest::{Manifest, SegmentRef};
 use crate::index::segment::SegmentWriter;
+use crate::index::source::{DocReader, SourceRead};
 #[cfg(feature = "ignore")]
 use crate::index::walk::enumerate_files;
 use crate::index::walk::is_binary;
@@ -31,7 +32,13 @@ pub(super) const BATCH_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 #[cfg(feature = "ignore")]
 pub(super) fn build_index(config: Config) -> Result<super::Index, IndexError> {
     let (file_list, walk_skips) = enumerate_files(&config)?;
-    build_index_from_file_list(config, file_list, walk_skips, BATCH_SIZE_BYTES)
+    build_index_from_file_list(
+        config,
+        file_list,
+        walk_skips,
+        BATCH_SIZE_BYTES,
+        &DocReader::WorkingTree,
+    )
 }
 
 #[cfg(all(test, feature = "ignore"))]
@@ -40,7 +47,13 @@ pub(super) fn build_index_with_batch_size(
     batch_size_bytes: u64,
 ) -> Result<super::Index, IndexError> {
     let (file_list, walk_skips) = enumerate_files(&config)?;
-    build_index_from_file_list(config, file_list, walk_skips, batch_size_bytes)
+    build_index_from_file_list(
+        config,
+        file_list,
+        walk_skips,
+        batch_size_bytes,
+        &DocReader::WorkingTree,
+    )
 }
 
 pub(super) fn build_index_from_file_list(
@@ -48,6 +61,7 @@ pub(super) fn build_index_from_file_list(
     file_list: Vec<FileRecord>,
     walk_skips: WalkSkips,
     batch_size_bytes: u64,
+    reader: &DocReader,
 ) -> Result<super::Index, IndexError> {
     super::helpers::create_dir_all_secure(&config.index_dir)?;
 
@@ -114,39 +128,17 @@ pub(super) fn build_index_from_file_list(
                     skipped_oversized_path.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
-                // Security: close the TOCTOU window between enumerate_files()'s
-                // symlink resolution (symlink_metadata + canonicalize) and this
-                // read. open_readonly_nofollow blocks final-component substitution;
-                // verify_fd_matches_stat catches directory-component swaps.
-                let pre_meta = match std::fs::symlink_metadata(abs_path) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        log::debug!("skipping {}: stat: {e}", abs_path.display());
+                let raw = match reader.read(rel_path, config.max_file_size) {
+                    SourceRead::WorkingTree => {
+                        read_working_tree_file(abs_path, skipped_unreadable)?
+                    }
+                    SourceRead::Bytes(raw) => raw,
+                    _ => {
+                        log::debug!("skipping {}: unavailable from source", rel_path.display());
                         skipped_unreadable.fetch_add(1, Ordering::Relaxed);
                         return None;
                     }
                 };
-                let mut file = match super::open_readonly_nofollow(abs_path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        log::debug!("skipping {}: open: {e}", abs_path.display());
-                        skipped_unreadable.fetch_add(1, Ordering::Relaxed);
-                        return None;
-                    }
-                };
-                #[cfg(any(unix, windows))]
-                if !super::verify_fd_matches_stat(&file, &pre_meta) {
-                    skipped_unreadable.fetch_add(1, Ordering::Relaxed);
-                    return None;
-                }
-                #[cfg(not(any(unix, windows)))]
-                let _ = &pre_meta;
-                let mut raw = Vec::new();
-                if let Err(e) = file.read_to_end(&mut raw) {
-                    log::debug!("skipping {}: read: {e}", abs_path.display());
-                    skipped_unreadable.fetch_add(1, Ordering::Relaxed);
-                    return None;
-                }
                 let content = crate::index::normalize_encoding(&raw);
                 if is_binary(&content) {
                     skipped_binary.fetch_add(1, Ordering::Relaxed);
@@ -237,8 +229,13 @@ pub(super) fn build_index_from_file_list(
             reused
         }
         _ => {
-            let scan_paths: Vec<PathBuf> =
-                indexed_files.iter().map(|(abs, _)| abs.clone()).collect();
+            // A content source has no files on disk to time, so its build
+            // takes the default threshold (an empty sample returns it).
+            let scan_paths: Vec<PathBuf> = if reader.is_working_tree() {
+                indexed_files.iter().map(|(abs, _)| abs.clone()).collect()
+            } else {
+                Vec::new()
+            };
             let calibrated = calibrate_threshold(&scan_paths);
             log::debug!("calibrated scan threshold: {calibrated:.3}");
             calibrated
@@ -246,7 +243,12 @@ pub(super) fn build_index_from_file_list(
     };
     // Write manifest.
     let mut manifest = Manifest::new(seg_refs, total_indexed);
-    manifest.base_commit = super::helpers::current_repo_head(&config.repo_root)?;
+    // base_commit anchors git-driven freshness; a content source never runs git.
+    manifest.base_commit = if reader.is_working_tree() {
+        super::helpers::current_repo_head(&config.repo_root)?
+    } else {
+        None
+    };
     manifest.scan_threshold_fraction = Some(scan_threshold);
     // Record the paths.idx format version this build writes below, so
     // `open()` can gate loading it on a matching version instead of trusting
@@ -325,8 +327,13 @@ pub(super) fn build_index_from_file_list(
                 // symbol rows and any incremental delete operation.
                 for (file_id, (abs_path, rel_path)) in indexed_files.iter().enumerate() {
                     let file_id = file_id as u32;
-                    let Ok(raw) = fs::read(abs_path) else {
-                        continue;
+                    let raw = match reader.read(rel_path, config.max_file_size) {
+                        SourceRead::WorkingTree => match fs::read(abs_path) {
+                            Ok(raw) => raw,
+                            Err(_) => continue,
+                        },
+                        SourceRead::Bytes(raw) => raw,
+                        _ => continue,
                     };
                     let content = crate::index::normalize_encoding(&raw);
                     if is_binary(&content) {
@@ -357,5 +364,7 @@ pub(super) fn build_index_from_file_list(
         .map_err(|e| IndexError::CorruptIndex(format!("failed to unlock dir lock: {e}")))?;
     super::helpers::try_lock_shared(&lock_file, &config.index_dir)?;
     drop(write_lock);
-    super::Index::open_with_lock(config, lock_file)
+    let mut index = super::Index::open_with_lock(config, lock_file)?;
+    index.reader = reader.clone();
+    Ok(index)
 }

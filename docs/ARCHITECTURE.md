@@ -243,6 +243,22 @@ The rg-contract behaviors, the discovered pre-existing divergences it exposed (`
 
 **Alternatives considered**, all rejected: blocking indefinitely on the lock, because an interactive search must not hang behind a full rebuild. Dropping the shared lock on the read path, because it is what stops a reader from mmapping segments a writer is replacing, which is a SIGBUS risk rather than a correctness nicety. Retrying every error class, because that would put a wait and a misleading message in front of real corruption.
 
+### Content sources replace the working tree, behind a feature
+
+**Decision**: the `content-source` feature lets an embedder supply the corpus and every document's bytes through a `ContentSource` trait (`files`, `read(path, limit)`), attached with `Index::build_from_source` or `Index::open_with_source`. Internally each index holds a `DocReader` (`src/index/source.rs`): `WorkingTree` by default, `Source` only with the feature. Every read site matches on it: the full build (`build.rs`), symbol extraction, incremental commits (`classify_changed_file` dispatches to `classify_from_source`), and search verification (`resolve_doc`). The working-tree arm at each site is the previous code, unchanged, and a default build compiles only that arm.
+
+**Rationale**: verification re-reads document bytes, so an index could only cover content present on disk. A version-control system that wants to search a revision without checking it out (the `--rev` blocker in `docs/WORKTREES.md`) needs those bytes from its own object store. Keying the source by path keeps the segment format unchanged. The caller owns content identity, for example a path-to-hash map per revision. syntext stores and returns the same repository-relative paths as always.
+
+A source index never touches `repo_root` and never spawns git. The manifest records no `base_commit`. Calibration takes its 0.10 default instead of timing disk reads. The flush writes no working-tree anchor, since that sidecar records disk mtimes for git-diff freshness.
+
+`notify_change` skips the on-disk intermediate-symlink check. `update_from_git` and `rebuild_if_stale` return an `Unsupported` I/O error, which `search_fresh` already treats as "search the index as it is". Verification still re-reads bytes. A source that drifts from what was indexed can therefore only lose matches, never invent them, the same guarantee the working tree has.
+
+**Alternatives considered**, all rejected:
+
+- A `Config` field holding the source. `Config` has public fields and is not `#[non_exhaustive]`, so a field that appears when any crate in the graph enables the feature breaks struct-literal construction elsewhere.
+- A 32-byte content ID per document in the segment's doc table. It needs a format bump, and a path-keyed source already lets the caller map identity.
+- Storing document bytes inside segments. It multiplies index size and duplicates the caller's store.
+
 ## Key invariant
 
 For any document D and any token-aligned substring Q of D, every gram in `build_covering(Q)` must appear in `build_all(D)`. "Token-aligned" means Q starts and ends at forced boundary positions. This invariant is what makes index narrowing correct.

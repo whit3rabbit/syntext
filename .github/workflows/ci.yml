@@ -51,6 +51,14 @@ jobs:
       - name: cargo clippy
         run: cargo clippy -- -D warnings
 
+      - name: cargo test (content-source feature)
+        run: cargo test --features content-source --test content_source
+
+      - name: cargo clippy (content-source feature, no default features)
+        # Lints the feature-gated read paths without the CLI, the build an
+        # embedder such as a VCS uses.
+        run: cargo clippy --no-default-features --features content-source -- -D warnings
+
   test-context:
     # The context engine is a workspace member; root-level `cargo test` and
     # `cargo clippy` select only the `syntext` package, so it gets its own job.

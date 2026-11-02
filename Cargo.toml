@@ -1,6 +1,6 @@
 [package]
 name = "syntext"
-version = "2.7.2"
+version = "2.8.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Hybrid code search index for agent workflows"
@@ -104,6 +104,9 @@ cli = ["native", "clap"]
 wasm = ["wasm-bindgen", "serde-wasm-bindgen", "getrandom", "js-sys"]
 # C ABI for foreign-language bindings (Swift via xcframework). Native only.
 ffi = ["native"]
+# Caller-supplied document bytes instead of the working tree
+# (`Index::build_from_source`). Native only; off by default.
+content-source = ["native"]
 symbols = [
     "tree-sitter", "rusqlite",
     "tree-sitter-rust", "tree-sitter-python", "tree-sitter-javascript",
@@ -152,6 +155,11 @@ path = "tests/integration/incremental.rs"
 [[test]]
 name = "flush"
 path = "tests/integration/flush.rs"
+
+[[test]]
+name = "content_source"
+path = "tests/integration/content_source.rs"
+required-features = ["content-source"]
 
 [[test]]
 name = "oracle_self"

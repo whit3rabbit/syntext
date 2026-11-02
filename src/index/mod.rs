@@ -16,6 +16,8 @@ mod build;
 #[cfg(not(target_arch = "wasm32"))]
 mod build_external;
 #[cfg(not(target_arch = "wasm32"))]
+mod build_read;
+#[cfg(not(target_arch = "wasm32"))]
 mod calibrate;
 #[cfg(not(target_arch = "wasm32"))]
 mod commit;
@@ -64,6 +66,8 @@ pub mod pending;
 pub mod segment;
 /// Snapshot isolation views combining base segments and overlay views.
 pub mod snapshot;
+/// Document byte sources: the working tree, or a caller's `ContentSource`.
+pub(crate) mod source;
 #[cfg(not(target_arch = "wasm32"))]
 mod stats;
 /// Directory walking, file discovery, and gitignore evaluation.
@@ -84,6 +88,8 @@ pub mod mem_index;
 #[cfg(not(target_arch = "wasm32"))]
 pub use build_external::ExternalFileRecord;
 pub use snapshot::{BaseSegments, IndexSnapshot};
+#[cfg(feature = "content-source")]
+pub use source::{ContentSource, SourceFile};
 
 pub(crate) use encoding::normalize_encoding;
 pub use walk::is_binary;
@@ -141,6 +147,9 @@ pub struct Index {
     /// What commits have observed since the last flush, consumed when one runs.
     #[cfg(not(target_arch = "wasm32"))]
     flush_book: std::sync::Mutex<flush::FlushBookkeeping>,
+    /// Where document bytes come from. The working tree unless the index was
+    /// built or opened with a content source.
+    reader: source::DocReader,
     /// Optional symbol index (requires `symbols` feature).
     #[cfg(feature = "symbols")]
     pub symbol_index: Option<std::sync::Arc<crate::symbol::SymbolIndex>>,
@@ -222,6 +231,7 @@ impl Index {
             self.snapshot(),
             &self.config,
             &self.canonical_root,
+            &self.reader,
             pattern,
             opts,
         )
@@ -239,6 +249,7 @@ impl Index {
             self.snapshot(),
             &self.config,
             &self.canonical_root,
+            &self.reader,
             pattern,
             opts,
             true,

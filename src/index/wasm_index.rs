@@ -143,6 +143,7 @@ impl InMemoryIndex {
             Arc::clone(&self.snapshot),
             &self.config,
             canonical_root,
+            &crate::index::source::DocReader::WorkingTree,
             pattern,
             opts,
         )

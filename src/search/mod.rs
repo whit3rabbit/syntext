@@ -91,10 +91,11 @@ pub fn search(
     snap: Arc<IndexSnapshot>,
     config: &Config,
     canonical_root: &std::path::Path,
+    reader: &crate::index::source::DocReader,
     pattern: &str,
     opts: &SearchOptions,
 ) -> Result<Vec<SearchMatch>, IndexError> {
-    Ok(search_with_content(snap, config, canonical_root, pattern, opts, false)?.matches)
+    Ok(search_with_content(snap, config, canonical_root, reader, pattern, opts, false)?.matches)
 }
 
 /// Like [`search`], but also returns the verified content of matched files when
@@ -105,6 +106,7 @@ pub(crate) fn search_with_content(
     snap: Arc<IndexSnapshot>,
     config: &Config,
     canonical_root: &std::path::Path,
+    reader: &crate::index::source::DocReader,
     pattern: &str,
     opts: &SearchOptions,
     capture_content: bool,
@@ -243,6 +245,7 @@ pub(crate) fn search_with_content(
             canonical_root,
             root_fd.as_ref(),
             config.max_file_size,
+            reader,
         )?;
 
         if let Some(ref pf) = path_filter_bitmap {

@@ -255,7 +255,12 @@ impl Index {
             Err(poisoned) => poisoned.into_inner(),
         };
         AnchorInputs {
-            read_epoch: book.read_epoch.take(),
+            // The anchor records working-tree mtimes for git-diff freshness,
+            // which a content source has neither of.
+            read_epoch: book
+                .read_epoch
+                .take()
+                .filter(|_| self.reader.is_working_tree()),
             non_doc_paths: std::mem::take(&mut book.non_doc_paths),
             previous: self.loaded_anchor(),
             root: self.canonical_root.clone(),
