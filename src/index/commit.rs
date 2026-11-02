@@ -34,7 +34,7 @@ impl Drop for RequeueGuard<'_> {
 }
 
 /// Outcome of reading one changed file during [`Index::commit_batch`].
-enum ChangedFileOutcome {
+pub(super) enum ChangedFileOutcome {
     /// Content read; add to the overlay.
     Indexed(Arc<[u8]>),
     /// Exclude the file (binary, oversized, escaped the repo, or unreadable).
@@ -334,6 +334,9 @@ impl Index {
     /// is excluded (verbose warning) so a single bad file cannot wedge the
     /// incremental pipeline. A file that vanished becomes a deletion.
     fn classify_changed_file(&self, path: &Path) -> ChangedFileOutcome {
+        if let Some(outcome) = self.classify_from_source(path) {
+            return outcome;
+        }
         let abs = self.config.repo_root.join(path);
 
         // Open the changed file guaranteed-beneath the repo root: one

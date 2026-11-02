@@ -27,6 +27,7 @@ impl super::Index {
         &self,
         limits: freshness::UpdateLimits,
     ) -> Result<freshness::UpdateOutcome, IndexError> {
+        self.require_working_tree("update_from_git")?;
         let git = crate::git_util::resolve_git_binary();
         if !git.is_file() {
             return Err(IndexError::Io(std::io::Error::new(
@@ -344,6 +345,7 @@ impl super::Index {
     ///
     /// Returns `Some((stats, was_full_rebuild))` if an update ran, else `None`.
     pub fn rebuild_if_stale(&self) -> Result<Option<(IndexStats, bool)>, IndexError> {
+        self.require_working_tree("rebuild_if_stale")?;
         if self.pending.has_uncommitted() {
             self.commit_batch()?;
         }

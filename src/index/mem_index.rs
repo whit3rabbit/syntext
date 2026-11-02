@@ -103,6 +103,7 @@ impl MemIndex {
             self.snapshot.load_full(),
             &self.config,
             canonical_root,
+            &crate::index::source::DocReader::WorkingTree,
             pattern,
             opts,
         )
@@ -120,6 +121,7 @@ impl MemIndex {
             self.snapshot.load_full(),
             &self.config,
             canonical_root,
+            &crate::index::source::DocReader::WorkingTree,
             pattern,
             opts,
             true,

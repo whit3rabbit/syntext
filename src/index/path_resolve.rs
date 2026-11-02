@@ -28,6 +28,14 @@ impl super::Index {
             return Err(IndexError::PathOutsideRepo(path.to_path_buf()));
         }
 
+        // A content source has no directories on disk to resolve, so the
+        // intermediate-symlink check below would only consult unrelated files.
+        if !self.reader.is_working_tree() {
+            return Ok(crate::path_util::normalize_to_forward_slashes(
+                rel.to_path_buf(),
+            ));
+        }
+
         // Force forward slashes: this is an ingestion boundary. On Windows a
         // caller that canonicalizes first (`apply_changed_paths`, the durable
         // delta path) yields a backslash-separated `rel`, which would store

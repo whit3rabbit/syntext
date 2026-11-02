@@ -337,6 +337,7 @@ impl Index {
             canonical_root,
             worktree_anchor: std::sync::Mutex::new(None),
             flush_book: std::sync::Mutex::new(Default::default()),
+            reader: super::source::DocReader::default(),
             #[cfg(feature = "symbols")]
             symbol_index,
         })
