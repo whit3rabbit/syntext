@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **`install.sh` no longer reports success for the wrong version on Homebrew.** A cask installs only its current version, so `SYNTEXT_VERSION` was ignored on that path and a stale tap left the old version in place. An explicit `SYNTEXT_VERSION` the cask does not match now fails with the command to run, and an unpinned mismatch prints a warning.
+
 ## [2.8.0] - 2026-11-01
 
 ### Added
