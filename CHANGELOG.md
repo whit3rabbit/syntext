@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Index content that is not on disk.** The new `content-source` feature, off by default, adds a `ContentSource` trait (`files` and `read(path, limit)`), `SourceFile`, `Index::build_from_source`, and `Index::open_with_source`. An index built or opened with a source takes its corpus and every document's bytes from the source: full builds, incremental `notify_change`/`notify_delete` plus `commit_batch`, `apply_change_batch` records without preloaded content, `flush_overlay`, and search verification all read through it. It never reads `repo_root` (which must still exist, to anchor notify paths) and never runs git: the manifest records no `base_commit`, the scan threshold uses its default instead of timing reads, no working-tree anchor is written, and `update_from_git` and `rebuild_if_stale` return an `Unsupported` I/O error, which `search_fresh` already treats as "search without updating". This lets a version-control system index a revision that is not checked out, the content source that `docs/WORKTREES.md` named as the blocker for searching a ref. Without the feature, every read site behaves as before.
+
 ## [2.7.2] - 2026-10-16
 
 ### Fixed

@@ -64,6 +64,7 @@ The crate supports the following Cargo feature flags:
 * `wasm`: WASM target support. Enables `wasm-bindgen` API, fully in-memory index, and disables all native filesystem and threading dependencies.
 * `ffi`: C ABI for foreign-language bindings (Swift via xcframework). Enables `native` plus `src/ffi/` entry points and the mutable in-memory `MemIndex` (`src/index/mem_index.rs`). See [docs/SWIFT.md](docs/SWIFT.md).
 * `symbols`: Tree-sitter symbol extraction and SQLite local cache storage support.
+* `content-source`: caller-supplied corpus and document bytes (`ContentSource`, `Index::build_from_source`, `Index::open_with_source`) instead of the working tree. Implies `native`. Off by default. CI does not enable it yet, so run `cargo test --features content-source --test content_source` when touching any read site.
 * `syntext-context` (the `context/` workspace member) has its own `ffi` feature: the context engine's C ABI, which turns on syntext's `ffi` too, so one static library exports both.
 
 ## Implementation Order
@@ -133,6 +134,7 @@ cargo test --test boundary_fuzz  # unit: boundary fuzzing
 cargo test --test index_build # integration: index construction
 cargo test --test incremental # integration: incremental updates
 cargo test --test flush       # integration: durable overlay flush + worktree anchor
+cargo test --features content-source --test content_source  # integration: caller-supplied ContentSource
 cargo test --test symbols     # integration: symbol index
 cargo test --features ffi     # ffi feature: MemIndex + C-ABI integration tests
 ./swift/Scripts/build-xcframework.sh  # Rust staticlib -> universal xcframework + release zip
@@ -331,6 +333,7 @@ All PRs must pass before merge:
 - **Stable file IDs are a long-term choice** for incremental path-index maintenance, even though the first implementation regressed `commit_batch`; compare against `docs/BENCHMARKS.md` before changing course.
 - **File-level documents**, not chunks. Segment format uses u32 IDs that can represent chunk_ids later.
 - **Full reindex at 30% overlay threshold** is the only mechanism that cleans stale doc_ids from base segments. Overlay compaction is not needed (single merged view).
+- **Every document read goes through `DocReader`** (`src/index/source.rs`): build (`build.rs`, `build_read.rs`), symbols, `classify_changed_file` (via `classify_from_source`), and `resolve_doc`. `WorkingTree` is the default and the only arm without `content-source`. Its code at each site is the pre-2.8 read, unchanged. A new read site must match on the reader too, or a source index silently reads disk. A source index never spawns git: `require_working_tree` guards `update_from_git` and `rebuild_if_stale`, the build records no `base_commit`, calibration takes its default, and the flush writes no working-tree anchor.
 - **Overlay is in-memory only.** `commit_batch` persists nothing to disk (`open.rs` loads `OverlayView::empty()`); only `build::build_index`, compaction, and an explicit flush write durable segments. An in-search overlay-apply is invisible to a later `st search` process, so cross-process freshness comes from `Index::flush_overlay` (`src/index/flush.rs`), the durable delta path below, or a full rebuild, never a bare overlay-apply.
 - **`st update` always persists**, including uncommitted working-tree drift. `flush_overlay` reuses `delta_apply` with `FlushAnchor::KeepHead`, which carries `base_commit` forward instead of advancing it: drift belongs to no commit, and advancing would make `rebuild_if_stale` (which only fires on `base_commit != HEAD`) skip the real commit when it lands. `st update --flush` is accepted and does nothing.
 - **The working-tree anchor is a fail-OPEN cache** (`src/index/worktree_anchor.rs`, `worktree_codec.rs`), the opposite of `deletes_idx`. `git diff HEAD` reports an uncommitted file forever, so `worktree-<uuid>.idx` records size+mtime per flushed path and `retain_unflushed` drops the ones that have not moved. Losing it costs re-applies, not correctness, because `compute_delete_set` is idempotent. A path is anchored only when its mtime is 2s older than the commit's `read_epoch` (git's racily-clean rule); a racy path is left out and re-applied once.
@@ -372,12 +375,14 @@ src/
     commit.rs                 # commit_batch logic
     helpers.rs                # free functions shared across index modules
     build.rs                  # build pipeline (calibrate_threshold, build_index)
+    build_read.rs             # TOCTOU-guarded working-tree read for a full build
     compact.rs                # compaction execution
     compact_tests.rs          # unit tests for compaction
     compact_plan.rs           # compaction planning types, plan / forced_plan
     encoding.rs               # varint / posting encoding helpers
     io_util.rs                # secure file-open helpers (O_NOFOLLOW, inode check)
     snapshot.rs               # BaseSegments, IndexSnapshot, new_snapshot
+    source.rs                 # DocReader; ContentSource, SourceFile, build_from_source (content-source feature)
     segment/
       mod.rs                  # SNTX segment format constants, DocEntry, MmapSegment
       tests.rs                # unit tests for segment round-trips and security checks
