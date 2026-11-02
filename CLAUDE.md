@@ -64,7 +64,7 @@ The crate supports the following Cargo feature flags:
 * `wasm`: WASM target support. Enables `wasm-bindgen` API, fully in-memory index, and disables all native filesystem and threading dependencies.
 * `ffi`: C ABI for foreign-language bindings (Swift via xcframework). Enables `native` plus `src/ffi/` entry points and the mutable in-memory `MemIndex` (`src/index/mem_index.rs`). See [docs/SWIFT.md](docs/SWIFT.md).
 * `symbols`: Tree-sitter symbol extraction and SQLite local cache storage support.
-* `content-source`: caller-supplied corpus and document bytes (`ContentSource`, `Index::build_from_source`, `Index::open_with_source`) instead of the working tree. Implies `native`. Off by default. CI does not enable it yet, so run `cargo test --features content-source --test content_source` when touching any read site.
+* `content-source`: caller-supplied corpus and document bytes (`ContentSource`, `Index::build_from_source`, `Index::open_with_source`) instead of the working tree. Implies `native`. Off by default. CI's `test` job runs `cargo test --features content-source --test content_source` on all three platforms; run it locally when touching any read site.
 * `syntext-context` (the `context/` workspace member) has its own `ffi` feature: the context engine's C ABI, which turns on syntext's `ffi` too, so one static library exports both.
 
 ## Implementation Order
