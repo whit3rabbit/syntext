@@ -10,6 +10,9 @@
 
 set -eu
 
+# A cask installs only its current version, so an explicit pin it cannot honour
+# must fail rather than report success. Read this before the default applies.
+VERSION_PINNED="${SYNTEXT_VERSION:+1}"
 SYNTEXT_VERSION="${SYNTEXT_VERSION:-2.8.0}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BASE_URL="https://github.com/whit3rabbit/syntext/releases/download/v${SYNTEXT_VERSION}"
@@ -121,7 +124,15 @@ if [ "$OS" = "Darwin" ]; then
         echo "==> Homebrew detected. Installing syntext via cask..."
         brew tap whit3rabbit/tap
         brew install --cask whit3rabbit/tap/syntext
-        echo "==> Installed syntext via Homebrew cask."
+        CASK_VERSION=$(brew list --cask --versions syntext 2>/dev/null | awk '{print $NF}') || CASK_VERSION=""
+        UPGRADE_HINT="brew update && brew upgrade --cask whit3rabbit/tap/syntext"
+        if [ "$CASK_VERSION" != "$SYNTEXT_VERSION" ]; then
+            if [ -n "$VERSION_PINNED" ]; then
+                die "requested ${SYNTEXT_VERSION}, but the Homebrew cask installed ${CASK_VERSION:-an unknown version}. A cask cannot install a chosen version. Run: ${UPGRADE_HINT}"
+            fi
+            echo "warning: Homebrew cask has ${CASK_VERSION:-an unknown version}; this installer's default is ${SYNTEXT_VERSION}. To update: ${UPGRADE_HINT}" >&2
+        fi
+        echo "==> Installed syntext ${CASK_VERSION} via Homebrew cask."
         echo "    To upgrade later: brew upgrade --cask whit3rabbit/tap/syntext"
         exit 0
     fi

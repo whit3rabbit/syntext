@@ -157,6 +157,10 @@ name = "flush"
 path = "tests/integration/flush.rs"
 
 [[test]]
+name = "install_script"
+path = "tests/integration/install_script.rs"
+
+[[test]]
 name = "content_source"
 path = "tests/integration/content_source.rs"
 required-features = ["content-source"]

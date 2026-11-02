@@ -85,7 +85,10 @@ Once preparation is complete and verified:
 - [ ] **Verify Installer**: Run a quick validation to ensure the installer works:
   ```sh
   SYNTEXT_VERSION=X.Y.Z curl -fsSL https://raw.githubusercontent.com/whit3rabbit/syntext/main/install.sh | sh
+  st --version
   ```
+  On macOS with Homebrew this goes through the cask and fails if the local tap is stale. Run `brew update` first.
+
   Also spot-check the musl fallback on systems the gnu binaries cannot serve (both need Docker):
   ```sh
   # Alpine (musl-native) and an old-glibc distro must both pick the *-musl artifact:
